@@ -1,0 +1,51 @@
+# CMake build directory
+build/
+
+# CMake generated files
+CMakeCache.txt
+cmake_install.cmake
+CMakeFiles/
+CTestTestfile.cmake
+*.cmake
+
+# Generated version header
+generated/
+
+# Ninja
+*.ninja
+.ninja_deps
+.ninja_log
+
+# Qt autogen / moc / rcc output
+*.moc.cpp
+*.moc.h
+*.qrc.cpp
+*.qrc.h
+*.ui.cpp
+*.ui.h
+mocs_compilation.cpp
+
+# Qt Creator / Qt project clutter
+*.user
+*.autosave
+*.user.*
+qt6/
+
+# Object files, libraries, executables
+*.o
+*.obj
+*.so
+*.dylib
+*.a
+*.lib
+*.dll
+*.exe
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# AI tooling state
+.zcode/
