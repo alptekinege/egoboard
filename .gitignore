@@ -49,3 +49,9 @@ qt6/
 
 # AI tooling state
 .zcode/
+
+# AppImage packaging
+build-appimage/
+dist/
+*.AppImage
+packaging/appimage/tools/

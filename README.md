@@ -48,12 +48,25 @@ Optional: `libxtst` (auto-paste on X11 without xdotool), `xdotool`.
     cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
     cmake --build build
     ctest --test-dir build          # unit tests
-    ./build/src/egoboard --smoke    # headless end-to-end self-check
+    ./build/egoboard --smoke        # headless end-to-end self-check
     sudo cmake --install build      # optional
+
+## AppImage Packaging
+
+Egoboard provides automated scripts to bundle dependencies (Qt 6, KF6, SQLite, Wayland/XCB plugins) and generate a standalone AppImage:
+
+```bash
+# Build the AppImage (saved to dist/Egoboard-<version>-x86_64.AppImage)
+./scripts/build-appimage.sh
+
+# Validate AppImage structure, bundled plugins, and run smoke tests
+./scripts/validate-appimage.sh
+```
 
 ## Running
 
-    ./build/src/egoboard
+    ./build/egoboard
+
 
 The app starts into the system tray (StatusNotifierItem). Enable autostart in
 Settings → General. Configuration lives in `~/.config/egoboardrc`, the database
