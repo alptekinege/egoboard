@@ -1,0 +1,2 @@
+#pragma once
+#define EGOBOARD_VERSION "@PROJECT_VERSION@"

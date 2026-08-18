@@ -1,0 +1,74 @@
+#pragma once
+
+#include "ClipboardRecord.h"
+
+#include <QObject>
+#include <QThread>
+
+#include <memory>
+
+class AutoPaster;
+class BookmarkManager;
+class ClipboardWatcher;
+class ExportImportManager;
+class HotkeyManager;
+class IActiveWindowTracker;
+class MainWindow;
+class QuickPasteMenu;
+class QMenu;
+class QTimer;
+class SettingsManager;
+class StorageManager;
+class TrayController;
+class VacuumWorker;
+
+// Composition root: owns every subsystem and wires the signal/slot graph.
+// fullGui == false gives a headless configuration (storage/bookmarks/io only)
+// used by the --smoke self-check.
+class ApplicationContext : public QObject {
+    Q_OBJECT
+public:
+    explicit ApplicationContext(const QString &databasePath, bool fullGui = true,
+                                QObject *parent = nullptr);
+    ~ApplicationContext() override;
+
+    void start();
+    int smokeTest();
+
+    SettingsManager *settings() const { return m_settings; }
+    StorageManager *storage() const { return m_storage; }
+    BookmarkManager *bookmarks() const { return m_bookmarks; }
+    ExportImportManager *io() const { return m_io; }
+    AutoPaster *autoPaster() const { return m_paster; }
+    HotkeyManager *hotkeys() const { return m_hotkeys; }
+    MainWindow *window() const { return m_window; }
+    QuickPasteMenu *quickPaste() const { return m_quickPaste; }
+
+    void toggleMainWindow();
+    void showQuickPaste();
+    void pasteEntry(qint64 entryId);
+    void vacuumNow();
+
+private:
+    void onCaptured(const ClipboardRecord &record);
+    void scheduleVacuumChecks();
+
+    bool m_fullGui = true;
+
+    SettingsManager *m_settings = nullptr;
+    StorageManager *m_storage = nullptr;
+    BookmarkManager *m_bookmarks = nullptr;
+    ExportImportManager *m_io = nullptr;
+    std::shared_ptr<IActiveWindowTracker> m_tracker;
+    ClipboardWatcher *m_watcher = nullptr;
+    AutoPaster *m_paster = nullptr;
+    HotkeyManager *m_hotkeys = nullptr;
+    TrayController *m_tray = nullptr;
+    MainWindow *m_window = nullptr;
+    QuickPasteMenu *m_quickPaste = nullptr;
+
+    VacuumWorker *m_vacuumWorker = nullptr;
+    QThread *m_vacuumThread = nullptr;
+    QTimer *m_vacuumTimer = nullptr;
+    int m_captureCounter = 0;
+};

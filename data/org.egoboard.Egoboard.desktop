@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Egoboard
+GenericName=Clipboard History
+Comment=Clipboard history manager for KDE Plasma
+Exec=egoboard
+Icon=egoboard
+Terminal=false
+Categories=Qt;Utility;System;
+SingleMainWindow=true

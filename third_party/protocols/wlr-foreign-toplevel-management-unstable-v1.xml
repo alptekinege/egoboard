@@ -1,0 +1,238 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="wlr_foreign_toplevel_management_unstable_v1">
+  <copyright>
+    Copyright © 2018 Ilia Bozhinov
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <description summary="list and control opened apps">
+    Use this protocol to get a list of opened toplevels for the current seat,
+    get their titles and app_ids, and activate or close them.
+
+    Warning! The protocol described in this file is experimental and
+    backward incompatible changes may be made. Backward compatible changes
+    may be added together with the corresponding interface version bump.
+    Backward incompatible changes are done by bumping the version number in
+    the protocol and interface names and resetting the version number at
+    the end. Once the protocol is to be declared stable, the 'z' prefix and
+    the version number in the protocol and interface names are removed and
+    the version number inside the interface is reset to 1.
+  </description>
+
+  <interface name="zwlr_foreign_toplevel_manager_v1" version="3">
+    <description summary="manager to request toplevels">
+      This interface is used to request the toplevels of the current seat.
+    </description>
+
+    <event name="toplevel">
+      <description summary="a toplevel has been created">
+        This event is emitted whenever a new toplevel window is created. It
+        is emitted for all toplevels, regardless of the app that has created
+        them.
+
+        All initial state of the toplevel will be sent immediately after
+        this event using the usual events that are used to notify toplevel
+        state.
+      </description>
+      <arg name="toplevel" type="new_id" interface="zwlr_foreign_toplevel_handle_v1"/>
+    </event>
+
+    <request name="stop">
+      <description summary="stop sending events">
+        This request indicates that the client no longer wishes to receive
+        events for new toplevels.
+
+        However the compositor may emit further toplevel_created or
+        toplevel_destroyed events, until the toplevel_finished event is
+        emitted.
+
+        The client must not send any more requests after this one.
+      </description>
+    </request>
+  </interface>
+
+  <interface name="zwlr_foreign_toplevel_handle_v1" version="3">
+    <description summary="an opened toplevel">
+      A zwlr_foreign_toplevel_handle_v1 object represents an opened toplevel
+      window. A single app may have multiple opened toplevels.
+    </description>
+
+    <request name="set_maximized">
+      <description summary="requests that the toplevel be maximized">
+        Requests that the toplevel be maximized. If the maximized state actually
+        changes, the compositor will send a state event.
+      </description>
+    </request>
+
+    <request name="unset_maximized">
+      <description summary="requests that the toplevel be unmaximized">
+        Requests that the toplevel be unmaximized. If the maximized state actually
+        changes, the compositor will send a state event.
+      </description>
+    </request>
+
+    <request name="set_minimized">
+      <description summary="requests that the tooplevel be minimized">
+        Requests that the toplevel be minimized. If the minimized state actually
+        changes, the compositor will send a state event.
+      </description>
+    </request>
+
+    <request name="unset_minimized">
+      <description summary="requests that the toplevel be unminimized">
+        Requests that the toplevel be unminimized. If the minimized state actually
+        changes, the compositor will send a state event.
+      </description>
+    </request>
+
+    <request name="activate">
+      <description summary="activate the toplevel">
+        Request that this toplevel be activated on the given seat after
+        wl_foreign_toplevel_manager_v1.stop is called. There is no guarantee
+        that the request will be fulfilled; the compositor may ignore it.
+      </description>
+      <arg name="seat" type="object" interface="wl_seat"/>
+    </request>
+
+    <request name="close">
+      <description summary="close the toplevel">
+        Request that this toplevel be closed. This is only a request that
+        the window should be closed, the client may ignore it.
+      </description>
+    </request>
+
+    <request name="set_rectangle">
+      <description summary="set rectangle geometry">
+        The rectangle of the surface specified in this request is a hint
+        for the compositor to place the popup menus of the client (such as
+        context menus) near the toplevel.
+
+        The x and y coordinates are relative to the surface, and the
+        rectangle is in the same coordinate space as the toplevel.
+      </description>
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the zwlr_foreign_toplevel_handle_v1 object">
+        Destroys the zwlr_foreign_toplevel_handle_v1 object. This request
+        should be called when the client is no longer interested in the
+        toplevel, or when the toplevel has been closed.
+
+        After this request, the client must not send any more requests on
+        this object.
+      </description>
+    </request>
+
+    <event name="title">
+      <description summary="title change">
+        The title of the toplevel has changed.
+
+        The configured state may not be applied immediately; a state event
+        will be sent once the new state is applied.
+      </description>
+      <arg name="title" type="string"/>
+    </event>
+
+    <event name="app_id">
+      <description summary="app_id change">
+        The app id of the toplevel has changed.
+
+        The app id is a stable identifier for the application, usually the
+        desktop entry name (e.g. "org.kde.kate"). The compositor may use it
+        to find the application icon.
+      </description>
+      <arg name="app_id" type="string"/>
+    </event>
+
+    <event name="output_enter">
+      <description summary="toplevel entered an output">
+        This event is emitted whenever the toplevel becomes visible on
+        the given output. A toplevel may be visible on multiple outputs.
+      </description>
+      <arg name="output" type="object" interface="wl_output"/>
+    </event>
+
+    <event name="output_leave">
+      <description summary="toplevel left an output">
+        This event is emitted whenever the toplevel stops being visible on
+        the given output.
+      </description>
+      <arg name="output" type="object" interface="wl_output"/>
+    </event>
+
+    <event name="state">
+      <description summary="the window state changed">
+        This event is emitted immediately after the zwlr_foreign_toplevel_handle_v1
+        is created and each time the toplevel state changes, either because of a
+        compositor action or because of a request in this protocol.
+
+        The initial state is empty, and the state is empty when the toplevel
+        is closed; the state is empty until the closed event is emitted.
+      </description>
+      <arg name="state" type="array"/>
+    </event>
+
+    <enum name="state">
+      <entry name="maximized" value="0"
+             summary="the toplevel is maximized"/>
+      <entry name="minimized" value="1"
+             summary="the toplevel is minimized"/>
+      <entry name="activated" value="2"
+             summary="the toplevel is not focused"/>
+      <entry name="fullscreen" value="3"
+             summary="the toplevel is fullscreen"/>
+    </enum>
+
+    <event name="done">
+      <description summary="all information about the toplevel has been sent">
+        This event is sent after all changes in the toplevel state have been
+        sent.
+
+        This allows changes to the zwlr_foreign_toplevel_handle_v1 properties
+        to be seen as atomic, even if they happen via multiple events.
+      </description>
+    </event>
+
+    <event name="closed">
+      <description summary="the toplevel has been closed">
+        The server has destroyed the toplevel and the zwlr_foreign_toplevel_handle_v1
+        object is now inert.
+
+        The client should destroy this object.
+      </description>
+    </event>
+
+    <event name="parent">
+      <description summary="parent toplevel changed">
+        The parent of the toplevel has been set or unset.
+
+        This event is sent after the parent is set or unset, and the client
+        should update the toplevel hierarchy accordingly.
+      </description>
+      <arg name="parent" type="object" interface="zwlr_foreign_toplevel_handle_v1" allow-null="true"/>
+    </event>
+  </interface>
+</protocol>

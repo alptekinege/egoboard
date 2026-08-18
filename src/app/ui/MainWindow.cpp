@@ -1,0 +1,551 @@
+#include "MainWindow.h"
+
+#include "../ApplicationContext.h"
+#include "../AutoPaster.h"
+#include "../SettingsManager.h"
+#include "BookmarkManager.h"
+#include "ClipboardListModel.h"
+#include "EntryDelegate.h"
+#include "ExportImportDialogs.h"
+#include "GroupsDock.h"
+#include "PreviewPane.h"
+#include "SettingsDialog.h"
+#include "StorageManager.h"
+
+#include <QApplication>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDateTime>
+#include <QFileDialog>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QKeyEvent>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListView>
+#include <QMenu>
+#include <QMessageBox>
+#include <QScreen>
+#include <QSplitter>
+#include <QTimer>
+#include <QToolBar>
+#include <QVBoxLayout>
+
+using DateRange = ExportImportDialogs::DateRange;
+
+MainWindow::MainWindow(ApplicationContext &context, QWidget *parent)
+    : QMainWindow(parent)
+    , m_ctx(context)
+{
+    setWindowTitle(tr("Egoboard — Clipboard History"));
+    setWindowIcon(QIcon::fromTheme(QStringLiteral("edit-paste")));
+    setAttribute(Qt::WA_QuitOnClose, false); // closing the window keeps the daemon running
+    buildUi();
+    connectSignals();
+    applyCurrentFilter();
+}
+
+void MainWindow::buildUi()
+{
+    auto *central = new QWidget(this);
+    auto *layout = new QVBoxLayout(central);
+    layout->setContentsMargins(6, 6, 6, 6);
+    layout->setSpacing(6);
+
+    // --- filter bar ---------------------------------------------------------
+    auto *filterRow = new QHBoxLayout();
+
+    m_search = new QLineEdit(central);
+    m_search->setPlaceholderText(tr("Search history…"));
+    m_search->setClearButtonEnabled(true);
+    filterRow->addWidget(m_search, 3);
+
+    m_typeCombo = new QComboBox(central);
+    m_typeCombo->addItem(tr("All types"), -1);
+    m_typeCombo->addItem(tr("Text"), int(ContentType::Text));
+    m_typeCombo->addItem(tr("Rich text"), int(ContentType::RichText));
+    m_typeCombo->addItem(tr("Images"), int(ContentType::Image));
+    m_typeCombo->addItem(tr("Files"), int(ContentType::Files));
+    filterRow->addWidget(m_typeCombo);
+
+    m_dateCombo = new QComboBox(central);
+    m_dateCombo->addItem(tr("Any time"), 0);
+    m_dateCombo->addItem(tr("Today"), 1);
+    m_dateCombo->addItem(tr("Yesterday"), 2);
+    m_dateCombo->addItem(tr("Past week"), 3);
+    m_dateCombo->addItem(tr("Past month"), 4);
+    m_dateCombo->addItem(tr("Custom range…"), 99);
+    filterRow->addWidget(m_dateCombo);
+    m_appCombo = new QComboBox(central);
+    m_appCombo->setMinimumWidth(140);
+    m_appCombo->addItem(tr("All sources"), QString());
+    refreshAppFilter();
+    filterRow->addWidget(m_appCombo, 1);
+
+    layout->addLayout(filterRow);
+
+    // --- list + preview -----------------------------------------------------
+    auto *splitter = new QSplitter(Qt::Horizontal, central);
+
+    m_model = new ClipboardListModel(m_ctx.storage(), this);
+    m_delegate = new EntryDelegate(m_ctx.bookmarks(), this);
+
+    m_list = new QListView(splitter);
+    m_list->setModel(m_model);
+    m_list->setItemDelegate(m_delegate);
+    m_list->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_list->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_list->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_list->setUniformItemSizes(true);
+    m_list->setLayoutMode(QListView::Batched);
+    m_list->setBatchSize(50);
+    m_list->setDragEnabled(true);
+    m_list->setDragDropMode(QAbstractItemView::DragOnly);
+    m_list->setContextMenuPolicy(Qt::CustomContextMenu);
+    splitter->addWidget(m_list);
+
+    m_preview = new PreviewPane(splitter);
+    splitter->addWidget(m_preview);
+    splitter->setStretchFactor(0, 3);
+    splitter->setStretchFactor(1, 2);
+    splitter->setSizes({420, 260});
+    layout->addWidget(splitter, 1);
+
+    central->setLayout(layout);
+    setCentralWidget(central);
+
+    // --- actions ------------------------------------------------------------
+    auto *toolbar = addToolBar(tr("Toolbar"));
+    toolbar->setMovable(false);
+    toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+
+    QAction *pasteNow = toolbar->addAction(QIcon::fromTheme(QStringLiteral("edit-paste")),
+                                           tr("Paste"));
+    connect(pasteNow, &QAction::triggered, this, &MainWindow::pasteCurrent);
+    m_pasteAction = pasteNow;
+
+    QAction *copyOnly = toolbar->addAction(QIcon::fromTheme(QStringLiteral("edit-copy")),
+                                           tr("Copy only"));
+    connect(copyOnly, &QAction::triggered, this, &MainWindow::copyCurrent);
+    m_copyAction = copyOnly;
+
+    QAction *pin = toolbar->addAction(QIcon::fromTheme(QStringLiteral("bookmarks")),
+                                      tr("Pin"));
+    pin->setCheckable(true);
+    connect(pin, &QAction::toggled, this, [this](bool) { togglePinSelected(); });
+    m_pinAction = pin;
+
+    QAction *remove = toolbar->addAction(QIcon::fromTheme(QStringLiteral("edit-delete")),
+                                         tr("Delete"));
+    connect(remove, &QAction::triggered, this, &MainWindow::deleteSelected);
+    m_deleteAction = remove;
+
+    toolbar->addSeparator();
+
+    QAction *pinnedOnly = toolbar->addAction(QIcon::fromTheme(QStringLiteral("folder-pin")),
+                                             tr("Pinned only"));
+    pinnedOnly->setCheckable(true);
+    connect(pinnedOnly, &QAction::toggled, this, [this](bool on) {
+        FilterSpec filter = m_model->filter();
+        filter.pinnedOnly = on;
+        m_model->setFilter(filter);
+    });
+
+    m_groupsAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("view-choose")),
+                                        tr("Groups"));
+    m_groupsAction->setCheckable(true);
+
+    QAction *exportAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("document-export")),
+                                               tr("Export"));
+    connect(exportAction, &QAction::triggered, this, &MainWindow::exportHistory);
+    QAction *importAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("document-import")),
+                                               tr("Import"));
+    connect(importAction, &QAction::triggered, this, &MainWindow::importHistory);
+
+    toolbar->addSeparator();
+
+    QAction *settingsAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("configure")),
+                                                 tr("Settings"));
+    connect(settingsAction, &QAction::triggered, this, &MainWindow::openSettings);
+    QAction *clearAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("edit-clear-all")),
+                                              tr("Clear"));
+    connect(clearAction, &QAction::triggered, this, &MainWindow::clearHistory);
+
+    // --- groups dock --------------------------------------------------------
+    m_groupsDock = new GroupsDock(m_ctx.bookmarks(), this);
+    addDockWidget(Qt::LeftDockWidgetArea, m_groupsDock);
+    m_groupsDock->hide();
+    connect(m_groupsAction, &QAction::toggled, m_groupsDock, &QDockWidget::setVisible);
+    connect(m_groupsDock, &GroupsDock::groupSelected, this, [this](qint64 groupId) {
+        m_groupFilter = groupId;
+        applyCurrentFilter();
+    });
+    connect(m_groupsDock, &GroupsDock::entriesDropped, this,
+            [this](const QList<qint64> &entryIds, qint64 groupId) {
+                for (const qint64 id : entryIds)
+                    m_ctx.bookmarks()->assignEntry(id, groupId);
+                m_delegate->clearGroupCache();
+            });
+    connect(m_ctx.bookmarks(), &BookmarkManager::membershipChanged, m_delegate,
+            &EntryDelegate::clearGroupCache);
+    connect(m_ctx.bookmarks(), &BookmarkManager::groupsChanged, this, [this] {
+        m_delegate->clearGroupCache();
+    });
+
+    resize(900, 560);
+    updateActionStates();
+}
+
+void MainWindow::connectSignals()
+{
+    m_searchDebounce = new QTimer(this);
+    m_searchDebounce->setSingleShot(true);
+    m_searchDebounce->setInterval(200);
+    connect(m_searchDebounce, &QTimer::timeout, this, &MainWindow::applyCurrentFilter);
+    connect(m_search, &QLineEdit::textChanged, this,
+            [this] { m_searchDebounce->start(); });
+
+    connect(m_typeCombo, &QComboBox::currentIndexChanged, this, &MainWindow::applyCurrentFilter);
+    connect(m_dateCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        if (m_dateCombo->currentData().toInt() == 99) {
+            ExportImportDialogs::DateRangeDialog dialog(this);
+            if (dialog.exec() == QDialog::Accepted) {
+                m_lastRange = dialog.range();
+                if (!m_lastRange.isValid)
+                    m_dateCombo->setCurrentIndex(0);
+                else
+                    applyCurrentFilter();
+            } else {
+                m_dateCombo->setCurrentIndex(0); // revert
+            }
+        } else {
+            applyCurrentFilter();
+        }
+    });
+    connect(m_appCombo, &QComboBox::currentIndexChanged, this, &MainWindow::applyCurrentFilter);
+
+    auto selectionModel = m_list->selectionModel();
+    connect(selectionModel, &QItemSelectionModel::selectionChanged, this,
+            &MainWindow::onSelectionChanged);
+    connect(m_list, &QListView::activated, this, &MainWindow::onActivated);
+    connect(m_list, &QListView::customContextMenuRequested, this, &MainWindow::showContextMenu);
+
+    connect(m_ctx.storage(), &StorageManager::entryAdded, this,
+            [this] { refreshAppFilter(); });
+    connect(m_ctx.storage(), &StorageManager::storageReset, this, [this] {
+        refreshAppFilter();
+        m_preview->showEmpty();
+    });
+}
+
+void MainWindow::refreshAppFilter()
+{
+    const QString current = m_appCombo->currentData().toString();
+    m_appCombo->blockSignals(true);
+    m_appCombo->clear();
+    m_appCombo->addItem(tr("All sources"), QString());
+    const QStringList apps = m_ctx.storage()->sourceApps();
+    for (const QString &app : apps)
+        m_appCombo->addItem(app, app);
+    const int index = m_appCombo->findData(current);
+    if (index >= 0)
+        m_appCombo->setCurrentIndex(index);
+    m_appCombo->blockSignals(false);
+}
+
+void MainWindow::applyCurrentFilter()
+{
+    FilterSpec filter;
+    filter.searchText = m_search->text().trimmed();
+    filter.contentType = m_typeCombo->currentData().toInt();
+    if (m_groupFilter != 0)
+        filter.groupId = m_groupFilter;
+
+    const int datePreset = m_dateCombo->currentData().toInt();
+    const QDateTime now = QDateTime::currentDateTime();
+    switch (datePreset) {
+    case 1:
+        filter.fromMs = now.addDays(-1).toMSecsSinceEpoch();
+        break;
+    case 2:
+        filter.fromMs = now.addDays(-2).toMSecsSinceEpoch();
+        filter.toMs = now.addDays(-1).toMSecsSinceEpoch();
+        break;
+    case 3:
+        filter.fromMs = now.addDays(-7).toMSecsSinceEpoch();
+        break;
+    case 4:
+        filter.fromMs = now.addMonths(-1).toMSecsSinceEpoch();
+        break;
+    case 99:
+        if (m_lastRange.isValid) {
+            filter.fromMs = m_lastRange.fromMs;
+            filter.toMs = m_lastRange.toMs;
+        }
+        break;
+    default:
+        break;
+    }
+    filter.sourceApp = m_appCombo->currentData().toString();
+    m_model->setFilter(filter);
+    updateActionStates();
+}
+
+void MainWindow::onSelectionChanged()
+{
+    const QModelIndexList selected = m_list->selectionModel()->selectedIndexes();
+    if (selected.isEmpty()) {
+        m_selectedId = 0;
+        m_preview->showEmpty();
+    } else {
+        m_selectedId = selected.first().data(ClipboardListModel::IdRole).toLongLong();
+        ClipboardRecord full;
+        if (m_ctx.storage()->fetchFull(m_selectedId, &full))
+            m_preview->showRecord(full);
+    }
+    updateActionStates();
+    // Reflect pin state in the toolbar toggle.
+    if (m_pinAction) {
+        QSignalBlocker blocker(m_pinAction);
+        m_pinAction->setChecked(selected.size() == 1
+                                && selected.first().data(ClipboardListModel::PinnedRole).toBool());
+    }
+}
+
+void MainWindow::onActivated(const QModelIndex &index)
+{
+    if (index.isValid())
+        pasteEntry(index.data(ClipboardListModel::IdRole).toLongLong());
+}
+
+void MainWindow::pasteEntry(qint64 entryId)
+{
+    m_ctx.pasteEntry(entryId);
+}
+
+void MainWindow::pasteCurrent()
+{
+    if (m_selectedId != 0)
+        pasteEntry(m_selectedId);
+}
+
+void MainWindow::copyCurrent()
+{
+    if (m_selectedId == 0)
+        return;
+    ClipboardRecord record;
+    if (!m_ctx.storage()->fetchFull(m_selectedId, &record))
+        return;
+    m_ctx.autoPaster()->paste(record, nullptr);
+}
+
+void MainWindow::deleteSelected()
+{
+    const QModelIndexList selected = m_list->selectionModel()->selectedIndexes();
+    QList<qint64> ids;
+    for (const QModelIndex &index : selected)
+        ids.append(index.data(ClipboardListModel::IdRole).toLongLong());
+    if (ids.isEmpty())
+        return;
+    m_ctx.storage()->removeEntries(ids);
+}
+
+void MainWindow::togglePinSelected()
+{
+    const QModelIndexList selected = m_list->selectionModel()->selectedIndexes();
+    if (selected.size() != 1)
+        return;
+    const qint64 id = selected.first().data(ClipboardListModel::IdRole).toLongLong();
+    const bool pinned = selected.first().data(ClipboardListModel::PinnedRole).toBool();
+    m_ctx.storage()->setPinned(id, !pinned);
+    QSignalBlocker blocker(m_pinAction);
+    m_pinAction->setChecked(!pinned);
+}
+
+void MainWindow::showContextMenu(const QPoint &pos)
+{
+    const QModelIndex index = m_list->indexAt(pos);
+    if (!index.isValid())
+        return;
+    m_list->selectionModel()->setCurrentIndex(index, QItemSelectionModel::ClearAndSelect);
+
+    QMenu menu(this);
+    QAction *paste = menu.addAction(tr("Paste to window"));
+    connect(paste, &QAction::triggered, this, &MainWindow::pasteCurrent);
+    QAction *copy = menu.addAction(tr("Copy to clipboard"));
+    connect(copy, &QAction::triggered, this, &MainWindow::copyCurrent);
+
+    const bool pinned = index.data(ClipboardListModel::PinnedRole).toBool();
+    QAction *pin = menu.addAction(pinned ? tr("Unpin") : tr("Pin"));
+    connect(pin, &QAction::triggered, this, &MainWindow::togglePinSelected);
+
+    QMenu *groupsMenu = menu.addMenu(tr("Move to group"));
+    for (const BookmarkGroup &group : m_ctx.bookmarks()->groups()) {
+        QAction *action = groupsMenu->addAction(group.name);
+        connect(action, &QAction::triggered, this, [this, id = index.data(ClipboardListModel::IdRole).toLongLong(), groupId = group.id] {
+            m_ctx.bookmarks()->assignEntry(id, groupId);
+        });
+    }
+    QAction *unassign = menu.addAction(tr("Remove from all groups"));
+    connect(unassign, &QAction::triggered, this, [this, id = index.data(ClipboardListModel::IdRole).toLongLong()] {
+        for (const qint64 gid : m_ctx.bookmarks()->groupIdsForEntry(id))
+            m_ctx.bookmarks()->removeFromGroup(id, gid);
+    });
+
+    menu.addSeparator();
+    QAction *remove = menu.addAction(QIcon::fromTheme(QStringLiteral("edit-delete")), tr("Delete"));
+    connect(remove, &QAction::triggered, this, &MainWindow::deleteSelected);
+
+    menu.exec(m_list->viewport()->mapToGlobal(pos));
+}
+
+void MainWindow::openSettings()
+{
+    SettingsDialog dialog(m_ctx, this);
+    dialog.exec();
+    m_delegate->clearGroupCache();
+}
+
+void MainWindow::exportHistory()
+{
+    ExportImportDialogs::ExportDialog dialog(m_ctx.bookmarks(), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    ExportImportManager::ExportRequest request;
+    request.path = dialog.filePath();
+    switch (dialog.scope()) {
+    case ExportImportDialogs::ExportDialog::Everything:
+        request.scope = ExportImportManager::Scope::Everything;
+        break;
+    case ExportImportDialogs::ExportDialog::PinnedOnly:
+        request.scope = ExportImportManager::Scope::PinnedOnly;
+        break;
+    case ExportImportDialogs::ExportDialog::GroupSubtree:
+        request.scope = ExportImportManager::Scope::GroupSubtree;
+        request.groupId = dialog.groupId();
+        break;
+    }
+    QString error;
+    if (m_ctx.io()->exportToFile(request, &error))
+        QMessageBox::information(this, tr("Export finished"),
+                                 tr("History exported to %1.").arg(request.path));
+    else
+        QMessageBox::warning(this, tr("Export failed"), error);
+}
+
+void MainWindow::importHistory()
+{
+    ExportImportDialogs::ImportDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    const auto result = m_ctx.io()->importFromFile(dialog.filePath(), dialog.mode());
+    if (!result.ok) {
+        QMessageBox::warning(this, tr("Import failed"), result.error);
+        return;
+    }
+    QMessageBox::information(
+        this, tr("Import finished"),
+        tr("Imported %1, merged %2, skipped %3 entries; %4 group(s) imported.")
+            .arg(result.entriesImported)
+            .arg(result.entriesMerged)
+            .arg(result.entriesSkipped)
+            .arg(result.groupsImported));
+}
+
+void MainWindow::clearHistory()
+{
+    QMessageBox box(this);
+    box.setWindowTitle(tr("Clear history"));
+    box.setText(tr("Delete the clipboard history?"));
+    box.setStandardButtons(QMessageBox::Yes | QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Cancel);
+    QCheckBox *includePinned = new QCheckBox(tr("Also delete pinned entries"), &box);
+    box.setCheckBox(includePinned);
+    if (box.exec() != QMessageBox::Yes)
+        return;
+    const int removed = m_ctx.storage()->clearHistory(includePinned->isChecked());
+    QMessageBox::information(this, tr("History cleared"),
+                             tr("%n entry(ies) deleted.", nullptr, removed));
+}
+
+void MainWindow::updateActionStates()
+{
+    const bool hasSelection = m_selectedId != 0;
+    m_pasteAction->setEnabled(hasSelection);
+    m_copyAction->setEnabled(hasSelection);
+    m_deleteAction->setEnabled(hasSelection);
+}
+
+void MainWindow::toggleVisibility()
+{
+    if (isVisible()) {
+        hide();
+    } else {
+        repositionCenteredOnActiveScreen();
+        show();
+        raise();
+        activateWindow();
+        m_search->setFocus();
+        m_search->selectAll();
+    }
+}
+
+void MainWindow::repositionCenteredOnActiveScreen()
+{
+    QScreen *screen = QGuiApplication::screenAt(QCursor::pos());
+    if (!screen)
+        screen = QGuiApplication::primaryScreen();
+    if (!screen)
+        return;
+    const QRect available = screen->availableGeometry();
+    move(available.center() - QPoint(width() / 2, height() / 2));
+}
+
+void MainWindow::keyPressEvent(QKeyEvent *event)
+{
+    switch (event->key()) {
+    case Qt::Key_Escape:
+        hide();
+        event->accept();
+        return;
+    case Qt::Key_F: {
+        if (event->modifiers() == Qt::ControlModifier) {
+            m_search->setFocus();
+            m_search->selectAll();
+            event->accept();
+            return;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+    // Numeric shortcuts 1-9: paste the Nth visible entry.
+    if (event->key() >= Qt::Key_1 && event->key() <= Qt::Key_9 && !event->modifiers()) {
+        const int row = event->key() - Qt::Key_1;
+        if (row < m_model->rowCount()) {
+            const qint64 id = m_model->data(m_model->index(row, 0),
+                                            ClipboardListModel::IdRole).toLongLong();
+            if (id != 0) {
+                pasteEntry(id);
+                event->accept();
+                return;
+            }
+        }
+    }
+    QMainWindow::keyPressEvent(event);
+}
+
+void MainWindow::changeEvent(QEvent *event)
+{
+    QMainWindow::changeEvent(event);
+    // Optional popup-like behaviour: hide when the window loses activation.
+    if (event->type() == QEvent::ActivationChange && isActiveWindow() == false
+        && m_ctx.settings()->hideOnFocusOut() && isVisible()) {
+        // Don't hide while a modal dialog we spawned is working.
+        if (QApplication::activeModalWidget() == nullptr
+            && QApplication::activePopupWidget() == nullptr)
+            hide();
+    }
+}
