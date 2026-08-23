@@ -11,6 +11,8 @@ private slots:
     void rejectsInvalidCardNumbers();
     void detectsCredentials();
     void detectsTokens();
+    void detectsMultipleFindings();
+    void detectsAdditionalCardFormats();
     void ignoresNormalText();
 };
 
@@ -46,6 +48,26 @@ void TestSensitive::detectsTokens()
     QVERIFY(SensitiveDataDetector::isSensitive(QStringLiteral("Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N65LhO3ZQ")));
     QVERIFY(SensitiveDataDetector::isSensitive(
         QStringLiteral("-----BEGIN RSA PRIVATE KEY-----")));
+}
+
+void TestSensitive::detectsMultipleFindings()
+{
+    const QString text = QStringLiteral(
+        "password=hunter2, key=AKIAIOSFODNN7EXAMPLE, card=5555 5555 5555 4444");
+    const auto findings = SensitiveDataDetector::scan(text);
+    QVERIFY(findings.size() >= 3);
+
+    const QStringList kinds = SensitiveDataDetector::kinds(text);
+    QVERIFY(kinds.contains(QStringLiteral("credential")));
+    QVERIFY(kinds.contains(QStringLiteral("aws-key")));
+    QVERIFY(kinds.contains(QStringLiteral("creditcard")));
+}
+
+void TestSensitive::detectsAdditionalCardFormats()
+{
+    // Known Luhn-valid Mastercard and American Express test numbers.
+    QVERIFY(SensitiveDataDetector::isSensitive(QStringLiteral("5555555555554444")));
+    QVERIFY(SensitiveDataDetector::isSensitive(QStringLiteral("378282246310005")));
 }
 
 void TestSensitive::ignoresNormalText()

@@ -20,6 +20,10 @@ private slots:
     void pinnedAndRemove();
     void diskCap();
     void emitsHistorySignals();
+    void modelRefreshesOnHistoryChanges();
+    void binaryPayloadAndMetadata();
+    void searchEscapesLikeCharacters();
+    void diskCapPreservesPinnedEntries();
 
 private:
     ClipboardRecord makeRecord(const QByteArray &hash, const QString &text, qint64 timestamp);
@@ -202,6 +206,91 @@ void TestStorage::emitsHistorySignals()
     QCOMPARE(addedSpy.count(), 1);
     QCOMPARE(touchedSpy.count(), 1);
     QCOMPARE(touchedSpy.at(0).at(0).toLongLong(), id);
+}
+
+void TestStorage::modelRefreshesOnHistoryChanges()
+{
+    ClipboardListModel model(m_storage);
+    QCOMPARE(model.rowCount(), 0);
+
+    const qint64 id = m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("model"), QStringLiteral("first"), 1000));
+    QTRY_COMPARE(model.rowCount(), 1);
+    QCOMPARE(model.idAt(0), id);
+    QCOMPARE(model.recordAt(0).preview, QStringLiteral("first"));
+
+    m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("model"), QStringLiteral("first"), 2000));
+    QTRY_COMPARE(model.rowCount(), 1);
+    QCOMPARE(model.recordAt(0).timestamp, qint64(2000));
+}
+
+void TestStorage::binaryPayloadAndMetadata()
+{
+    ClipboardRecord image;
+    image.hash = QByteArrayLiteral("image");
+    image.type = ContentType::Image;
+    image.blobData = QByteArray::fromHex(QByteArrayLiteral("89504e47"));
+    image.hasBlob = true;
+    image.preview = QStringLiteral("Image 1x1");
+    image.sizeBytes = image.blobData.size();
+    image.timestamp = 1234;
+    image.sourceApp = QStringLiteral("spectacle");
+    image.sourceWindow = QStringLiteral("Screenshot");
+
+    const qint64 id = m_storage->insertOrUpdate(image);
+    QVERIFY(id > 0);
+    QCOMPARE(m_storage->stats().imageCount, qint64(1));
+
+    const auto summary = m_storage->fetchPage(FilterSpec{}, {}, 10);
+    QCOMPARE(summary.size(), 1);
+    QVERIFY(summary.first().hasBlob);
+
+    ClipboardRecord full;
+    QVERIFY(m_storage->fetchFull(id, &full));
+    QCOMPARE(full.type, ContentType::Image);
+    QCOMPARE(full.blobData, image.blobData);
+    QCOMPARE(full.sourceApp, image.sourceApp);
+    QCOMPARE(full.sourceWindow, image.sourceWindow);
+}
+
+void TestStorage::searchEscapesLikeCharacters()
+{
+    m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("percent"), QStringLiteral("literal % marker"), 1000));
+    m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("underscore"), QStringLiteral("literal _ marker"), 2000));
+    m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("slash"), QStringLiteral("literal \\ marker"), 3000));
+
+    FilterSpec filter;
+    filter.searchText = QStringLiteral("%");
+    QCOMPARE(m_storage->fetchPage(filter, {}, 10).size(), 1);
+    filter.searchText = QStringLiteral("_");
+    QCOMPARE(m_storage->fetchPage(filter, {}, 10).size(), 1);
+    filter.searchText = QStringLiteral("\\");
+    QCOMPARE(m_storage->fetchPage(filter, {}, 10).size(), 1);
+}
+
+void TestStorage::diskCapPreservesPinnedEntries()
+{
+    ClipboardRecord pinned = makeRecord(QByteArrayLiteral("pinned"), QStringLiteral("1234567890"), 1000);
+    pinned.sizeBytes = 10;
+    const qint64 pinnedId = m_storage->insertOrUpdate(pinned);
+    QVERIFY(m_storage->setPinned(pinnedId, true));
+
+    for (int i = 0; i < 2; ++i) {
+        ClipboardRecord record = makeRecord(QByteArrayLiteral("cap-") + QByteArray::number(i),
+                                            QStringLiteral("1234567890"), 2000 + i);
+        record.sizeBytes = 10;
+        m_storage->insertOrUpdate(record);
+    }
+
+    m_storage->enforceDiskCap(15);
+    QVERIFY(m_storage->stats().totalBytes <= 15);
+    ClipboardRecord full;
+    QVERIFY(m_storage->fetchFull(pinnedId, &full));
+    QVERIFY(full.pinned);
 }
 
 QTEST_GUILESS_MAIN(TestStorage)

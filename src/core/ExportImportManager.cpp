@@ -245,7 +245,7 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode)
 
     QHash<qint64, qint64> groupIdMap; // imported id -> local id
     const auto localGroups = [this]() { return m_bookmarks->groups(); };
-    for (const BookmarkGroup &imported : importedGroups) {
+    const auto importGroup = [&](const BookmarkGroup &imported, qint64 parentId) {
         const QString path = groupPath(importedGroups, imported.id);
         const QVector<BookmarkGroup> existing = localGroups();
         std::optional<qint64> match;
@@ -257,15 +257,43 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode)
         }
         if (match.has_value()) {
             groupIdMap.insert(imported.id, *match);
-            continue;
+            return;
         }
-        const qint64 parentId = groupIdMap.value(imported.parentId, 0);
         const qint64 created =
             m_bookmarks->createGroup(imported.name, parentId, imported.color, imported.icon);
         if (created != 0) {
             groupIdMap.insert(imported.id, created);
             ++result.groupsImported;
         }
+    };
+
+    // The JSON array is name-ordered, so a child may appear before its
+    // parent. Process imported groups in dependency order to preserve the
+    // hierarchy regardless of serialization order.
+    QSet<qint64> pendingGroupIds;
+    for (const BookmarkGroup &group : importedGroups)
+        pendingGroupIds.insert(group.id);
+
+    bool madeProgress = true;
+    while (!pendingGroupIds.isEmpty() && madeProgress) {
+        madeProgress = false;
+        for (const BookmarkGroup &imported : importedGroups) {
+            if (!pendingGroupIds.contains(imported.id))
+                continue;
+            if (imported.parentId != 0 && pendingGroupIds.contains(imported.parentId))
+                continue;
+
+            importGroup(imported, groupIdMap.value(imported.parentId, 0));
+            pendingGroupIds.remove(imported.id);
+            madeProgress = true;
+        }
+    }
+
+    // Malformed files may contain parent references to missing groups. Keep
+    // those groups importable as top-level entries instead of dropping them.
+    for (const BookmarkGroup &imported : importedGroups) {
+        if (pendingGroupIds.contains(imported.id))
+            importGroup(imported, 0);
     }
 
     // --- entries -------------------------------------------------------------

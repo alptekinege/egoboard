@@ -18,6 +18,9 @@ private slots:
     void exportImportRoundTrip();
     void mergeKeepsNewerTimestamp();
     void overwriteReplacesEverything();
+    void skipDuplicates();
+    void pinnedOnlyExport();
+    void groupSubtreePreservesHierarchy();
 
 private:
     void seed(StorageManager *storage, BookmarkManager *bookmarks);
@@ -166,6 +169,94 @@ void TestExportImport::overwriteReplacesEverything()
     const auto result = m_io->importFromFile(path, ExportImportManager::ImportMode::Overwrite);
     QVERIFY2(result.ok, qPrintable(result.error));
     QCOMPARE(m_storage->stats().entryCount, qint64(3)); // local-only entry gone
+}
+
+void TestExportImport::skipDuplicates()
+{
+    seed(m_storage, m_bookmarks);
+    const QString path = m_dir.filePath(QStringLiteral("skip.json"));
+    ExportImportManager::ExportRequest request;
+    request.path = path;
+    QVERIFY(m_io->exportToFile(request));
+
+    const auto result = m_io->importFromFile(path, ExportImportManager::ImportMode::SkipDuplicates);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.entriesImported, 0);
+    QCOMPARE(result.entriesSkipped, 3);
+    QCOMPARE(m_storage->stats().entryCount, qint64(3));
+}
+
+void TestExportImport::pinnedOnlyExport()
+{
+    seed(m_storage, m_bookmarks);
+    ClipboardRecord first;
+    const auto rows = m_storage->fetchAll(FilterSpec{});
+    QVERIFY(!rows.isEmpty());
+    QVERIFY(m_storage->fetchFull(rows.last().id, &first));
+    QVERIFY(m_storage->setPinned(first.id, true));
+
+    const QString path = m_dir.filePath(QStringLiteral("pinned.json"));
+    ExportImportManager::ExportRequest request;
+    request.scope = ExportImportManager::Scope::PinnedOnly;
+    request.path = path;
+    QVERIFY(m_io->exportToFile(request));
+
+    init();
+    const auto result = m_io->importFromFile(path, ExportImportManager::ImportMode::Merge);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.entriesImported, 1);
+    QCOMPARE(m_storage->stats().entryCount, qint64(1));
+
+    ClipboardRecord imported;
+    const auto importedRows = m_storage->fetchAll(FilterSpec{});
+    QVERIFY(m_storage->fetchFull(importedRows.first().id, &imported));
+    QVERIFY(imported.pinned);
+}
+
+void TestExportImport::groupSubtreePreservesHierarchy()
+{
+    ClipboardRecord record;
+    record.hash = QByteArrayLiteral("subtree-entry");
+    record.type = ContentType::Text;
+    record.textData = QStringLiteral("subtree payload");
+    record.preview = record.textData;
+    record.timestamp = 1000;
+    const qint64 entryId = m_storage->insertOrUpdate(record);
+
+    // Names intentionally sort child before parent to exercise import ordering.
+    const qint64 root = m_bookmarks->createGroup(QStringLiteral("Zebra"));
+    const qint64 child = m_bookmarks->createGroup(QStringLiteral("Alpha"), root);
+    const qint64 outside = m_bookmarks->createGroup(QStringLiteral("Outside"));
+    QVERIFY(m_bookmarks->assignEntry(entryId, child));
+    QVERIFY(outside > 0);
+
+    const QString path = m_dir.filePath(QStringLiteral("subtree.json"));
+    ExportImportManager::ExportRequest request;
+    request.scope = ExportImportManager::Scope::GroupSubtree;
+    request.groupId = root;
+    request.path = path;
+    QVERIFY(m_io->exportToFile(request));
+
+    init();
+    const auto result = m_io->importFromFile(path, ExportImportManager::ImportMode::Merge);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.entriesImported, 1);
+
+    const auto groups = m_bookmarks->groups();
+    QCOMPARE(groups.size(), 2);
+    std::optional<BookmarkGroup> importedRoot;
+    std::optional<BookmarkGroup> importedChild;
+    for (const BookmarkGroup &group : groups) {
+        if (group.name == QStringLiteral("Zebra"))
+            importedRoot = group;
+        if (group.name == QStringLiteral("Alpha"))
+            importedChild = group;
+    }
+    QVERIFY(importedRoot.has_value());
+    QVERIFY(importedChild.has_value());
+    QCOMPARE(importedRoot->parentId, qint64(0));
+    QCOMPARE(importedChild->parentId, importedRoot->id);
+    QCOMPARE(m_bookmarks->entryCount(importedChild->id), 1);
 }
 
 QTEST_GUILESS_MAIN(TestExportImport)

@@ -4,6 +4,7 @@
 #include "StorageManager.h"
 
 #include <QRandomGenerator>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 
 class TestBookmarks : public QObject
@@ -16,6 +17,8 @@ private slots:
     void cyclePrevention();
     void membership();
     void deleteGroupReparents();
+    void signalsAndForeignKeys();
+    void deepCyclePrevention();
 
 private:
     QTemporaryDir m_dir;
@@ -108,6 +111,44 @@ void TestBookmarks::deleteGroupReparents()
     const auto orphan = m_bookmarks->group(child);
     QVERIFY(orphan.has_value());
     QCOMPARE(orphan->parentId, qint64(0));
+}
+
+void TestBookmarks::signalsAndForeignKeys()
+{
+    QSignalSpy groupsSpy(m_bookmarks, &BookmarkManager::groupsChanged);
+    QSignalSpy membershipSpy(m_bookmarks, &BookmarkManager::membershipChanged);
+
+    const qint64 group = m_bookmarks->createGroup(QStringLiteral("Signals"));
+    QVERIFY(group > 0);
+    QCOMPARE(groupsSpy.count(), 1);
+
+    QVERIFY(!m_bookmarks->assignEntry(9999, group));
+    QCOMPARE(membershipSpy.count(), 0);
+
+    ClipboardRecord record;
+    record.hash = QByteArrayLiteral("signal-entry");
+    record.textData = QStringLiteral("entry");
+    record.preview = record.textData;
+    record.timestamp = 1;
+    const qint64 entryId = m_storage->insertOrUpdate(record);
+    QVERIFY(m_bookmarks->assignEntry(entryId, group));
+    QCOMPARE(membershipSpy.count(), 1);
+    QCOMPARE(membershipSpy.at(0).at(0).toLongLong(), entryId);
+}
+
+void TestBookmarks::deepCyclePrevention()
+{
+    const qint64 root = m_bookmarks->createGroup(QStringLiteral("Root"));
+    const qint64 child = m_bookmarks->createGroup(QStringLiteral("Child"), root);
+    const qint64 grandchild = m_bookmarks->createGroup(QStringLiteral("Grandchild"), child);
+
+    QVERIFY(!m_bookmarks->moveGroup(root, grandchild));
+    QVERIFY(!m_bookmarks->moveGroup(child, grandchild));
+    QVERIFY(m_bookmarks->moveGroup(grandchild, 0));
+
+    const auto moved = m_bookmarks->group(grandchild);
+    QVERIFY(moved.has_value());
+    QCOMPARE(moved->parentId, qint64(0));
 }
 
 QTEST_GUILESS_MAIN(TestBookmarks)
