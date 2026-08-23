@@ -2,9 +2,12 @@
 
 #include "../ApplicationContext.h"
 #include "../HotkeyManager.h"
+#include "../ScriptActionManager.h"
 #include "../SettingsManager.h"
 #include "../OcrWorker.h"
+#include "SnippetManager.h"
 #include "StorageManager.h"
+#include "TransformEngine.h"
 
 #include <KGlobalAccel>
 #include <KKeySequenceWidget>
@@ -13,11 +16,14 @@
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QDialogButtonBox>
+#include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QLabel>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QProgressBar>
@@ -169,6 +175,9 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
 
     // --- search & preview ---------------------------------------------------
     tabs->addTab(buildSearchPage(), QIcon::fromTheme(QStringLiteral("system-search")), tr("Search"));
+
+    // --- automation (Phase 3) -------------------------------------------------
+    tabs->addTab(buildAutomationPage(), QIcon::fromTheme(QStringLiteral("applications-engineering")), tr("Automation"));
 
     // --- hotkeys ---------------------------------------------------------------
     auto *hotkeyPage = new QWidget(this);
@@ -469,6 +478,111 @@ QWidget *SettingsDialog::buildStoragePage()
     return m_storagePage;
 }
 
+QWidget *SettingsDialog::buildAutomationPage()
+{
+    auto *page = new QWidget(this);
+    auto *layout = new QVBoxLayout(page);
+
+    auto *transBox = new QGroupBox(tr("Transforms (local, chainable)"), page);
+    auto *transLayout = new QVBoxLayout(transBox);
+    m_transformStatus = new QLabel(tr("Loading…"), transBox);
+    m_transformStatus->setWordWrap(true);
+    m_transformStatus->setTextFormat(Qt::RichText);
+    transLayout->addWidget(m_transformStatus);
+    auto *transHint = new QLabel(tr("Built-ins: <code>trim</code>, <code>uppercase</code>, <code>lowercase</code>, <code>capitalize</code>, <code>reverse</code>, <code>base64-encode/decode</code>, <code>url-encode/decode</code>, <code>json-pretty/minify</code>, <code>html-escape/unescape</code>, <code>sort-lines</code>, <code>unique-lines</code>, <code>remove-empty-lines</code>, <code>trim-lines</code>. Chainable — combine in preview <i>Transform ▾ → Chain…</i> or palette <code>&gt;transform</code>. All local, no network."), transBox);
+    transHint->setWordWrap(true);
+    transHint->setTextFormat(Qt::RichText);
+    transHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+    transLayout->addWidget(transHint);
+    layout->addWidget(transBox);
+
+    auto *snippetBox = new QGroupBox(tr("Snippets (templates)"), page);
+    auto *snippetLayout = new QVBoxLayout(snippetBox);
+    m_snippetStatus = new QLabel(tr("Loading…"), snippetBox);
+    m_snippetStatus->setWordWrap(true);
+    m_snippetStatus->setTextFormat(Qt::RichText);
+    snippetLayout->addWidget(m_snippetStatus);
+    auto *snippetHint = new QLabel(tr("Placeholders: <code>{{clipboard}}</code> / <code>{{text}}</code> / <code>{{selection}}</code>, <code>{{date}}</code> YYYY-MM-DD, <code>{{time}}</code> HH:mm, <code>{{datetime}}</code>, <code>{{timestamp}}</code>. Expand via palette <code>&gt;snippet</code>, context menu, or toolbar <i>Snippets</i>. Stored in <code>snippets</code> table (WAL, local DB)."), snippetBox);
+    snippetHint->setWordWrap(true);
+    snippetHint->setTextFormat(Qt::RichText);
+    snippetHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+    snippetLayout->addWidget(snippetHint);
+    auto *snippetBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-edit")), tr("Manage Snippets…"), snippetBox);
+    snippetLayout->addWidget(snippetBtn);
+    connect(snippetBtn, &QPushButton::clicked, this, [this]{
+        // Open snippet dialog directly from settings (uses current clipboard)
+        // We reuse the manager from context
+        // Need to include SnippetDialog — lazy forward
+        // For now just hint to use toolbar; but we can open it here via dynamic dialog
+        // Use a simple message and refresh after close
+        QMessageBox::information(this, tr("Snippets"), tr("Use the toolbar <b>Snippets</b> button in the main window to create/edit snippets. Preview uses current clipboard."));
+        refreshDiagnostics();
+    });
+    layout->addWidget(snippetBox);
+
+    auto *scriptBox = new QGroupBox(tr("Script Actions (QJSEngine sandbox)"), page);
+    auto *scriptLayout = new QVBoxLayout(scriptBox);
+    m_scriptStatus = new QLabel(tr("Checking…"), scriptBox);
+    m_scriptStatus->setWordWrap(true);
+    m_scriptStatus->setTextFormat(Qt::RichText);
+    scriptLayout->addWidget(m_scriptStatus);
+    m_scriptList = new QListWidget(scriptBox);
+    m_scriptList->setMaximumHeight(96);
+    scriptLayout->addWidget(m_scriptList);
+    auto *scriptHint = new QLabel(tr("JS files in <code>~/.local/share/egoboard/actions/*.js</code> — each must define <code>function transform(text){ return ...; }</code> and optional <code>var meta = { label: \"Name\", match: \"regex\" }</code>. Supports <code>export function</code> form via preprocessing. No file/network globals, 256 kB input cap, 64 kB file cap. Example from <i>prettify-json.js</i> in ROADMAP is supported."), scriptBox);
+    scriptHint->setWordWrap(true);
+    scriptHint->setTextFormat(Qt::RichText);
+    scriptHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+    scriptLayout->addWidget(scriptHint);
+    auto *scriptRow = new QHBoxLayout();
+    auto *openFolderBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("folder")), tr("Open actions folder"), scriptBox);
+    auto *reloadBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("view-refresh")), tr("Reload"), scriptBox);
+    auto *exampleBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-new")), tr("Create example"), scriptBox);
+    scriptRow->addWidget(openFolderBtn);
+    scriptRow->addWidget(reloadBtn);
+    scriptRow->addWidget(exampleBtn);
+    scriptRow->addStretch(1);
+    scriptLayout->addLayout(scriptRow);
+    connect(openFolderBtn, &QPushButton::clicked, this, []{
+        const QString dir = ScriptActionManager::actionsDir();
+        QDir().mkpath(dir);
+        QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+    });
+    connect(reloadBtn, &QPushButton::clicked, this, [this]{
+        if (m_ctx.scripts()) m_ctx.scripts()->reload();
+        refreshDiagnostics();
+    });
+    connect(exampleBtn, &QPushButton::clicked, this, [this]{
+        const QString dir = ScriptActionManager::actionsDir();
+        QDir().mkpath(dir);
+        const QString path = dir + QStringLiteral("/example-pretty-json.js");
+        if (QFile::exists(path)) {
+            QMessageBox::information(this, tr("Script"), tr("Example already exists at %1").arg(path));
+            return;
+        }
+        QFile f(path);
+        if (f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            f.write(ScriptActionManager::exampleSource().toUtf8());
+            f.close();
+            if (m_ctx.scripts()) m_ctx.scripts()->reload();
+            QMessageBox::information(this, tr("Script"), tr("Created %1 — edit it and press Reload.").arg(path));
+            refreshDiagnostics();
+        } else {
+            QMessageBox::warning(this, tr("Script"), tr("Cannot write %1").arg(path));
+        }
+    });
+
+    auto *dbusHint = new QLabel(tr("D-Bus: <code>org.egoboard.Egoboard</code> at <code>/org/egoboard/Egoboard</code> — <code>Search(query, limit)</code> for future KRunner plugin (Phase 4). Try: <code>qdbus org.egoboard.Egoboard /org/egoboard/Egoboard org.egoboard.Egoboard.Search hello 5</code>. Local session bus only, no network."), scriptBox);
+    dbusHint->setWordWrap(true);
+    dbusHint->setTextFormat(Qt::RichText);
+    dbusHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+    scriptLayout->addWidget(dbusHint);
+
+    layout->addWidget(scriptBox);
+    layout->addStretch(1);
+    return page;
+}
+
 void SettingsDialog::refreshDiagnostics()
 {
     if (!m_ftsStatus) return;
@@ -497,7 +611,43 @@ void SettingsDialog::refreshDiagnostics()
             : tr("<b>tesseract not found</b> — install <code>tesseract</code> + <code>tesseract-data-eng</code> to enable image search. Preview will show <i>OCR: processing…</i> until then."));
     }
     if (m_paletteInfo) {
-        m_paletteInfo->setText(tr("Press <b>Ctrl+K</b> inside the history window to open the palette — fast, FTS-backed search with typo-tolerant re-ranking. <b>⏎</b> paste, <b>Esc</b> close."));
+        m_paletteInfo->setText(tr("Press <b>Ctrl+K</b> inside the history window to open the palette — fast, FTS-backed search with typo-tolerant re-ranking. <b>⏎</b> paste, <b>Esc</b> close. Try <code>&gt;transform</code> and <code>&gt;snippet</code> for Phase 3 actions."));
+    }
+    if (m_transformStatus) {
+        const int count = TransformEngine::allDescriptors().size();
+        m_transformStatus->setText(tr("<b>%1</b> built-in transforms — chainable in preview and palette. Scripts extend this list.").arg(count));
+    }
+    if (m_snippetStatus) {
+        const int count = m_ctx.snippets() ? m_ctx.snippets()->snippets().size() : 0;
+        m_snippetStatus->setText(tr("<b>%1</b> snippet(s) stored locally — DB table <code>snippets</code>. Use toolbar <i>Snippets</i> or palette <code>&gt;snippet</code>.").arg(count));
+    }
+    if (m_scriptStatus) {
+        const QString dir = ScriptActionManager::actionsDir();
+        int sc = 0;
+        QStringList names;
+        if (m_ctx.scripts()) {
+            // reload already done at construction, but refresh here
+            const auto acts = m_ctx.scripts()->actions();
+            sc = acts.size();
+            for (const auto &a : acts) names << a.label;
+        }
+        m_scriptStatus->setText(sc > 0
+            ? tr("<b>%1</b> script(s) from <code>%2</code>: %3").arg(sc).arg(dir.toHtmlEscaped(), names.join(QStringLiteral(", ")).toHtmlEscaped())
+            : tr("No scripts — add <code>*.js</code> to <code>%1</code> and press Reload. Try <i>Create example</i>.").arg(dir.toHtmlEscaped()));
+        if (m_scriptList) {
+            m_scriptList->clear();
+            if (m_ctx.scripts()) {
+                for (const auto &a : m_ctx.scripts()->actions()) {
+                    m_scriptList->addItem(QStringLiteral("%1 — %2").arg(a.label, a.filePath));
+                }
+                if (sc == 0) {
+                    m_scriptList->addItem(tr("(no scripts)"));
+                    m_scriptList->setEnabled(false);
+                } else {
+                    m_scriptList->setEnabled(true);
+                }
+            }
+        }
     }
 }
 

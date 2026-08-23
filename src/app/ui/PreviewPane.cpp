@@ -1,18 +1,33 @@
 #include "PreviewPane.h"
 
+#include "CodePreviewHighlighter.h"
+#include "../ScriptActionManager.h"
+#include "TransformChainDialog.h"
+#include "TransformEngine.h"
+
+#include <QApplication>
+#include <QClipboard>
 #include <QDateTime>
+#include <QDesktopServices>
+#include <QDir>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
 #include <QListWidget>
+#include <QMenu>
 #include <QPlainTextEdit>
 #include <QRegularExpression>
 #include <QScrollArea>
 #include <QStackedWidget>
 #include <QTextBrowser>
+#include <QToolButton>
+#include <QUrl>
 #include <QVBoxLayout>
-#include "CodePreviewHighlighter.h"
+#include <QHBoxLayout>
+
+#include "TransformChainDialog.h"
 
 namespace {
 
@@ -63,6 +78,9 @@ PreviewPane::PreviewPane(QWidget *parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
+    buildTransformBar();
+    layout->addWidget(m_transformBar);
+
     m_stack = new QStackedWidget(this);
 
     auto *emptyPage = new QWidget(this);
@@ -87,6 +105,186 @@ PreviewPane::PreviewPane(QWidget *parent)
     layout->addWidget(m_metaLabel);
 
     setMinimumWidth(260);
+}
+
+void PreviewPane::buildTransformBar()
+{
+    m_transformBar = new QWidget(this);
+    auto *bar = new QHBoxLayout(m_transformBar);
+    bar->setContentsMargins(6, 4, 6, 4);
+    bar->setSpacing(6);
+
+    m_transformBtn = new QToolButton(m_transformBar);
+    m_transformBtn->setText(tr("Transform ▾"));
+    m_transformBtn->setPopupMode(QToolButton::InstantPopup);
+    m_transformBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_transformBtn->setToolTip(tr("Apply local transforms (built-in + JS scripts in ~/.local/share/egoboard/actions/) — no network"));
+    bar->addWidget(m_transformBtn);
+
+    m_copyResultBtn = new QToolButton(m_transformBar);
+    m_copyResultBtn->setText(tr("Copy Result"));
+    m_copyResultBtn->setToolTip(tr("Copy transformed text to clipboard"));
+    m_copyResultBtn->setVisible(false);
+    connect(m_copyResultBtn, &QToolButton::clicked, this, [this]{
+        const QString t = m_textEdit->toPlainText();
+        if (!t.isEmpty()) {
+            QGuiApplication::clipboard()->setText(t);
+            m_transformStatus->setText(tr("Copied ✓"));
+        }
+    });
+    bar->addWidget(m_copyResultBtn);
+
+    m_revertBtn = new QToolButton(m_transformBar);
+    m_revertBtn->setText(tr("Revert"));
+    m_revertBtn->setToolTip(tr("Show original text"));
+    m_revertBtn->setVisible(false);
+    connect(m_revertBtn, &QToolButton::clicked, this, [this]{
+        if (!m_current.isValid()) return;
+        // Restore original preview logic (re-run showRecord without transform)
+        m_isTransformed = false;
+        m_copyResultBtn->setVisible(false);
+        m_revertBtn->setVisible(false);
+        m_transformStatus->clear();
+        showRecord(m_current);
+    });
+    bar->addWidget(m_revertBtn);
+
+    m_transformStatus = new QLabel(m_transformBar);
+    m_transformStatus->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+    m_transformStatus->setWordWrap(true);
+    bar->addWidget(m_transformStatus, 1);
+
+    // Build initial menu
+    refreshTransformMenu();
+    m_transformBar->setVisible(false);
+}
+
+void PreviewPane::refreshTransformMenu()
+{
+    auto *menu = new QMenu(m_transformBtn);
+    // Built-ins
+    for (const auto &d : TransformEngine::allDescriptors()) {
+        QAction *a = menu->addAction(d.label);
+        a->setToolTip(d.description + QStringLiteral("  (") + d.name + QStringLiteral(")"));
+        connect(a, &QAction::triggered, this, [this, id = d.id]{ applyBuiltin(static_cast<int>(id)); });
+    }
+    menu->addSeparator();
+    // Scripts
+    if (m_scripts) {
+        m_scripts->reload();
+        const auto acts = m_scripts->actions();
+        if (!acts.isEmpty()) {
+            for (const auto &sa : acts) {
+                QAction *a = menu->addAction(QStringLiteral("[JS] %1").arg(sa.label));
+                a->setToolTip(sa.filePath);
+                connect(a, &QAction::triggered, this, [this, id = sa.id]{ applyScript(id); });
+            }
+        } else {
+            QAction *a = menu->addAction(tr("(no JS actions)"));
+            a->setEnabled(false);
+        }
+        menu->addSeparator();
+    }
+    QAction *chain = menu->addAction(QIcon::fromTheme(QStringLiteral("view-refresh")), tr("Chain… (combine multiple)"));
+    chain->setToolTip(tr("Open chain dialog — combine transforms, live preview, copy result"));
+    connect(chain, &QAction::triggered, this, &PreviewPane::openChainDialog);
+
+    QAction *openFolder = menu->addAction(QIcon::fromTheme(QStringLiteral("folder")), tr("Open actions folder…"));
+    connect(openFolder, &QAction::triggered, this, []{
+        const QString dir = ScriptActionManager::actionsDir();
+        QDir().mkpath(dir);
+        // Use openUrl for folder
+        QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+    });
+
+    m_transformBtn->setMenu(menu);
+}
+
+void PreviewPane::applyBuiltin(int transformIndex)
+{
+    auto id = static_cast<TransformEngine::TransformId>(transformIndex);
+    QString input;
+    if (m_isTransformed) {
+        // Chain from current transformed view or original? Use original for single-step clarity
+        input = m_originalText;
+    } else {
+        input = m_current.textData.isEmpty() ? m_current.preview : m_current.textData;
+        if (input.isEmpty() && m_textEdit) input = m_textEdit->toPlainText();
+    }
+    if (input.isEmpty()) {
+        m_transformStatus->setText(tr("Nothing to transform"));
+        return;
+    }
+    if (input.size() > 256 * 1024) {
+        m_transformStatus->setText(tr("Text too large for transform"));
+        return;
+    }
+    const auto r = TransformEngine::apply(id, input);
+    if (!r.ok) {
+        m_transformStatus->setText(tr("Error: %1").arg(r.error));
+        return;
+    }
+    m_originalText = input;
+    m_isTransformed = true;
+    m_textEdit->setPlainText(r.output);
+    // Highlight as plain if JSON pretty produced JSON, keep highlighter mode
+    // Do not change stack — stay on text page
+    m_stack->setCurrentWidget(m_textEdit->parentWidget());
+    m_copyResultBtn->setVisible(true);
+    m_revertBtn->setVisible(true);
+    m_transformStatus->setText(tr("Applied: %1").arg(TransformEngine::labelForId(id)));
+    emit copyToClipboardRequested(r.output);
+}
+
+void PreviewPane::applyScript(const QString &id)
+{
+    if (!m_scripts) return;
+    QString input;
+    if (m_isTransformed) input = m_originalText;
+    else input = m_current.textData.isEmpty() ? m_current.preview : m_current.textData;
+    if (input.isEmpty() && m_textEdit) input = m_textEdit->toPlainText();
+    if (input.isEmpty()) {
+        m_transformStatus->setText(tr("Nothing to transform"));
+        return;
+    }
+    const auto r = m_scripts->apply(id, input);
+    if (!r.ok) {
+        m_transformStatus->setText(tr("Script error: %1").arg(r.error));
+        return;
+    }
+    m_originalText = input;
+    m_isTransformed = true;
+    m_textEdit->setPlainText(r.output);
+    m_stack->setCurrentWidget(m_textEdit->parentWidget());
+    m_copyResultBtn->setVisible(true);
+    m_revertBtn->setVisible(true);
+    m_transformStatus->setText(tr("Applied script: %1").arg(id));
+    emit copyToClipboardRequested(r.output);
+}
+
+void PreviewPane::openChainDialog()
+{
+    QString input = m_current.textData.isEmpty() ? m_current.preview : m_current.textData;
+    if (input.isEmpty() && m_textEdit) input = m_textEdit->toPlainText();
+    if (input.isEmpty()) {
+        m_transformStatus->setText(tr("Nothing to transform"));
+        return;
+    }
+    TransformChainDialog dlg(input, m_scripts, this);
+    if (dlg.exec() == QDialog::Accepted) {
+        const QString out = dlg.resultText();
+        m_originalText = input;
+        m_isTransformed = true;
+        m_textEdit->setPlainText(out);
+        m_stack->setCurrentWidget(m_textEdit->parentWidget());
+        m_copyResultBtn->setVisible(true);
+        m_revertBtn->setVisible(true);
+        m_transformStatus->setText(tr("Chain applied — %1 chars").arg(out.size()));
+        if (!out.isEmpty()) {
+            QGuiApplication::clipboard()->setText(out);
+            m_transformStatus->setText(tr("Chain applied — copied ✓"));
+        }
+    }
 }
 
 QWidget *PreviewPane::pageText()
@@ -139,11 +337,35 @@ void PreviewPane::showEmpty(const QString &message)
 {
     m_emptyLabel->setText(message.isEmpty() ? tr("Select an entry to preview") : message);
     m_stack->setCurrentWidget(m_emptyLabel->parentWidget());
+    m_transformBar->setVisible(false);
+    m_isTransformed = false;
+    m_copyResultBtn->setVisible(false);
+    m_revertBtn->setVisible(false);
+    m_transformStatus->clear();
+    m_current = {};
     setMeta({});
 }
 
 void PreviewPane::showRecord(const ClipboardRecord &record)
 {
+    // If we're showing a transformed view, stash original first call
+    const bool wasTransformed = m_isTransformed;
+    if (!wasTransformed) {
+        m_current = record;
+        m_originalText = record.textData.isEmpty() ? record.preview : record.textData;
+        m_copyResultBtn->setVisible(false);
+        m_revertBtn->setVisible(false);
+        m_transformStatus->clear();
+    } else {
+        // User navigated while transformed — reset transform state for new record
+        m_isTransformed = false;
+        m_current = record;
+        m_originalText = record.textData.isEmpty() ? record.preview : record.textData;
+        m_copyResultBtn->setVisible(false);
+        m_revertBtn->setVisible(false);
+        m_transformStatus->clear();
+    }
+
     const QDateTime timestamp = QDateTime::fromMSecsSinceEpoch(record.timestamp);
     QStringList meta;
     meta << QLocale::system().toString(timestamp, QLocale::ShortFormat);
@@ -155,6 +377,11 @@ void PreviewPane::showRecord(const ClipboardRecord &record)
     if (record.useCount > 0)
         meta << tr("pasted %1×").arg(record.useCount + 1);
     QString extraMeta;
+
+    // Transform bar visible only for text-like entries
+    const bool isTextLike = (record.type == ContentType::Text || record.type == ContentType::RichText);
+    m_transformBar->setVisible(isTextLike);
+    if (isTextLike) refreshTransformMenu();
 
     switch (record.type) {
     case ContentType::Text: {

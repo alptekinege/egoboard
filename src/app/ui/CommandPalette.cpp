@@ -2,6 +2,9 @@
 
 #include "ClipboardListModel.h"
 #include "IClipboardStorage.h"
+#include "SnippetManager.h"
+#include "TransformEngine.h"
+#include "../ScriptActionManager.h"
 
 #include <QAbstractListModel>
 #include <QApplication>
@@ -22,13 +25,56 @@ public:
     explicit PaletteModel(QObject *parent = nullptr) : QAbstractListModel(parent) {}
     void setRecords(const QVector<ClipboardRecord> &recs, const QString &query) {
         beginResetModel();
+        m_mode = Mode::History;
         m_recs = recs;
         m_query = query;
+        m_transforms.clear();
+        m_snippets.clear();
         endResetModel();
     }
-    int rowCount(const QModelIndex &p = {}) const override { return p.isValid() ? 0 : m_recs.size(); }
+    void setTransforms(const QVector<TransformItem> &items, const QString &query) {
+        beginResetModel();
+        m_mode = Mode::Transforms;
+        m_transforms = items;
+        m_query = query;
+        m_recs.clear();
+        m_snippets.clear();
+        endResetModel();
+    }
+    void setSnippets(const QVector<SnippetItem> &items, const QString &query) {
+        beginResetModel();
+        m_mode = Mode::Snippets;
+        m_snippets = items;
+        m_query = query;
+        m_recs.clear();
+        m_transforms.clear();
+        endResetModel();
+    }
+    int rowCount(const QModelIndex &p = {}) const override {
+        if (p.isValid()) return 0;
+        if (m_mode == Mode::Transforms) return m_transforms.size();
+        if (m_mode == Mode::Snippets) return m_snippets.size();
+        return m_recs.size();
+    }
     QVariant data(const QModelIndex &idx, int role) const override {
-        if (!idx.isValid() || idx.row() >= m_recs.size()) return {};
+        if (!idx.isValid()) return {};
+        if (m_mode == Mode::Transforms) {
+            if (idx.row() >= m_transforms.size()) return {};
+            const auto &t = m_transforms.at(idx.row());
+            if (role == Qt::DisplayRole) return QStringLiteral("%1 — %2").arg(t.label, t.desc);
+            if (role == Qt::UserRole) return t.name;
+            if (role == Qt::UserRole + 1) return t.label;
+            return {};
+        }
+        if (m_mode == Mode::Snippets) {
+            if (idx.row() >= m_snippets.size()) return {};
+            const auto &s = m_snippets.at(idx.row());
+            if (role == Qt::DisplayRole) return QStringLiteral("%1 — %2").arg(s.name, s.templateText.left(80).replace(QLatin1Char('\n'), QLatin1Char(' ')));
+            if (role == Qt::UserRole) return s.id;
+            if (role == Qt::UserRole + 1) return s.name;
+            return {};
+        }
+        if (idx.row() >= m_recs.size()) return {};
         const auto &r = m_recs.at(idx.row());
         if (role == Qt::DisplayRole) return r.preview.isEmpty() ? QStringLiteral("—") : r.preview;
         if (role == Qt::UserRole) return r.id;
@@ -38,7 +84,10 @@ public:
         return {};
     }
 private:
+    Mode m_mode = Mode::History;
     QVector<ClipboardRecord> m_recs;
+    QVector<TransformItem> m_transforms;
+    QVector<SnippetItem> m_snippets;
     QString m_query;
 };
 
@@ -56,7 +105,7 @@ CommandPalette::CommandPalette(IClipboardStorage *storage, QWidget *parent)
     layout->setSpacing(8);
 
     m_input = new QLineEdit(this);
-    m_input->setPlaceholderText(tr("Type to search history…  •  Try  >pin  >copy  >delete"));
+    m_input->setPlaceholderText(tr("Type to search history…  •  >transform  >snippet  •  >pin etc."));
     m_input->setClearButtonEnabled(true);
     QFont f = m_input->font();
     f.setPointSizeF(f.pointSizeF() + 1.5);
@@ -115,11 +164,92 @@ void CommandPalette::refreshResults(const QString &query)
     if (!m_storage) return;
 
     const QString trimmed = query.trimmed();
-    // Command mode: >pin, >copy, >delete etc. For now treat as no-op hint.
     const bool isCommand = trimmed.startsWith(QLatin1Char('>'));
 
+    if (isCommand) {
+        QString after = trimmed.mid(1).trimmed();
+        // Split command + args
+        QString cmd;
+        QString args;
+        const int sp = after.indexOf(QLatin1Char(' '));
+        if (sp >= 0) {
+            cmd = after.left(sp).trimmed().toLower();
+            args = after.mid(sp + 1).trimmed();
+        } else {
+            cmd = after.toLower();
+            args = {};
+        }
+
+        // Normalize aliases
+        const bool isTransform = (cmd == QStringLiteral("transform") || cmd == QStringLiteral("t") || cmd == QStringLiteral("tr") || cmd.startsWith(QStringLiteral("transform")) || cmd == QStringLiteral("xform"));
+        const bool isSnippet = (cmd == QStringLiteral("snippet") || cmd == QStringLiteral("s") || cmd == QStringLiteral("snip") || cmd.startsWith(QStringLiteral("snippet")));
+
+        if (isTransform || cmd.isEmpty()) {
+            // If bare ">" with no command, show hint but also treat as transform? We show history hint.
+            if (cmd.isEmpty() && args.isEmpty()) {
+                // Show all transforms as preview? Instead show history with hint
+                // Fall through to history hint handling below — but we set mode to Transforms with no filter still useful
+                // We'll show transforms when cmd empty? Better show hint only.
+                // For now if user typed just ">", show transform+snippet hint in updateHint, but keep history results
+            }
+            if (isTransform) {
+                m_mode = Mode::Transforms;
+                QVector<TransformItem> items;
+                const QString filter = args.toLower();
+                for (const auto &d : TransformEngine::allDescriptors()) {
+                    if (!filter.isEmpty() && !d.label.toLower().contains(filter) && !d.name.contains(filter) && !d.description.toLower().contains(filter))
+                        continue;
+                    items.append({d.name, d.label, d.description});
+                }
+                if (m_scripts) {
+                    // reload to pick up new files
+                    m_scripts->reload();
+                    for (const auto &sa : m_scripts->actions()) {
+                        if (!filter.isEmpty() && !sa.label.toLower().contains(filter) && !sa.id.toLower().contains(filter))
+                            continue;
+                        items.append({sa.id, QStringLiteral("[JS] %1").arg(sa.label), sa.filePath});
+                    }
+                }
+                // Also if filter empty show all; if no matches show empty
+                m_transformItems = items;
+                m_model->setTransforms(m_transformItems, trimmed);
+                if (!m_transformItems.isEmpty())
+                    m_list->setCurrentIndex(m_model->index(0, 0));
+                updateHint();
+                return;
+            }
+        }
+        if (isSnippet) {
+            m_mode = Mode::Snippets;
+            QVector<SnippetItem> items;
+            const QString filter = args.toLower();
+            if (m_snippets) {
+                for (const auto &s : m_snippets->snippets()) {
+                    if (!filter.isEmpty() && !s.name.toLower().contains(filter) && !s.templateText.toLower().contains(filter))
+                        continue;
+                    items.append({s.id, s.name, s.templateText});
+                }
+            }
+            m_snippetItems = items;
+            m_model->setSnippets(m_snippetItems, trimmed);
+            if (!m_snippetItems.isEmpty())
+                m_list->setCurrentIndex(m_model->index(0, 0));
+            updateHint();
+            return;
+        }
+        // Unknown command like >pin, >copy — treat as history but hint will show commands
+        // Fall through to history with original query stripped? Keep history empty for unknown command
+        m_mode = Mode::History;
+        m_results.clear();
+        m_model->setRecords(m_results, trimmed);
+        updateHint();
+        return;
+    }
+
+    // History mode
+    m_mode = Mode::History;
     FilterSpec filter;
-    if (!isCommand && !trimmed.isEmpty())
+    if (!trimmed.isEmpty())
         filter.searchText = trimmed;
 
     // Palette shows top 30, ordered by recency (StorageManager handles FTS5).
@@ -127,8 +257,7 @@ void CommandPalette::refreshResults(const QString &query)
     QVector<ClipboardRecord> scored = page;
 
     // Light secondary fuzzy re-rank when query is short (typo tolerance).
-    if (!isCommand && trimmed.size() >= 2 && trimmed.size() <= 6 && !scored.isEmpty()) {
-        // Simple fuzzy: boost exact substring matches
+    if (trimmed.size() >= 2 && trimmed.size() <= 6 && !scored.isEmpty()) {
         std::stable_sort(scored.begin(), scored.end(), [&](const ClipboardRecord &a, const ClipboardRecord &b){
             return fuzzyScore(trimmed, a.preview) > fuzzyScore(trimmed, b.preview);
         });
@@ -143,15 +272,29 @@ void CommandPalette::refreshResults(const QString &query)
 
 void CommandPalette::updateHint()
 {
+    if (m_mode == Mode::Transforms) {
+        if (m_transformItems.isEmpty())
+            m_hint->setText(tr("No transforms match — try fewer letters. Built-ins + JS scripts from ~/.local/share/egoboard/actions/"));
+        else
+            m_hint->setText(tr("%1 transform(s) — ⏎ apply to selected entry / clipboard  •  Esc close  •  Type >snippet to switch").arg(m_transformItems.size()));
+        return;
+    }
+    if (m_mode == Mode::Snippets) {
+        if (m_snippetItems.isEmpty())
+            m_hint->setText(tr("No snippets match — create via toolbar Snippets. Placeholders: {{clipboard}}, {{date}}…"));
+        else
+            m_hint->setText(tr("%1 snippet(s) — ⏎ expand with selected entry / clipboard  •  Esc close  •  Type >transform to switch").arg(m_snippetItems.size()));
+        return;
+    }
     if (m_results.isEmpty()) {
         if (m_currentQuery.trimmed().startsWith(QLatin1Char('>')))
-            m_hint->setText(tr("Commands:  >pin  >copy  >delete  — (coming soon, Enter pastes for now)"));
+            m_hint->setText(tr("Commands:  >transform [filter]  >snippet [filter]  >pin / >copy (soon)  •  Esc close"));
         else if (m_currentQuery.trimmed().isEmpty())
-            m_hint->setText(tr("Showing recent entries  •  ⏎ paste  •  Esc close  •  Type > for commands"));
+            m_hint->setText(tr("Showing recent entries  •  ⏎ paste  •  Esc close  •  Type > for commands (>transform, >snippet)"));
         else
             m_hint->setText(tr("No matches — try fewer words or check spelling (prefix search)"));
     } else {
-        m_hint->setText(tr("%1 result(s)  •  ⏎ paste  •  Esc close  •  Ctrl+C copy only").arg(m_results.size()));
+        m_hint->setText(tr("%1 result(s)  •  ⏎ paste  •  Esc close  •  >transform / >snippet for actions").arg(m_results.size()));
     }
 }
 
@@ -172,6 +315,24 @@ int CommandPalette::fuzzyScore(const QString &query, const QString &candidate)
 void CommandPalette::onActivated(const QModelIndex &index)
 {
     if (!index.isValid()) return;
+    if (m_mode == Mode::Transforms) {
+        const int row = index.row();
+        if (row < 0 || row >= m_transformItems.size()) return;
+        const QString name = m_transformItems.at(row).name;
+        // Need entry context: try top history result's id? For palette we don't have selected entry id from main window.
+        // Emit with 0 — MainWindow will resolve to selectedId / clipboard.
+        accept();
+        emit transformRequested(name, 0);
+        return;
+    }
+    if (m_mode == Mode::Snippets) {
+        const int row = index.row();
+        if (row < 0 || row >= m_snippetItems.size()) return;
+        const qint64 sid = m_snippetItems.at(row).id;
+        accept();
+        emit snippetRequested(sid, 0);
+        return;
+    }
     const qint64 id = index.data(Qt::UserRole).toLongLong();
     if (id == 0) return;
     accept();

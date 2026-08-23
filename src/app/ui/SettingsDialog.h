@@ -11,9 +11,9 @@ class QPushButton;
 class QRadioButton;
 class QSpinBox;
 
-// Detailed settings dialog with 5 tabs: General / History & Privacy /
-// Search & Palette / Hotkeys / Storage. Provides inline diagnostics for FTS,
-// OCR, and per-app rules — all local, no network.
+// Detailed settings dialog with tabs: General / History & Privacy /
+// Search & Palette / Hotkeys / Storage / Automation (Phase 3). Provides inline diagnostics for FTS,
+// OCR, transforms, snippets, and per-app rules — all local, no network.
 class SettingsDialog : public QDialog {
     Q_OBJECT
 public:
@@ -23,6 +23,7 @@ private:
     QWidget *buildGeneralPage();
     QWidget *buildStoragePage();
     QWidget *buildSearchPage();
+    QWidget *buildAutomationPage();
     void load();
     void save();
     void refreshDiagnostics();
@@ -54,4 +55,10 @@ private:
     QLabel *m_paletteInfo = nullptr;
     QPushButton *m_ftsRebuildBtn = nullptr;
     QPushButton *m_testOcrBtn = nullptr;
+
+    // Automation (Phase 3)
+    QLabel *m_transformStatus = nullptr;
+    QLabel *m_snippetStatus = nullptr;
+    QLabel *m_scriptStatus = nullptr;
+    QListWidget *m_scriptList = nullptr;
 };

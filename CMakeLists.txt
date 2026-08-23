@@ -12,7 +12,7 @@ set(CMAKE_AUTORCC ON)
 
 # --- Dependencies -------------------------------------------------------------
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Sql DBus Concurrent Network WaylandClient)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Sql DBus Concurrent Network WaylandClient Qml)
 find_package(KF6Config 6.0 REQUIRED)
 find_package(KF6GlobalAccel 6.0 REQUIRED)
 find_package(KF6Notifications 6.0 REQUIRED)
@@ -41,6 +41,8 @@ add_library(egoboard_core STATIC
     src/core/DatabaseSchema.cpp
     src/core/StorageManager.cpp
     src/core/SearchEngine.cpp
+    src/core/TransformEngine.cpp
+    src/core/SnippetManager.cpp
     src/core/VacuumWorker.cpp
     src/core/BookmarkManager.cpp
     src/core/ExportImportManager.cpp
@@ -72,6 +74,8 @@ add_executable(egoboard
     src/app/AutoPaster.cpp
     src/app/HotkeyManager.cpp
     src/app/TrayController.cpp
+    src/app/ScriptActionManager.cpp
+    src/app/EgoboardDbusAdaptor.cpp
     src/core/GroupTreeModel.cpp # Gui-dependent (QIcon in DecorationRole)
     src/app/ui/MainWindow.cpp
     src/app/ui/EntryDelegate.cpp
@@ -82,6 +86,8 @@ add_executable(egoboard
     src/app/ui/ExportImportDialogs.cpp
     src/app/ui/CommandPalette.cpp
     src/app/ui/TimelineStrip.cpp
+    src/app/ui/SnippetDialog.cpp
+    src/app/ui/TransformChainDialog.cpp
     src/app/OcrWorker.cpp
     src/app/ui/CodePreviewHighlighter.cpp
     data/resources.qrc
@@ -99,7 +105,7 @@ target_include_directories(egoboard PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 
 target_link_libraries(egoboard PRIVATE
     egoboard::core
-    Qt6::Gui Qt6::Widgets Qt6::DBus Qt6::Concurrent Qt6::Network Qt6::WaylandClient
+    Qt6::Gui Qt6::Widgets Qt6::DBus Qt6::Concurrent Qt6::Network Qt6::WaylandClient Qt6::Qml
     KF6::ConfigCore
     KF6::GlobalAccel
     KF6::Notifications

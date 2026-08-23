@@ -49,6 +49,8 @@ private:
     void clearHistory();
     void updateActionStates();
     void openPalette();
+    void openSnippetDialog();
+    void openTransformChain();
     void repositionCenteredOnActiveScreen();
 
     ApplicationContext &m_ctx;

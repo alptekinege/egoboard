@@ -10,6 +10,7 @@
 class AutoPaster;
 class BookmarkManager;
 class ClipboardWatcher;
+class EgoboardDbusAdaptor;
 class ExportImportManager;
 class HotkeyManager;
 class IActiveWindowTracker;
@@ -17,7 +18,9 @@ class MainWindow;
 class QuickPasteMenu;
 class QMenu;
 class QTimer;
+class ScriptActionManager;
 class SettingsManager;
+class SnippetManager;
 class StorageManager;
 class TrayController;
 class VacuumWorker;
@@ -40,6 +43,8 @@ public:
     StorageManager *storage() const { return m_storage; }
     BookmarkManager *bookmarks() const { return m_bookmarks; }
     ExportImportManager *io() const { return m_io; }
+    SnippetManager *snippets() const { return m_snippets; }
+    ScriptActionManager *scripts() const { return m_scripts; }
     AutoPaster *autoPaster() const { return m_paster; }
     HotkeyManager *hotkeys() const { return m_hotkeys; }
     MainWindow *window() const { return m_window; }
@@ -60,6 +65,9 @@ private:
     StorageManager *m_storage = nullptr;
     BookmarkManager *m_bookmarks = nullptr;
     ExportImportManager *m_io = nullptr;
+    SnippetManager *m_snippets = nullptr;
+    ScriptActionManager *m_scripts = nullptr;
+    EgoboardDbusAdaptor *m_dbus = nullptr;
     std::shared_ptr<IActiveWindowTracker> m_tracker;
     ClipboardWatcher *m_watcher = nullptr;
     AutoPaster *m_paster = nullptr;

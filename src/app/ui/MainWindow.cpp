@@ -2,7 +2,10 @@
 
 #include "../ApplicationContext.h"
 #include "../AutoPaster.h"
+#include "../ScriptActionManager.h"
 #include "../SettingsManager.h"
+#include "SnippetManager.h"
+#include "TransformEngine.h"
 #include "BookmarkManager.h"
 #include "ClipboardListModel.h"
 #include "EntryDelegate.h"
@@ -10,15 +13,19 @@
 #include "GroupsDock.h"
 #include "PreviewPane.h"
 #include "SettingsDialog.h"
+#include "SnippetDialog.h"
 #include "StorageManager.h"
 #include "CommandPalette.h"
 #include "TimelineStrip.h"
+#include "TransformChainDialog.h"
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QComboBox>
 #include <QDateTime>
 #include <QFileDialog>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QKeyEvent>
@@ -112,6 +119,7 @@ void MainWindow::buildUi()
     splitter->addWidget(m_list);
 
     m_preview = new PreviewPane(splitter);
+    if (m_ctx.scripts()) m_preview->setScriptManager(m_ctx.scripts());
     splitter->addWidget(m_preview);
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
@@ -176,6 +184,14 @@ void MainWindow::buildUi()
     paletteAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+K")));
     paletteAction->setToolTip(tr("Command palette (Ctrl+K) — fast search & paste"));
     connect(paletteAction, &QAction::triggered, this, &MainWindow::openPalette);
+
+    QAction *snipAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("document-edit")), tr("Snippets"));
+    snipAction->setToolTip(tr("Snippet templates — {{clipboard}}, {{date}} etc. Local only"));
+    connect(snipAction, &QAction::triggered, this, &MainWindow::openSnippetDialog);
+
+    QAction *chainAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("view-refresh")), tr("Chain"));
+    chainAction->setToolTip(tr("Transform chain — combine multiple transforms with live preview"));
+    connect(chainAction, &QAction::triggered, this, &MainWindow::openTransformChain);
 
     QAction *settingsAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("configure")),
                                                  tr("Settings"));
@@ -414,6 +430,71 @@ void MainWindow::showContextMenu(const QPoint &pos)
     QAction *pin = menu.addAction(pinned ? tr("Unpin") : tr("Pin"));
     connect(pin, &QAction::triggered, this, &MainWindow::togglePinSelected);
 
+    // Phase 3: Transform submenu (single-step) + chain
+    {
+        QMenu *tMenu = menu.addMenu(tr("Transform"));
+        for (const auto &d : TransformEngine::allDescriptors()) {
+            QAction *a = tMenu->addAction(d.label);
+            a->setToolTip(d.description);
+            connect(a, &QAction::triggered, this, [this, id = d.id, entryId = index.data(ClipboardListModel::IdRole).toLongLong()]{
+                ClipboardRecord rec;
+                if (!m_ctx.storage()->fetchFull(entryId, &rec)) return;
+                QString input = rec.textData.isEmpty() ? rec.preview : rec.textData;
+                auto r = TransformEngine::apply(id, input);
+                if (!r.ok) {
+                    QMessageBox::warning(this, tr("Transform"), r.error);
+                    return;
+                }
+                QGuiApplication::clipboard()->setText(r.output);
+                QMessageBox::information(this, tr("Transform"), tr("Applied %1 — copied to clipboard.").arg(TransformEngine::labelForId(id)));
+            });
+        }
+        tMenu->addSeparator();
+        if (m_ctx.scripts()) {
+            for (const auto &sa : m_ctx.scripts()->actions()) {
+                QAction *a = tMenu->addAction(QStringLiteral("[JS] %1").arg(sa.label));
+                connect(a, &QAction::triggered, this, [this, sid = sa.id, entryId = index.data(ClipboardListModel::IdRole).toLongLong()]{
+                    ClipboardRecord rec;
+                    if (!m_ctx.storage()->fetchFull(entryId, &rec)) return;
+                    QString input = rec.textData.isEmpty() ? rec.preview : rec.textData;
+                    auto r = m_ctx.scripts()->apply(sid, input);
+                    if (!r.ok) {
+                        QMessageBox::warning(this, tr("Script"), r.error);
+                        return;
+                    }
+                    QGuiApplication::clipboard()->setText(r.output);
+                });
+            }
+        }
+        QAction *chain = tMenu->addAction(tr("Chain…"));
+        connect(chain, &QAction::triggered, this, &MainWindow::openTransformChain);
+    }
+
+    // Phase 3: Snippets submenu — expand with this entry's text
+    {
+        QMenu *sMenu = menu.addMenu(tr("Insert Snippet"));
+        const auto snippets = m_ctx.snippets() ? m_ctx.snippets()->snippets() : QVector<Snippet>{};
+        if (snippets.isEmpty()) {
+            QAction *a = sMenu->addAction(tr("(no snippets)"));
+            a->setEnabled(false);
+        } else {
+            for (const auto &s : snippets) {
+                QAction *a = sMenu->addAction(s.name);
+                a->setToolTip(s.templateText);
+                connect(a, &QAction::triggered, this, [this, s, entryId = index.data(ClipboardListModel::IdRole).toLongLong()]{
+                    ClipboardRecord rec;
+                    QString clip;
+                    if (m_ctx.storage()->fetchFull(entryId, &rec)) clip = rec.textData.isEmpty() ? rec.preview : rec.textData;
+                    const QString out = SnippetManager::expand(s.templateText, clip);
+                    QGuiApplication::clipboard()->setText(out);
+                });
+            }
+        }
+        sMenu->addSeparator();
+        QAction *manage = sMenu->addAction(tr("Manage Snippets…"));
+        connect(manage, &QAction::triggered, this, &MainWindow::openSnippetDialog);
+    }
+
     QMenu *groupsMenu = menu.addMenu(tr("Move to group"));
     for (const BookmarkGroup &group : m_ctx.bookmarks()->groups()) {
         QAction *action = groupsMenu->addAction(group.name);
@@ -530,14 +611,98 @@ void MainWindow::openPalette()
 {
     if (!m_palette) {
         m_palette = new CommandPalette(m_ctx.storage(), this);
+        // Wire snippet/script managers for >transform / >snippet commands
+        m_palette->setSnippetManager(m_ctx.snippets());
+        m_palette->setScriptManager(m_ctx.scripts());
         connect(m_palette, &CommandPalette::pasteRequested, this, &MainWindow::pasteEntry);
         connect(m_palette, &CommandPalette::copyRequested, this, [this](qint64 id){
             ClipboardRecord rec;
             if (m_ctx.storage()->fetchFull(id, &rec))
                 m_ctx.autoPaster()->copyToClipboard(rec);
         });
+        connect(m_palette, &CommandPalette::transformRequested, this, [this](const QString &name, qint64 entryId){
+            // Resolve transform name -> apply
+            ClipboardRecord rec;
+            QString input;
+            if (entryId != 0 && m_ctx.storage()->fetchFull(entryId, &rec))
+                input = rec.textData.isEmpty() ? rec.preview : rec.textData;
+            else if (m_selectedId != 0 && m_ctx.storage()->fetchFull(m_selectedId, &rec))
+                input = rec.textData.isEmpty() ? rec.preview : rec.textData;
+            else
+                input = QGuiApplication::clipboard()->text();
+            if (input.isEmpty()) return;
+            // Try builtin first
+            if (auto bid = TransformEngine::idForName(name)) {
+                auto r = TransformEngine::apply(*bid, input);
+                if (r.ok) QGuiApplication::clipboard()->setText(r.output);
+                else QMessageBox::warning(this, tr("Transform"), r.error);
+                return;
+            }
+            // Try script
+            if (m_ctx.scripts() && m_ctx.scripts()->hasAction(name)) {
+                auto r = m_ctx.scripts()->apply(name, input);
+                if (r.ok) QGuiApplication::clipboard()->setText(r.output);
+                else QMessageBox::warning(this, tr("Script"), r.error);
+                return;
+            }
+            QMessageBox::warning(this, tr("Transform"), tr("Unknown transform: %1").arg(name));
+        });
+        connect(m_palette, &CommandPalette::snippetRequested, this, [this](qint64 snippetId, qint64 entryId){
+            auto s = m_ctx.snippets()->snippet(snippetId);
+            if (!s.has_value()) return;
+            ClipboardRecord rec;
+            QString clip;
+            if (entryId != 0 && m_ctx.storage()->fetchFull(entryId, &rec))
+                clip = rec.textData.isEmpty() ? rec.preview : rec.textData;
+            else if (m_selectedId != 0 && m_ctx.storage()->fetchFull(m_selectedId, &rec))
+                clip = rec.textData.isEmpty() ? rec.preview : rec.textData;
+            else
+                clip = QGuiApplication::clipboard()->text();
+            const QString out = SnippetManager::expand(s->templateText, clip);
+            QGuiApplication::clipboard()->setText(out);
+        });
     }
     m_palette->openPalette();
+}
+
+void MainWindow::openSnippetDialog()
+{
+    QString clip;
+    if (m_selectedId != 0) {
+        ClipboardRecord rec;
+        if (m_ctx.storage()->fetchFull(m_selectedId, &rec))
+            clip = rec.textData.isEmpty() ? rec.preview : rec.textData;
+    }
+    if (clip.isEmpty()) clip = QGuiApplication::clipboard()->text();
+    SnippetDialog dlg(m_ctx.snippets(), clip, this);
+    connect(&dlg, &SnippetDialog::insertRequested, this, [this](const QString &expanded){
+        QGuiApplication::clipboard()->setText(expanded);
+        QMessageBox::information(this, tr("Snippet"), tr("Expanded snippet copied to clipboard."));
+    });
+    dlg.exec();
+}
+
+void MainWindow::openTransformChain()
+{
+    QString input;
+    if (m_selectedId != 0) {
+        ClipboardRecord rec;
+        if (m_ctx.storage()->fetchFull(m_selectedId, &rec))
+            input = rec.textData.isEmpty() ? rec.preview : rec.textData;
+    }
+    if (input.isEmpty()) input = QGuiApplication::clipboard()->text();
+    if (input.isEmpty()) {
+        QMessageBox::information(this, tr("Transform"), tr("Select an entry or copy text first."));
+        return;
+    }
+    TransformChainDialog dlg(input, m_ctx.scripts(), this);
+    if (dlg.exec() == QDialog::Accepted) {
+        const QString out = dlg.resultText();
+        if (!out.isEmpty()) {
+            QGuiApplication::clipboard()->setText(out);
+            QMessageBox::information(this, tr("Transform"), tr("Chain result copied to clipboard (%1 chars).").arg(out.size()));
+        }
+    }
 }
 
 void MainWindow::repositionCenteredOnActiveScreen()

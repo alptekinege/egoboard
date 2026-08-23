@@ -134,6 +134,13 @@ bool ensure(QSqlDatabase &db)
             " entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,"
             " group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,"
             " PRIMARY KEY(entry_id, group_id))"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS snippets ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " name TEXT NOT NULL,"
+            " template TEXT NOT NULL,"
+            " shortcut TEXT,"
+            " created_ms INTEGER NOT NULL)"),
     };
 
     for (const QString &statement : statements) {

@@ -3,13 +3,17 @@
 #include "AutoPaster.h"
 #include "BookmarkManager.h"
 #include "ClipboardWatcher.h"
+#include "EgoboardDbusAdaptor.h"
 #include "ExportImportManager.h"
 #include "HotkeyManager.h"
+#include "ScriptActionManager.h"
 #include "SettingsManager.h"
+#include "SnippetManager.h"
 #include "StorageManager.h"
 #include "TrayController.h"
 #include "VacuumWorker.h"
 #include "OcrWorker.h"
+#include "TransformEngine.h"
 #include "WaylandActiveWindowTracker.h"
 #include "X11ActiveWindowTracker.h"
 #include "ui/MainWindow.h"
@@ -39,6 +43,7 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
     m_storage = new StorageManager(databasePath, this);
     m_bookmarks = new BookmarkManager(m_storage->database(), this);
     m_io = new ExportImportManager(m_storage, m_bookmarks, this);
+    m_snippets = new SnippetManager(m_storage->database(), this);
 
     // Vacuum runs on its own thread/connection so the GUI connection stays
     // responsive while the database is being compacted.
@@ -50,6 +55,9 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
 
     if (!m_fullGui)
         return;
+
+    m_scripts = new ScriptActionManager(this);
+    m_dbus = new EgoboardDbusAdaptor(m_storage, this);
 
     if (QGuiApplication::platformName() == QLatin1String("wayland"))
         m_tracker = std::make_unique<WaylandActiveWindowTracker>();
@@ -71,12 +79,18 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
 
 ApplicationContext::~ApplicationContext()
 {
-    m_vacuumThread->quit();
-    m_vacuumThread->wait(5000);
+    if (m_vacuumThread) {
+        m_vacuumThread->quit();
+        m_vacuumThread->wait(5000);
+    }
 }
 
 void ApplicationContext::start()
 {
+    if (m_dbus) m_dbus->registerService();
+
+    if (!m_fullGui) return;
+
     connect(m_watcher, &ClipboardWatcher::captured, this, &ApplicationContext::onCaptured);
     connect(m_watcher, &ClipboardWatcher::excludedSensitive, this,
             [](const QString &reason) {
@@ -246,6 +260,43 @@ int ApplicationContext::smokeTest()
         qCritical("smoke: entry count after import wrong");
         return 1;
     }
+
+    // Phase 3 smoke: TransformEngine + SnippetManager
+    {
+        auto r = TransformEngine::apply(TransformEngine::TransformId::Uppercase, QStringLiteral("hello"));
+        if (!r.ok || r.output != QLatin1String("HELLO")) {
+            qCritical("smoke: TransformEngine uppercase failed");
+            return 1;
+        }
+        auto r2 = TransformEngine::apply(TransformEngine::TransformId::JsonPretty, QStringLiteral("{\"a\":1}"));
+        if (!r2.ok || !r2.output.contains(QLatin1String("\"a\""))) {
+            qCritical("smoke: TransformEngine json-pretty failed: %s", qPrintable(r2.error));
+            return 1;
+        }
+        auto chain = TransformEngine::applyChain(QStringLiteral("  hello world  "),
+            {TransformEngine::TransformId::Trim, TransformEngine::TransformId::Uppercase});
+        if (!chain.ok || chain.output != QLatin1String("HELLO WORLD")) {
+            qCritical("smoke: TransformEngine chain failed");
+            return 1;
+        }
+    }
+    {
+        const qint64 sid = m_snippets->createSnippet(QStringLiteral("Smoke Snippet"), QStringLiteral("hi {{clipboard}} [{{date}}]"), {});
+        if (sid == 0) {
+            qCritical("smoke: createSnippet failed");
+            return 1;
+        }
+        const QString expanded = m_snippets->expandSnippet(sid, QStringLiteral("world"));
+        if (!expanded.startsWith(QLatin1String("hi world ["))) {
+            qCritical("smoke: snippet expand failed: %s", qPrintable(expanded));
+            return 1;
+        }
+        if (!m_snippets->deleteSnippet(sid)) {
+            qCritical("smoke: deleteSnippet failed");
+            return 1;
+        }
+    }
+
     qInfo("egoboard smoke test: OK");
     return 0;
 }
