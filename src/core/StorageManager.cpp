@@ -389,6 +389,9 @@ StorageStats StorageManager::stats() const
                 .arg(static_cast<int>(ContentType::Image)))
         && query.next())
         stats.imageCount = query.value(0).toLongLong();
+    if (query.exec(QStringLiteral("SELECT COUNT(*) FROM entries WHERE ocr_text IS NOT NULL AND ocr_text != ''"))
+        && query.next())
+        stats.ocrCount = query.value(0).toLongLong();
     return stats;
 }
 

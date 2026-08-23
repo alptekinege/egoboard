@@ -4,16 +4,16 @@
 
 class ApplicationContext;
 class QCheckBox;
-class QComboBox;
 class QLabel;
+class QListWidget;
+class QPlainTextEdit;
 class QPushButton;
 class QRadioButton;
 class QSpinBox;
-class QPlainTextEdit;
 
-// Qt Widgets settings dialog (QTabWidget): General / History & Privacy /
-// Hotkeys / Storage. Writes through SettingsManager; KGlobalAccel-backed
-// shortcuts are edited inline with KKeySequenceWidget.
+// Detailed settings dialog with 5 tabs: General / History & Privacy /
+// Search & Palette / Hotkeys / Storage. Provides inline diagnostics for FTS,
+// OCR, and per-app rules — all local, no network.
 class SettingsDialog : public QDialog {
     Q_OBJECT
 public:
@@ -22,8 +22,10 @@ public:
 private:
     QWidget *buildGeneralPage();
     QWidget *buildStoragePage();
+    QWidget *buildSearchPage();
     void load();
     void save();
+    void refreshDiagnostics();
 
     ApplicationContext &m_ctx;
 
@@ -44,4 +46,12 @@ private:
     QWidget *m_storagePage = nullptr;
     QPlainTextEdit *m_ignoredApps = nullptr;
     QCheckBox *m_ocrEnabled = nullptr;
+    QListWidget *m_appSuggestions = nullptr;
+
+    // Search & diagnostics
+    QLabel *m_ftsStatus = nullptr;
+    QLabel *m_ocrStatus = nullptr;
+    QLabel *m_paletteInfo = nullptr;
+    QPushButton *m_ftsRebuildBtn = nullptr;
+    QPushButton *m_testOcrBtn = nullptr;
 };

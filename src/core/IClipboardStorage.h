@@ -12,6 +12,7 @@ struct StorageStats {
     qint64 totalBytes = 0;
     qint64 pinnedCount = 0;
     qint64 imageCount = 0;
+    qint64 ocrCount = 0; // images with recognized text
 };
 
 // Keyset cursor for infinite scroll: identifies the last row of the previous
