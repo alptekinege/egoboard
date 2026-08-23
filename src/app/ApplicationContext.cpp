@@ -16,6 +16,7 @@
 
 #include <KNotification>
 
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QGuiApplication>
@@ -94,6 +95,7 @@ void ApplicationContext::start()
     connect(m_tray, &TrayController::toggleRequested, this, &ApplicationContext::toggleMainWindow);
     connect(m_tray, &TrayController::quickPasteRequested, this, &ApplicationContext::showQuickPaste);
     connect(m_tray, &TrayController::pasteRequested, this, &ApplicationContext::pasteEntry);
+    connect(m_tray, &TrayController::quitRequested, qApp, &QCoreApplication::quit);
 
     connect(m_quickPaste, &QuickPasteMenu::pasteRequested, this, &ApplicationContext::pasteEntry);
 
