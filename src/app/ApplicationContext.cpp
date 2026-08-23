@@ -7,6 +7,7 @@
 #include "ExportImportManager.h"
 #include "HotkeyManager.h"
 #include "LayerShellHelper.h"
+#include "WlrDataControlHelper.h"
 #include "ScriptActionManager.h"
 #include "SettingsManager.h"
 #include "SnippetManager.h"
@@ -67,6 +68,7 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
 
     m_watcher = new ClipboardWatcher(QGuiApplication::clipboard(), m_settings, m_tracker.get(),
                                      this);
+    m_dataControl = new WlrDataControlHelper(m_settings, m_tracker.get(), this);
     m_paster = new AutoPaster(m_watcher, this);
     m_hotkeys = new HotkeyManager(this);
     m_tray = new TrayController(m_storage, this);
@@ -103,6 +105,17 @@ void ApplicationContext::start()
                     QStringLiteral("security-medium"),
                     KNotification::CloseOnTimeout);
             });
+    connect(m_dataControl, &WlrDataControlHelper::captured, this, &ApplicationContext::onCaptured);
+    connect(m_dataControl, &WlrDataControlHelper::excludedSensitive, this,
+            [](const QString &reason) {
+                KNotification::event(
+                    QStringLiteral("sensitiveSkipped"),
+                    QObject::tr("Sensitive content not saved"),
+                    QObject::tr("Looks like %1 — excluded from history as configured.")
+                        .arg(reason.isEmpty() ? QObject::tr("sensitive data") : reason),
+                    QStringLiteral("security-medium"),
+                    KNotification::CloseOnTimeout);
+            });
     connect(m_settings, &SettingsManager::changed, this, [this] {
         m_watcher->setDebounceInterval(m_settings->debounceMs());
     });
@@ -120,6 +133,7 @@ void ApplicationContext::start()
     connect(m_quickPaste, &QuickPasteMenu::pasteRequested, this, &ApplicationContext::pasteEntry);
 
     m_watcher->start();
+    m_dataControl->start();
     if (m_settings->startVisible())
         m_window->show();
 
@@ -165,6 +179,7 @@ void ApplicationContext::pasteEntry(qint64 entryId)
     ClipboardRecord record;
     if (!m_storage->fetchFull(entryId, &record))
         return;
+    if (m_dataControl) m_dataControl->suppressOwnSets();
     QWidget *hideTarget = nullptr;
     if (m_window->isVisible())
         hideTarget = m_window;
@@ -327,6 +342,25 @@ int ApplicationContext::smokeTest()
         if (diag.contains(QStringLiteral("LayerShellQt")) && wl) {
             // ok — built with LayerShellQt
         }
+    }
+
+    // Phase 4B smoke: wlr-data-control (headless-safe, offscreen inactive)
+    {
+        const QString plat = WlrDataControlHelper::platformName();
+        const bool supported = WlrDataControlHelper::isSupported();
+        if (plat.isEmpty()) { qCritical("smoke: WlrDataControl plat empty"); return 1; }
+        // Construct a transient helper to exercise diagnostics/isActive path without starting
+        WlrDataControlHelper tmpHelper(m_settings, m_tracker.get());
+        const QString diag = tmpHelper.diagnostics();
+        if (diag.isEmpty() || !diag.contains(plat, Qt::CaseInsensitive)) {
+            qCritical("smoke: WlrDataControl diagnostics malformed: %s", qPrintable(diag));
+            return 1;
+        }
+        if (plat == QLatin1String("offscreen")) {
+            if (supported) { qCritical("smoke: wlr-data-control should not be supported on offscreen"); return 1; }
+            if (tmpHelper.isActive()) { qCritical("smoke: wlr-data-control unexpectedly active on offscreen"); return 1; }
+        }
+        // On Wayland isActive depends on compositor; do not assert active here.
     }
 
     qInfo("egoboard smoke test: OK");

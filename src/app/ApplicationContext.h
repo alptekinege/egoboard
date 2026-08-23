@@ -24,6 +24,7 @@ class SnippetManager;
 class StorageManager;
 class TrayController;
 class VacuumWorker;
+class WlrDataControlHelper;
 class OcrWorker;
 
 // Composition root: owns every subsystem and wires the signal/slot graph.
@@ -45,6 +46,7 @@ public:
     ExportImportManager *io() const { return m_io; }
     SnippetManager *snippets() const { return m_snippets; }
     ScriptActionManager *scripts() const { return m_scripts; }
+    WlrDataControlHelper *dataControl() const { return m_dataControl; }
     AutoPaster *autoPaster() const { return m_paster; }
     HotkeyManager *hotkeys() const { return m_hotkeys; }
     MainWindow *window() const { return m_window; }
@@ -70,6 +72,7 @@ private:
     EgoboardDbusAdaptor *m_dbus = nullptr;
     std::shared_ptr<IActiveWindowTracker> m_tracker;
     ClipboardWatcher *m_watcher = nullptr;
+    WlrDataControlHelper *m_dataControl = nullptr;
     AutoPaster *m_paster = nullptr;
     HotkeyManager *m_hotkeys = nullptr;
     TrayController *m_tray = nullptr;

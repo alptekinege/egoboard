@@ -38,6 +38,7 @@ private:
     QCheckBox *m_autostart = nullptr;
     QSpinBox *m_quickPasteCount = nullptr;
     QLabel *m_platformStatus = nullptr;
+    QLabel *m_dataControlStatus = nullptr;
 
     // History & privacy
     QSpinBox *m_debounce = nullptr;

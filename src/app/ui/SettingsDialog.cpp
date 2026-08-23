@@ -3,6 +3,7 @@
 #include "../ApplicationContext.h"
 #include "../HotkeyManager.h"
 #include "../LayerShellHelper.h"
+#include "../WlrDataControlHelper.h"
 #include "../ScriptActionManager.h"
 #include "../SettingsManager.h"
 #include "../OcrWorker.h"
@@ -298,6 +299,15 @@ QWidget *SettingsDialog::buildGeneralPage()
     m_platformStatus->setTextFormat(Qt::RichText);
     m_platformStatus->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px; border: 1px solid palette(mid); border-radius: 6px; padding: 6px;"));
     captureLayout->addWidget(m_platformStatus);
+    m_dataControlStatus = new QLabel(captureBox);
+    m_dataControlStatus->setWordWrap(true);
+    m_dataControlStatus->setTextFormat(Qt::RichText);
+    m_dataControlStatus->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px; border: 1px solid palette(mid); border-radius: 6px; padding: 6px;"));
+    if (m_ctx.dataControl())
+        m_dataControlStatus->setText(m_ctx.dataControl()->diagnostics());
+    else
+        m_dataControlStatus->setText(WlrDataControlHelper::isWayland() ? QStringLiteral("wlr-data-control: <b>inactive</b> (no helper)") : QStringLiteral("wlr-data-control: <b>n/a</b>"));
+    captureLayout->addWidget(m_dataControlStatus);
     layout->addWidget(captureBox);
 
     auto *paletteBox = new QGroupBox(tr("Command palette"), page);
@@ -657,6 +667,12 @@ void SettingsDialog::refreshDiagnostics()
     }
     if (m_platformStatus) {
         m_platformStatus->setText(LayerShellHelper::diagnostics());
+    }
+    if (m_dataControlStatus) {
+        if (m_ctx.dataControl())
+            m_dataControlStatus->setText(m_ctx.dataControl()->diagnostics());
+        else
+            m_dataControlStatus->setText(WlrDataControlHelper::isWayland() ? QStringLiteral("wlr-data-control: <b>inactive</b>") : QStringLiteral("wlr-data-control: <b>n/a</b>"));
     }
 }
 
