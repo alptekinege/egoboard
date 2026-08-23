@@ -5,6 +5,7 @@
 #include <QWidget>
 
 class QLabel;
+class CodePreviewHighlighter;
 class QListWidget;
 class QPlainTextEdit;
 class QStackedWidget;
@@ -34,4 +35,5 @@ private:
     QLabel *m_imageLabel = nullptr;
     QListWidget *m_filesList = nullptr;
     QLabel *m_metaLabel = nullptr;
+    CodePreviewHighlighter *m_highlighter = nullptr;
 };

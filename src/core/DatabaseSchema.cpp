@@ -5,6 +5,63 @@
 
 namespace DatabaseSchema {
 
+static bool ensureFts(QSqlDatabase &db)
+{
+    // FTS5 virtual table for fast full-text search over preview + text_data.
+    // Uses external content sync ('entries' table) so the index stays small and
+    // rebuildable. Gracefully no-ops if the SQLite build lacks FTS5.
+    QSqlQuery probe(db);
+    if (!probe.exec(QStringLiteral(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts "
+            "USING fts5(preview, text_data, content='entries', content_rowid='id', "
+            "tokenize='unicode61')"))) {
+        qWarning("egoboard: FTS5 not available, falling back to LIKE search: %s",
+                 qPrintable(probe.lastError().text()));
+        return false;
+    }
+
+    static const QList<QString> triggers = {
+        QStringLiteral(
+            "CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN "
+            "INSERT INTO entries_fts(rowid, preview, text_data) "
+            "VALUES (new.id, new.preview, new.text_data); END"),
+        QStringLiteral(
+            "CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN "
+            "INSERT INTO entries_fts(entries_fts, rowid, preview, text_data) "
+            "VALUES ('delete', old.id, old.preview, old.text_data); END"),
+        QStringLiteral(
+            "CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN "
+            "INSERT INTO entries_fts(entries_fts, rowid, preview, text_data) "
+            "VALUES ('delete', old.id, old.preview, old.text_data); "
+            "INSERT INTO entries_fts(rowid, preview, text_data) "
+            "VALUES (new.id, new.preview, new.text_data); END"),
+    };
+    for (const QString &sql : triggers) {
+        QSqlQuery q(db);
+        if (!q.exec(sql))
+            qWarning("egoboard: FTS trigger failed: %s (%s)",
+                     qPrintable(q.lastError().text()), qPrintable(sql));
+    }
+
+    // Backfill / rebuild: idempotent, handles existing DBs without FTS rows.
+    {
+        QSqlQuery rebuild(db);
+        QSqlQuery countFts(db);
+        QSqlQuery countEntries(db);
+        bool needsRebuild = true;
+        if (countFts.exec(QStringLiteral("SELECT COUNT(*) FROM entries_fts"))
+            && countFts.next() && countEntries.exec(QStringLiteral("SELECT COUNT(*) FROM entries"))
+            && countEntries.next()) {
+            needsRebuild = countFts.value(0).toLongLong() != countEntries.value(0).toLongLong();
+        }
+        if (needsRebuild) {
+            if (!rebuild.exec(QStringLiteral("INSERT INTO entries_fts(entries_fts) VALUES('rebuild')")))
+                qWarning("egoboard: FTS rebuild failed: %s", qPrintable(rebuild.lastError().text()));
+        }
+    }
+    return true;
+}
+
 bool ensure(QSqlDatabase &db)
 {
     static const QList<QString> statements = {
@@ -52,6 +109,7 @@ bool ensure(QSqlDatabase &db)
             return false;
         }
     }
+    ensureFts(db);
     return true;
 }
 

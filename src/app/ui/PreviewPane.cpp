@@ -11,6 +11,8 @@
 #include <QStackedWidget>
 #include <QTextBrowser>
 #include <QVBoxLayout>
+#include "CodePreviewHighlighter.h"
+#include <QJsonDocument>
 
 namespace {
 
@@ -65,6 +67,7 @@ QWidget *PreviewPane::pageText()
     m_textEdit->setReadOnly(true);
     m_textEdit->setFrameShape(QFrame::NoFrame);
     m_textEdit->setWordWrapMode(QTextOption::WrapAnywhere);
+    m_highlighter = new CodePreviewHighlighter(m_textEdit->document());
     layout->addWidget(m_textEdit);
     return page;
 }
@@ -123,10 +126,22 @@ void PreviewPane::showRecord(const ClipboardRecord &record)
     setMeta(meta.join(QStringLiteral(" · ")));
 
     switch (record.type) {
-    case ContentType::Text:
-        m_textEdit->setPlainText(record.textData);
+    case ContentType::Text: {
+        QString display = record.textData;
+        // Auto pretty-print JSON when it looks like JSON
+        const auto mode = CodePreviewHighlighter::detect(display);
+        if (mode == CodePreviewHighlighter::Mode::Json) {
+            QJsonParseError err;
+            QJsonDocument doc = QJsonDocument::fromJson(display.toUtf8(), &err);
+            if (err.error == QJsonParseError::NoError && !doc.isNull()) {
+                display = QString::fromUtf8(doc.toJson(QJsonDocument::Indented));
+            }
+        }
+        m_highlighter->setMode(mode);
+        m_textEdit->setPlainText(display);
         m_stack->setCurrentWidget(m_textEdit->parentWidget());
         break;
+    }
     case ContentType::RichText:
         m_htmlView->setHtml(record.textData);
         m_stack->setCurrentWidget(m_htmlView);

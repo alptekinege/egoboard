@@ -40,6 +40,7 @@ add_library(egoboard_core STATIC
     src/core/IClipboardStorage.h # Q_OBJECT interface; AUTOMOC needs it listed
     src/core/DatabaseSchema.cpp
     src/core/StorageManager.cpp
+    src/core/SearchEngine.cpp
     src/core/VacuumWorker.cpp
     src/core/BookmarkManager.cpp
     src/core/ExportImportManager.cpp
@@ -79,6 +80,9 @@ add_executable(egoboard
     src/app/ui/GroupsDock.cpp
     src/app/ui/SettingsDialog.cpp
     src/app/ui/ExportImportDialogs.cpp
+    src/app/ui/CommandPalette.cpp
+    src/app/ui/TimelineStrip.cpp
+    src/app/ui/CodePreviewHighlighter.cpp
     data/resources.qrc
 )
 target_include_directories(egoboard PRIVATE

@@ -1,6 +1,7 @@
 #include "StorageManager.h"
 
 #include "DatabaseSchema.h"
+#include "SearchEngine.h"
 
 #include <QFile>
 #include <QSqlError>
@@ -8,22 +9,6 @@
 
 #include <atomic>
 
-namespace {
-
-// Escapes % and _ so user search text is treated literally inside LIKE.
-QString likeEscape(const QString &text)
-{
-    QString out;
-    out.reserve(text.size() * 2);
-    for (const QChar c : text) {
-        if (c == QLatin1Char('%') || c == QLatin1Char('_') || c == QLatin1Char('\\'))
-            out += QLatin1Char('\\');
-        out += c;
-    }
-    return out;
-}
-
-} // namespace
 
 StorageManager::StorageManager(const QString &databasePath, QObject *parent)
     : IClipboardStorage(parent)
@@ -151,11 +136,18 @@ QVector<ClipboardRecord> StorageManager::fetchPage(const FilterSpec &filter, con
     };
 
     if (!filter.searchText.isEmpty()) {
-        const QString needle =
-            QStringLiteral("%") + likeEscape(filter.searchText) + QStringLiteral("%");
-        const QString placeholder = addBind(needle);
-        where << QStringLiteral("(preview LIKE %1 ESCAPE '\\' OR text_data LIKE %1 ESCAPE '\\')")
-                     .arg(placeholder);
+        const QString ftsQuery = SearchEngine::buildFtsQuery(filter.searchText);
+        if (!ftsQuery.isEmpty() && SearchEngine::isFtsAvailable(m_db)) {
+            const QString placeholder = addBind(ftsQuery);
+            where << QStringLiteral("id IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH %1)")
+                         .arg(placeholder);
+        } else {
+            const QString needle =
+                QStringLiteral("%") + SearchEngine::likeEscape(filter.searchText) + QStringLiteral("%");
+            const QString placeholder = addBind(needle);
+            where << QStringLiteral("(preview LIKE %1 ESCAPE '\\' OR text_data LIKE %1 ESCAPE '\\')")
+                         .arg(placeholder);
+        }
     }
     if (filter.contentType >= 0)
         where << QStringLiteral("content_type = %1").arg(addBind(filter.contentType));

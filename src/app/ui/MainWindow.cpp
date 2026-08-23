@@ -11,6 +11,8 @@
 #include "PreviewPane.h"
 #include "SettingsDialog.h"
 #include "StorageManager.h"
+#include "CommandPalette.h"
+#include "TimelineStrip.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -28,6 +30,7 @@
 #include <QScreen>
 #include <QSplitter>
 #include <QTimer>
+#include <QShortcut>
 #include <QToolBar>
 #include <QVBoxLayout>
 
@@ -83,6 +86,10 @@ void MainWindow::buildUi()
     filterRow->addWidget(m_appCombo, 1);
 
     layout->addLayout(filterRow);
+
+    // Timeline strip: 14-day histogram, click to filter by day
+    m_timeline = new TimelineStrip(m_ctx.storage(), central);
+    layout->addWidget(m_timeline);
 
     // --- list + preview -----------------------------------------------------
     auto *splitter = new QSplitter(Qt::Horizontal, central);
@@ -164,6 +171,12 @@ void MainWindow::buildUi()
 
     toolbar->addSeparator();
 
+    QAction *paletteAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("system-search")),
+                                                 tr("Palette"));
+    paletteAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+K")));
+    paletteAction->setToolTip(tr("Command palette (Ctrl+K) — fast search & paste"));
+    connect(paletteAction, &QAction::triggered, this, &MainWindow::openPalette);
+
     QAction *settingsAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("configure")),
                                                  tr("Settings"));
     connect(settingsAction, &QAction::triggered, this, &MainWindow::openSettings);
@@ -202,10 +215,28 @@ void MainWindow::connectSignals()
     m_searchDebounce->setSingleShot(true);
     m_searchDebounce->setInterval(200);
     connect(m_searchDebounce, &QTimer::timeout, this, &MainWindow::applyCurrentFilter);
+    // Global palette shortcut (works from list/selection too)
+    if (auto *sc = new QShortcut(QKeySequence(QStringLiteral("Ctrl+K")), this)) {
+        connect(sc, &QShortcut::activated, this, &MainWindow::openPalette);
+    }
     connect(m_search, &QLineEdit::textChanged, this,
             [this] { m_searchDebounce->start(); });
 
     connect(m_typeCombo, &QComboBox::currentIndexChanged, this, &MainWindow::applyCurrentFilter);
+    if (m_timeline) {
+        connect(m_timeline, &TimelineStrip::daySelected, this, [this](qint64 from, qint64 to){
+            if (from == 0 && to == 0) {
+                m_dateCombo->setCurrentIndex(0);
+            } else {
+                m_lastRange.isValid = true;
+                m_lastRange.fromMs = from;
+                m_lastRange.toMs = to;
+                const int customIdx = m_dateCombo->findData(99);
+                if (customIdx >= 0) m_dateCombo->setCurrentIndex(customIdx);
+            }
+            applyCurrentFilter();
+        });
+    }
     connect(m_dateCombo, &QComboBox::currentIndexChanged, this, [this](int) {
         if (m_dateCombo->currentData().toInt() == 99) {
             ExportImportDialogs::DateRangeDialog dialog(this);
@@ -291,6 +322,7 @@ void MainWindow::applyCurrentFilter()
     }
     filter.sourceApp = m_appCombo->currentData().toString();
     m_model->setFilter(filter);
+    if (m_timeline) m_timeline->setFilter(filter);
     updateActionStates();
 }
 
@@ -494,6 +526,20 @@ void MainWindow::toggleVisibility()
     }
 }
 
+void MainWindow::openPalette()
+{
+    if (!m_palette) {
+        m_palette = new CommandPalette(m_ctx.storage(), this);
+        connect(m_palette, &CommandPalette::pasteRequested, this, &MainWindow::pasteEntry);
+        connect(m_palette, &CommandPalette::copyRequested, this, [this](qint64 id){
+            ClipboardRecord rec;
+            if (m_ctx.storage()->fetchFull(id, &rec))
+                m_ctx.autoPaster()->copyToClipboard(rec);
+        });
+    }
+    m_palette->openPalette();
+}
+
 void MainWindow::repositionCenteredOnActiveScreen()
 {
     QScreen *screen = QGuiApplication::screenAt(QCursor::pos());
@@ -512,6 +558,14 @@ void MainWindow::keyPressEvent(QKeyEvent *event)
         hide();
         event->accept();
         return;
+    case Qt::Key_K: {
+        if (event->modifiers() == Qt::ControlModifier) {
+            openPalette();
+            event->accept();
+            return;
+        }
+        break;
+    }
     case Qt::Key_F: {
         if (event->modifiers() == Qt::ControlModifier) {
             m_search->setFocus();

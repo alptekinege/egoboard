@@ -14,6 +14,8 @@ class QComboBox;
 class QLineEdit;
 class QListView;
 class QTimer;
+class CommandPalette;
+class TimelineStrip;
 
 // Two-pane history window: filter bar on top, entry list (infinite scroll) in
 // the middle, full payload preview on the right; optional groups dock.
@@ -46,6 +48,7 @@ private:
     void importHistory();
     void clearHistory();
     void updateActionStates();
+    void openPalette();
     void repositionCenteredOnActiveScreen();
 
     ApplicationContext &m_ctx;
@@ -70,5 +73,7 @@ private:
     qint64 m_selectedId = 0;
     qint64 m_groupFilter = 0; // 0 = all
     ExportImportDialogs::DateRange m_lastRange;
+    CommandPalette *m_palette = nullptr;
+    TimelineStrip *m_timeline = nullptr;
     bool m_ignoreHideOnFocusOut = false;
 };
