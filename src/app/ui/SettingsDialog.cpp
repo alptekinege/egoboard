@@ -50,6 +50,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QtConcurrent>
 
 namespace {
 QString humanSize(qint64 bytes)
@@ -63,7 +64,7 @@ QString tesseractVersion()
 {
     QProcess p;
     p.start(QStringLiteral("tesseract"), {QStringLiteral("--version")});
-    if (!p.waitForFinished(2000)) return {};
+    if (!p.waitForFinished(1200)) return {};
     QString out = QString::fromUtf8(p.readAllStandardOutput() + p.readAllStandardError());
     const QString first = out.split(QLatin1Char('\n')).value(0).trimmed();
     return first.isEmpty() ? QStringLiteral("tesseract") : first;
@@ -73,9 +74,9 @@ QString kwinVersion()
 {
     QProcess p;
     p.start(QStringLiteral("kwin_wayland"), {QStringLiteral("--version")});
-    if (!p.waitForFinished(1000)) {
+    if (!p.waitForFinished(800)) {
         p.start(QStringLiteral("kwin_x11"), {QStringLiteral("--version")});
-        if (!p.waitForFinished(1000)) return {};
+        if (!p.waitForFinished(800)) return {};
     }
     QString out = QString::fromUtf8(p.readAllStandardOutput() + p.readAllStandardError());
     return out.split(QLatin1Char('\n')).value(0).trimmed();
@@ -112,22 +113,38 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
     layout->addWidget(buttons);
 
     load();
-    refreshDiagnostics();
-    // Populate dynamic lists after load
-    populateTransformList();
-    populateSnippetList();
-    populateScriptList();
-    if (m_appSuggestions) {
-        const QStringList apps = m_ctx.storage()->sourceApps();
-        for (const QString &a : apps) {
-            if (a.trimmed().isEmpty()) continue;
-            m_appSuggestions->addItem(a);
-        }
-        if (apps.isEmpty()) {
-            m_appSuggestions->addItem(tr("(no history yet — copy something first)"));
-            m_appSuggestions->setEnabled(false);
-        }
-    }
+    // Defer heavy work — constructor must not block UI (tesseract/kwin probes + DB)
+    QTimer::singleShot(0, this, &SettingsDialog::refreshDiagnostics);
+    // Populate dynamic lists after load (also deferred to keep open instant)
+    QTimer::singleShot(0, this, [this]{
+        populateTransformList();
+        populateSnippetList();
+        populateScriptList();
+    });
+    // App suggestions — async (DB query can be slow with many entries)
+    QTimer::singleShot(0, this, [this]{
+        if (!m_appSuggestions) return;
+        m_appSuggestions->setEnabled(false);
+        m_appSuggestions->clear();
+        m_appSuggestions->addItem(tr("(loading…)"));
+        QtConcurrent::run([this]{
+            const QStringList apps = m_ctx.storage()->sourceApps();
+            QMetaObject::invokeMethod(this, [this, apps]{
+                if (!m_appSuggestions) return;
+                m_appSuggestions->clear();
+                if (apps.isEmpty()) {
+                    m_appSuggestions->addItem(tr("(no history yet — copy something first)"));
+                    m_appSuggestions->setEnabled(false);
+                } else {
+                    for (const QString &a : apps) {
+                        if (a.trimmed().isEmpty()) continue;
+                        m_appSuggestions->addItem(a);
+                    }
+                    m_appSuggestions->setEnabled(true);
+                }
+            }, Qt::QueuedConnection);
+        });
+    });
 }
 
 // --- Behaviour (startup, window, capture basics, tray) ----------------------
@@ -529,7 +546,14 @@ QWidget *SettingsDialog::buildSearchPreviewPage()
             m_ocrStatus->setText(tr("<b style='color:palette(highlight);'>tesseract not found</b> — install <code>tesseract</code> and <code>tesseract-data-eng</code>"));
             return;
         }
-        m_ocrStatus->setText(tr("<b style='color:palette(highlight);'>tesseract OK</b> — %1").arg(tesseractVersion()));
+        m_ocrStatus->setText(tr("Checking tesseract…"));
+        QtConcurrent::run([this]{
+            const QString ver = tesseractVersion();
+            QMetaObject::invokeMethod(this, [this, ver]{
+                if (!m_ocrStatus) return;
+                m_ocrStatus->setText(tr("<b style='color:palette(highlight);'>tesseract OK</b> — %1").arg(ver.isEmpty() ? QStringLiteral("found in PATH") : ver));
+            }, Qt::QueuedConnection);
+        });
     });
     layout->addWidget(ocrBox);
 
@@ -960,7 +984,7 @@ void SettingsDialog::refreshDiagnostics()
 {
     if (!m_ftsStatus) return;
     QSqlDatabase db = m_ctx.storage()->database();
-    // FTS count
+    // FTS count — fast, keep synchronous (tiny query)
     qint64 ftsCount = -1, entryCount = m_ctx.storage()->stats().entryCount;
     {
         QSqlQuery q(db);
@@ -976,11 +1000,22 @@ void SettingsDialog::refreshDiagnostics()
     }
     if (m_ocrStatus) {
         const bool avail = OcrWorker::isAvailable();
-        const QString ver = avail ? tesseractVersion() : QString();
         const auto stats = m_ctx.storage()->stats();
-        m_ocrStatus->setText(avail
-            ? tr("<b>tesseract OK</b> — %1 — <b>%2</b> images, <b>%3</b> with OCR text. Lang: <b>%4</b>").arg(ver.isEmpty() ? QStringLiteral("found in PATH") : ver).arg(stats.imageCount).arg(stats.ocrCount).arg(m_ctx.settings()->ocrLanguage())
-            : tr("<b>tesseract not found</b> — install <code>tesseract</code> + <code>tesseract-data-eng</code> to enable image search. Preview will show <i>OCR: processing…</i> until then."));
+        if (!avail) {
+            m_ocrStatus->setText(tr("<b>tesseract not found</b> — install <code>tesseract</code> + <code>tesseract-data-eng</code> to enable image search. Preview will show <i>OCR: processing…</i> until then."));
+        } else {
+            // Show immediately without version probe (non-blocking), then fetch version async
+            m_ocrStatus->setText(tr("<b>tesseract OK</b> — checking version… — <b>%1</b> images, <b>%2</b> with OCR text. Lang: <b>%3</b>").arg(stats.imageCount).arg(stats.ocrCount).arg(m_ctx.settings()->ocrLanguage()));
+            QtConcurrent::run([this]{
+                const QString ver = tesseractVersion();
+                const auto s = m_ctx.storage()->stats();
+                const QString lang = m_ctx.settings()->ocrLanguage();
+                QMetaObject::invokeMethod(this, [this, ver, s, lang]{
+                    if (!m_ocrStatus) return;
+                    m_ocrStatus->setText(tr("<b>tesseract OK</b> — %1 — <b>%2</b> images, <b>%3</b> with OCR text. Lang: <b>%4</b>").arg(ver.isEmpty() ? QStringLiteral("found in PATH") : ver).arg(s.imageCount).arg(s.ocrCount).arg(lang));
+                }, Qt::QueuedConnection);
+            });
+        }
     }
     if (m_paletteInfo) {
         m_paletteInfo->setText(tr("Press <b>Ctrl+K</b> inside the history window to open the palette — fast, FTS-backed search with typo-tolerant re-ranking. <b>⏎</b> paste, <b>Esc</b> close. Try <code>&gt;transform</code> and <code>&gt;snippet</code> for Phase 3 actions."));
@@ -1018,14 +1053,25 @@ void SettingsDialog::refreshDiagnostics()
             m_dataControlStatus->setText(WlrDataControlHelper::isWayland() ? QStringLiteral("wlr-data-control: <b>inactive</b>") : QStringLiteral("wlr-data-control: <b>n/a</b>"));
     }
     if (m_platformDetails) {
-        QString details;
-        details += QStringLiteral("QPA: <b>%1</b> · Qt %2<br/>").arg(QGuiApplication::platformName().toHtmlEscaped(), QString::fromUtf8(qVersion()));
-        const QString kw = kwinVersion();
-        if (!kw.isEmpty()) details += QStringLiteral("KWin: %1<br/>").arg(kw.toHtmlEscaped());
+        // Show immediately without kwin probe, then fetch async
+        QString details = QStringLiteral("QPA: <b>%1</b> · Qt %2<br/>").arg(QGuiApplication::platformName().toHtmlEscaped(), QString::fromUtf8(qVersion()));
         details += QStringLiteral("DB: <code>%1</code>").arg(m_ctx.storage()->databasePath().toHtmlEscaped());
+        details += QStringLiteral("<br/><span style='color:palette(mid);'>checking KWin…</span>");
         m_platformDetails->setText(details);
+        QtConcurrent::run([this]{
+            const QString kw = kwinVersion();
+            const QString qpa = QGuiApplication::platformName();
+            const QString dbPath = m_ctx.storage()->databasePath();
+            QMetaObject::invokeMethod(this, [this, kw, qpa, dbPath]{
+                if (!m_platformDetails) return;
+                QString d = QStringLiteral("QPA: <b>%1</b> · Qt %2<br/>").arg(qpa.toHtmlEscaped(), QString::fromUtf8(qVersion()));
+                if (!kw.isEmpty()) d += QStringLiteral("KWin: %1<br/>").arg(kw.toHtmlEscaped());
+                d += QStringLiteral("DB: <code>%1</code>").arg(dbPath.toHtmlEscaped());
+                m_platformDetails->setText(d);
+            }, Qt::QueuedConnection);
+        });
     }
-    // storage page size label
+    // storage page size label — fast, keep synchronous
     if (auto *lbl = findChild<QLabel*>(QStringLiteral("dbSizeLabel"))) {
         const qint64 size = m_ctx.storage()->databaseFileSize();
         const auto stats = m_ctx.storage()->stats();
@@ -1039,25 +1085,42 @@ void SettingsDialog::refreshDiagnostics()
         if (q.exec(QStringLiteral("PRAGMA page_size")) && q.next()) pragmas += QStringLiteral("page_size=%1").arg(q.value(0).toString());
         lbl->setText(tr("PRAGMA: <code>%1</code>").arg(pragmas.toHtmlEscaped()));
     }
-    // diagnostics browser
+    // diagnostics browser — build without blocking version probes, then patch async
     if (m_diagBrowser) {
         QString diag;
         diag += QStringLiteral("Egoboard %1\n").arg(QStringLiteral(EGOBOARD_VERSION));
         diag += QStringLiteral("QPA: %1 · Qt %2 · KF6 6.0+\n").arg(QGuiApplication::platformName(), QString::fromUtf8(qVersion()));
-        const QString kw = kwinVersion();
-        if (!kw.isEmpty()) diag += QStringLiteral("KWin: %1\n").arg(kw);
         diag += QStringLiteral("DB: %1\n").arg(m_ctx.storage()->databasePath());
         const auto stats = m_ctx.storage()->stats();
         diag += QStringLiteral("Entries: %1 pinned:%2 images:%3 ocr:%4\n").arg(stats.entryCount).arg(stats.pinnedCount).arg(stats.imageCount).arg(stats.ocrCount);
         QSqlQuery q(db);
         if (q.exec(QStringLiteral("SELECT COUNT(*) FROM entries_fts")) && q.next())
             diag += QStringLiteral("FTS rows: %1\n").arg(q.value(0).toLongLong());
-        diag += QStringLiteral("OCR: %1 (%2) lang=%3 maxChars=%4\n").arg(OcrWorker::isAvailable()?QStringLiteral("available"):QStringLiteral("missing"), tesseractVersion(), m_ctx.settings()->ocrLanguage()).arg(m_ctx.settings()->ocrMaxChars());
+        diag += QStringLiteral("OCR: %1 lang=%2 maxChars=%3\n").arg(OcrWorker::isAvailable()?QStringLiteral("available"):QStringLiteral("missing"), m_ctx.settings()->ocrLanguage()).arg(m_ctx.settings()->ocrMaxChars());
         diag += QStringLiteral("Preview: codeHighlight=%1 linkify=%2 colorSwatches=%3\n").arg(m_ctx.settings()->previewCodeHighlight() ? QStringLiteral("on") : QStringLiteral("off")).arg(m_ctx.settings()->previewLinkify() ? QStringLiteral("on") : QStringLiteral("off")).arg(m_ctx.settings()->previewColorSwatches() ? QStringLiteral("on") : QStringLiteral("off"));
         diag += QStringLiteral("Platform: %1\n").arg(LayerShellHelper::diagnostics().remove(QRegularExpression(QStringLiteral("<[^>]*>"))));
         diag += QStringLiteral("DataControl: %1\n").arg(m_ctx.dataControl() ? m_ctx.dataControl()->diagnostics().remove(QRegularExpression(QStringLiteral("<[^>]*>"))) : QStringLiteral("n/a"));
         diag += QStringLiteral("Settings: debounce=%1 quickPaste=%2 maxItem=%3 maxImage=%4 diskCap=%5\n").arg(m_ctx.settings()->debounceMs()).arg(m_ctx.settings()->quickPasteCount()).arg(m_ctx.settings()->maxItemBytes()).arg(m_ctx.settings()->maxImageBytes()).arg(m_ctx.settings()->diskCapBytes());
+        diag += QStringLiteral("(versions: fetching tesseract/KWin async…)\n");
         m_diagBrowser->setPlainText(diag);
+        // async patch versions
+        QtConcurrent::run([this]{
+            const QString kw = kwinVersion();
+            const QString tess = OcrWorker::isAvailable() ? tesseractVersion() : QString();
+            QMetaObject::invokeMethod(this, [this, kw, tess]{
+                if (!m_diagBrowser) return;
+                QString cur = m_diagBrowser->toPlainText();
+                if (!kw.isEmpty() && !cur.contains(QStringLiteral("KWin:"))) {
+                    cur.replace(QStringLiteral("QPA:"), QStringLiteral("KWin: %1\nQPA:").arg(kw));
+                }
+                if (!tess.isEmpty()) {
+                    cur.replace(QStringLiteral("(versions: fetching"), QStringLiteral("tesseract: %1\n(versions: done").arg(tess));
+                } else {
+                    cur.replace(QStringLiteral("(versions: fetching tesseract/KWin async…)\n"), QString());
+                }
+                m_diagBrowser->setPlainText(cur);
+            }, Qt::QueuedConnection);
+        });
     }
     // repopulate lists if needed
     if (m_transformList && m_transformList->count()==0) populateTransformList();
