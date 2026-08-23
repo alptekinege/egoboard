@@ -120,6 +120,7 @@ void MainWindow::buildUi()
 
     m_preview = new PreviewPane(splitter);
     if (m_ctx.scripts()) m_preview->setScriptManager(m_ctx.scripts());
+    m_preview->setSettingsManager(m_ctx.settings());
     splitter->addWidget(m_preview);
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);

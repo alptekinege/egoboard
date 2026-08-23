@@ -7,15 +7,20 @@
 #include <QFile>
 #include <QRegularExpression>
 #include <QStandardPaths>
-
 namespace {
 const QString kGroupGeneral = QStringLiteral("General");
 const QString kGroupHistory = QStringLiteral("History");
+const QString kGroupPreview = QStringLiteral("Preview");
+const QString kGroupOcr = QStringLiteral("Ocr");
+const QString kGroupAutomation = QStringLiteral("Automation");
+const QString kGroupUi = QStringLiteral("Ui");
 
 constexpr int kDefaultQuickPasteCount = 9;
 constexpr int kDefaultDebounceMs = 250;
 constexpr qint64 kDefaultMaxItemBytes = 5 * 1024 * 1024; // 5 MiB
+constexpr qint64 kDefaultMaxImageBytes = 8 * 1024 * 1024; // 8 MiB
 constexpr qint64 kDefaultDiskCapBytes = 0; // unlimited
+constexpr int kDefaultOcrMaxChars = 8192;
 
 constexpr SettingsManager::SensitiveMode kDefaultSensitiveMode =
     SettingsManager::SensitiveMode::Exclude;
@@ -152,6 +157,20 @@ void SettingsManager::setMaxItemBytes(qint64 bytes)
     save();
 }
 
+qint64 SettingsManager::maxImageBytes() const
+{
+    // fallback to maxItemBytes for old configs
+    if (!m_config->group(kGroupHistory).hasKey("MaxImageBytes"))
+        return maxItemBytes();
+    return m_config->group(kGroupHistory).readEntry<qint64>("MaxImageBytes", kDefaultMaxImageBytes);
+}
+
+void SettingsManager::setMaxImageBytes(qint64 bytes)
+{
+    m_config->group(kGroupHistory).writeEntry<qint64>("MaxImageBytes", qMax<qint64>(0, bytes));
+    save();
+}
+
 qint64 SettingsManager::diskCapBytes() const
 {
     return m_config->group(kGroupHistory).readEntry<qint64>("DiskCapBytes", kDefaultDiskCapBytes);
@@ -187,7 +206,6 @@ bool SettingsManager::isSourceIgnored(const QString &app) const
     const QStringList ignored = ignoredSourceApps();
     for (const QString &pat : ignored) {
         if (pat.compare(app, Qt::CaseInsensitive) == 0) return true;
-        // also support wildcard *app* via simple contains
         if (pat.contains(QLatin1Char('*'))) {
             QRegularExpression re(QRegularExpression::wildcardToRegularExpression(pat), QRegularExpression::CaseInsensitiveOption);
             if (re.match(app).hasMatch()) return true;
@@ -196,16 +214,155 @@ bool SettingsManager::isSourceIgnored(const QString &app) const
     return false;
 }
 
+QStringList SettingsManager::customSensitivePatterns() const
+{
+    return m_config->group(kGroupHistory).readEntry("CustomSensitivePatterns", QStringList());
+}
+
+void SettingsManager::setCustomSensitivePatterns(const QStringList &patterns)
+{
+    QStringList cleaned;
+    for (QString p : patterns) {
+        p = p.trimmed();
+        if (!p.isEmpty()) cleaned << p;
+    }
+    m_config->group(kGroupHistory).writeEntry("CustomSensitivePatterns", cleaned);
+    save();
+}
+
 bool SettingsManager::ocrEnabled() const
 {
-    // Default: true if the system has tesseract, false otherwise — but we default to true
-    // and let the worker no-op gracefully when the binary is missing.
     return m_config->group(kGroupHistory).readEntry("OcrEnabled", true);
 }
 
 void SettingsManager::setOcrEnabled(bool enabled)
 {
     m_config->group(kGroupHistory).writeEntry("OcrEnabled", enabled);
+    save();
+}
+
+QString SettingsManager::ocrLanguage() const
+{
+    return m_config->group(kGroupOcr).readEntry("Language", QStringLiteral("eng"));
+}
+
+void SettingsManager::setOcrLanguage(const QString &lang)
+{
+    const QString v = lang.trimmed().isEmpty() ? QStringLiteral("eng") : lang.trimmed();
+    m_config->group(kGroupOcr).writeEntry("Language", v);
+    save();
+}
+
+int SettingsManager::ocrMaxChars() const
+{
+    return qBound(512, m_config->group(kGroupOcr).readEntry("MaxChars", kDefaultOcrMaxChars), 65536);
+}
+
+void SettingsManager::setOcrMaxChars(int chars)
+{
+    m_config->group(kGroupOcr).writeEntry("MaxChars", qBound(512, chars, 65536));
+    save();
+}
+
+bool SettingsManager::previewCodeHighlight() const
+{
+    return m_config->group(kGroupPreview).readEntry("CodeHighlight", true);
+}
+
+void SettingsManager::setPreviewCodeHighlight(bool enabled)
+{
+    m_config->group(kGroupPreview).writeEntry("CodeHighlight", enabled);
+    save();
+}
+
+bool SettingsManager::previewLinkify() const
+{
+    return m_config->group(kGroupPreview).readEntry("Linkify", true);
+}
+
+void SettingsManager::setPreviewLinkify(bool enabled)
+{
+    m_config->group(kGroupPreview).writeEntry("Linkify", enabled);
+    save();
+}
+
+bool SettingsManager::previewColorSwatches() const
+{
+    return m_config->group(kGroupPreview).readEntry("ColorSwatches", true);
+}
+
+void SettingsManager::setPreviewColorSwatches(bool enabled)
+{
+    m_config->group(kGroupPreview).writeEntry("ColorSwatches", enabled);
+    save();
+}
+
+QStringList SettingsManager::disabledScripts() const
+{
+    return m_config->group(kGroupAutomation).readEntry("DisabledScripts", QStringList());
+}
+
+void SettingsManager::setDisabledScripts(const QStringList &ids)
+{
+    m_config->group(kGroupAutomation).writeEntry("DisabledScripts", ids);
+    save();
+}
+
+bool SettingsManager::isScriptDisabled(const QString &id) const
+{
+    return disabledScripts().contains(id, Qt::CaseSensitive);
+}
+
+void SettingsManager::setScriptDisabled(const QString &id, bool disabled)
+{
+    QStringList cur = disabledScripts();
+    if (disabled) {
+        if (!cur.contains(id)) cur << id;
+    } else {
+        cur.removeAll(id);
+    }
+    setDisabledScripts(cur);
+}
+
+QStringList SettingsManager::hiddenTransforms() const
+{
+    return m_config->group(kGroupAutomation).readEntry("HiddenTransforms", QStringList());
+}
+
+void SettingsManager::setHiddenTransforms(const QStringList &names)
+{
+    m_config->group(kGroupAutomation).writeEntry("HiddenTransforms", names);
+    save();
+}
+
+bool SettingsManager::isTransformHidden(const QString &name) const
+{
+    return hiddenTransforms().contains(name, Qt::CaseInsensitive);
+}
+
+QString SettingsManager::trayMode() const
+{
+    const QString v = m_config->group(kGroupUi).readEntry("TrayMode", QStringLiteral("auto"));
+    if (v == QLatin1String("always") || v == QLatin1String("hidden")) return v;
+    return QStringLiteral("auto");
+}
+
+void SettingsManager::setTrayMode(const QString &mode)
+{
+    QString v = mode;
+    if (v != QLatin1String("always") && v != QLatin1String("hidden")) v = QStringLiteral("auto");
+    m_config->group(kGroupUi).writeEntry("TrayMode", v);
+    save();
+}
+
+bool SettingsManager::notificationsEnabled() const
+{
+    return m_config->group(kGroupUi).readEntry("NotificationsEnabled", true);
+}
+
+void SettingsManager::setNotificationsEnabled(bool enabled)
+{
+    m_config->group(kGroupUi).writeEntry("NotificationsEnabled", enabled);
     save();
 }
 

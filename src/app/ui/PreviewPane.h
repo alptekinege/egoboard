@@ -12,6 +12,7 @@ class QStackedWidget;
 class QTextBrowser;
 class QToolButton;
 class ScriptActionManager;
+class SettingsManager;
 
 // Right-hand side of the main window: renders the full payload of the
 // selected entry (text / HTML / image / file list) plus a metadata footer.
@@ -25,6 +26,7 @@ public:
     void showRecord(const ClipboardRecord &record);
     void showEmpty(const QString &message = {});
     void setScriptManager(ScriptActionManager *mgr) { m_scripts = mgr; }
+    void setSettingsManager(SettingsManager *mgr) { m_settings = mgr; }
 
 signals:
     void copyToClipboardRequested(const QString &text);
@@ -61,4 +63,5 @@ private:
     QString m_originalText;
     bool m_isTransformed = false;
     ScriptActionManager *m_scripts = nullptr;
+    SettingsManager *m_settings = nullptr;
 };

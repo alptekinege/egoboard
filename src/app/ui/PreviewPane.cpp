@@ -2,6 +2,7 @@
 
 #include "CodePreviewHighlighter.h"
 #include "../ScriptActionManager.h"
+#include "../SettingsManager.h"
 #include "TransformChainDialog.h"
 #include "TransformEngine.h"
 
@@ -162,24 +163,31 @@ void PreviewPane::buildTransformBar()
 void PreviewPane::refreshTransformMenu()
 {
     auto *menu = new QMenu(m_transformBtn);
-    // Built-ins
+    // Built-ins — filter hidden via SettingsManager
+    const QStringList hidden = m_settings ? m_settings->hiddenTransforms() : QStringList();
     for (const auto &d : TransformEngine::allDescriptors()) {
+        if (hidden.contains(d.name, Qt::CaseInsensitive)) continue;
         QAction *a = menu->addAction(d.label);
         a->setToolTip(d.description + QStringLiteral("  (") + d.name + QStringLiteral(")"));
         connect(a, &QAction::triggered, this, [this, id = d.id]{ applyBuiltin(static_cast<int>(id)); });
     }
     menu->addSeparator();
-    // Scripts
+    // Scripts — filter disabled
     if (m_scripts) {
         m_scripts->reload();
         const auto acts = m_scripts->actions();
+        const QStringList disabled = m_settings ? m_settings->disabledScripts() : QStringList();
+        bool anyVisible = false;
         if (!acts.isEmpty()) {
             for (const auto &sa : acts) {
+                if (disabled.contains(sa.id)) continue;
+                anyVisible = true;
                 QAction *a = menu->addAction(QStringLiteral("[JS] %1").arg(sa.label));
                 a->setToolTip(sa.filePath);
                 connect(a, &QAction::triggered, this, [this, id = sa.id]{ applyScript(id); });
             }
-        } else {
+        }
+        if (!anyVisible) {
             QAction *a = menu->addAction(tr("(no JS actions)"));
             a->setEnabled(false);
         }
@@ -386,7 +394,9 @@ void PreviewPane::showRecord(const ClipboardRecord &record)
     switch (record.type) {
     case ContentType::Text: {
         QString display = record.textData;
-        const auto mode = CodePreviewHighlighter::detect(display);
+        const bool codeEnabled = !m_settings || m_settings->previewCodeHighlight();
+        const auto rawMode = CodePreviewHighlighter::detect(display);
+        const auto mode = codeEnabled ? rawMode : CodePreviewHighlighter::Mode::Plain;
         if (mode == CodePreviewHighlighter::Mode::Json) {
             QJsonParseError err;
             QJsonDocument doc = QJsonDocument::fromJson(display.toUtf8(), &err);
@@ -398,19 +408,25 @@ void PreviewPane::showRecord(const ClipboardRecord &record)
         m_textEdit->setPlainText(display);
         m_stack->setCurrentWidget(m_textEdit->parentWidget());
         {
-            const auto urls = extractUrls(display);
-            const auto cols = extractHexColors(display);
-            if (!urls.isEmpty()) {
-                QStringList linkHtml;
-                for (const QString &u : urls) linkHtml << QStringLiteral("<a href=\"%1\">%1</a>").arg(u.toHtmlEscaped());
-                extraMeta += QStringLiteral("<br/>🔗 ") + linkHtml.join(QStringLiteral(" · "));
-            }
-            if (!cols.isEmpty()) {
-                QStringList swatches;
-                for (const QString &c : cols) {
-                    swatches << QStringLiteral("<span style=\"background:%1; border:1px solid palette(mid); padding:0 8px; margin-right:4px; border-radius:3px;\">%1</span>").arg(c);
+            const bool linkify = !m_settings || m_settings->previewLinkify();
+            const bool swatches = !m_settings || m_settings->previewColorSwatches();
+            if (linkify) {
+                const auto urls = extractUrls(display);
+                if (!urls.isEmpty()) {
+                    QStringList linkHtml;
+                    for (const QString &u : urls) linkHtml << QStringLiteral("<a href=\"%1\">%1</a>").arg(u.toHtmlEscaped());
+                    extraMeta += QStringLiteral("<br/>🔗 ") + linkHtml.join(QStringLiteral(" · "));
                 }
-                extraMeta += QStringLiteral("<br/>🎨 ") + swatches.join(QStringLiteral(" "));
+            }
+            if (swatches) {
+                const auto cols = extractHexColors(display);
+                if (!cols.isEmpty()) {
+                    QStringList swatchesList;
+                    for (const QString &c : cols) {
+                        swatchesList << QStringLiteral("<span style=\"background:%1; border:1px solid palette(mid); padding:0 8px; margin-right:4px; border-radius:3px;\">%1</span>").arg(c);
+                    }
+                    extraMeta += QStringLiteral("<br/>🎨 ") + swatchesList.join(QStringLiteral(" "));
+                }
             }
         }
         break;

@@ -12,6 +12,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QMimeData>
+#include <QRegularExpression>
 
 namespace {
 
@@ -59,6 +60,30 @@ bool isFilePathList(const QString &text, QStringList *pathsOut)
     if (pathsOut)
         *pathsOut = paths;
     return true;
+}
+
+bool isSensitiveWithCustom(const QString &text, SettingsManager *settings)
+{
+    if (SensitiveDataDetector::isSensitive(text)) return true;
+    if (!settings) return false;
+    const auto pats = settings->customSensitivePatterns();
+    for (const QString &pat : pats) {
+        QRegularExpression re(pat, QRegularExpression::CaseInsensitiveOption);
+        if (re.isValid() && re.match(text).hasMatch()) return true;
+    }
+    return false;
+}
+
+QStringList customKinds(const QString &text, SettingsManager *settings)
+{
+    QStringList out = SensitiveDataDetector::kinds(text);
+    if (!settings) return out;
+    const auto pats = settings->customSensitivePatterns();
+    for (const QString &pat : pats) {
+        QRegularExpression re(pat, QRegularExpression::CaseInsensitiveOption);
+        if (re.isValid() && re.match(text).hasMatch()) out << QStringLiteral("custom:%1").arg(pat.left(16));
+    }
+    return out;
 }
 
 } // namespace
@@ -124,12 +149,12 @@ void ClipboardWatcher::processPending()
         const auto mode = m_settings ? m_settings->sensitiveMode()
                                      : SettingsManager::SensitiveMode::Off;
         if (mode == SettingsManager::SensitiveMode::Exclude
-            && SensitiveDataDetector::isSensitive(text)) {
-            emit excludedSensitive(SensitiveDataDetector::kinds(text).join(QStringLiteral(", ")));
+            && isSensitiveWithCustom(text, m_settings)) {
+            emit excludedSensitive(customKinds(text, m_settings).join(QStringLiteral(", ")));
             return;
         }
         if (mode == SettingsManager::SensitiveMode::Mark)
-            record.sensitive = SensitiveDataDetector::isSensitive(text);
+            record.sensitive = isSensitiveWithCustom(text, m_settings);
     }
 
     record.timestamp = QDateTime::currentMSecsSinceEpoch();
@@ -150,6 +175,7 @@ ClipboardRecord ClipboardWatcher::buildRecord(const QMimeData *mimeData) const
     mimeData->formats();
 
     const qint64 maxBytes = m_settings ? m_settings->maxItemBytes() : 5 * 1024 * 1024;
+    const qint64 maxImageBytes = m_settings ? m_settings->maxImageBytes() : maxBytes;
     ClipboardRecord record;
 
     if (mimeData->hasImage()) {
@@ -162,7 +188,8 @@ ClipboardRecord ClipboardWatcher::buildRecord(const QMimeData *mimeData) const
         image.save(&buffer, "PNG");
         record.type = ContentType::Image;
         record.sizeBytes = png.size();
-        if (maxBytes <= 0 || png.size() <= maxBytes) {
+        const qint64 imgCap = maxImageBytes > 0 ? maxImageBytes : maxBytes;
+        if (imgCap <= 0 || png.size() <= imgCap) {
             record.blobData = png;
             record.hasBlob = true;
             record.preview = QStringLiteral("Image %1×%2 · %3")
@@ -173,7 +200,7 @@ ClipboardRecord ClipboardWatcher::buildRecord(const QMimeData *mimeData) const
             record.preview = QStringLiteral("Image %1×%2 · not stored (exceeds %3)")
                                  .arg(image.width())
                                  .arg(image.height())
-                                 .arg(humanSize(maxBytes));
+                                 .arg(humanSize(imgCap));
         }
         record.hash = hashPayload(ContentType::Image, png);
         return record;
