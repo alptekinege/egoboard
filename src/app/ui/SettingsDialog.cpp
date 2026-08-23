@@ -2,6 +2,7 @@
 
 #include "../ApplicationContext.h"
 #include "../HotkeyManager.h"
+#include "../LayerShellHelper.h"
 #include "../ScriptActionManager.h"
 #include "../SettingsManager.h"
 #include "../OcrWorker.h"
@@ -292,6 +293,11 @@ QWidget *SettingsDialog::buildGeneralPage()
     captureHint->setWordWrap(true);
     captureHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
     captureLayout->addWidget(captureHint);
+    m_platformStatus = new QLabel(LayerShellHelper::diagnostics(), captureBox);
+    m_platformStatus->setWordWrap(true);
+    m_platformStatus->setTextFormat(Qt::RichText);
+    m_platformStatus->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px; border: 1px solid palette(mid); border-radius: 6px; padding: 6px;"));
+    captureLayout->addWidget(m_platformStatus);
     layout->addWidget(captureBox);
 
     auto *paletteBox = new QGroupBox(tr("Command palette"), page);
@@ -648,6 +654,9 @@ void SettingsDialog::refreshDiagnostics()
                 }
             }
         }
+    }
+    if (m_platformStatus) {
+        m_platformStatus->setText(LayerShellHelper::diagnostics());
     }
 }
 

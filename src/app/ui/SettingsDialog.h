@@ -12,8 +12,9 @@ class QRadioButton;
 class QSpinBox;
 
 // Detailed settings dialog with tabs: General / History & Privacy /
-// Search & Palette / Hotkeys / Storage / Automation (Phase 3). Provides inline diagnostics for FTS,
-// OCR, transforms, snippets, and per-app rules — all local, no network.
+// Search & Palette / Hotkeys / Storage / Automation (Phase 3) / Platform.
+// Provides inline diagnostics for FTS, OCR, transforms, snippets, per-app
+// rules and layer-shell — all local, no network.
 class SettingsDialog : public QDialog {
     Q_OBJECT
 public:
@@ -36,6 +37,7 @@ private:
     QCheckBox *m_primarySelection = nullptr;
     QCheckBox *m_autostart = nullptr;
     QSpinBox *m_quickPasteCount = nullptr;
+    QLabel *m_platformStatus = nullptr;
 
     // History & privacy
     QSpinBox *m_debounce = nullptr;

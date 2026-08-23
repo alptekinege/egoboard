@@ -2,6 +2,7 @@
 
 #include "ClipboardListModel.h"
 #include "StorageManager.h"
+#include "../LayerShellHelper.h"
 
 #include <QGuiApplication>
 #include <QKeyEvent>
@@ -63,19 +64,51 @@ void QuickPasteMenu::refresh()
 void QuickPasteMenu::popupAtCursor()
 {
     refresh();
+    // Size drives LayerShellQt's desiredSize — compute before attaching.
+    adjustSize();
+
     QScreen *screen = QGuiApplication::screenAt(QCursor::pos());
     if (!screen)
         screen = QGuiApplication::primaryScreen();
+
+    // Cursor-anchored position, clamped inside the screen (multi-monitor safe).
+    QPoint pos = QCursor::pos() + QPoint(12, 12);
     if (screen) {
-        // Place near the cursor, clamped inside the screen (multi-monitor safe).
-        QPoint pos = QCursor::pos() + QPoint(12, 12);
         const QRect available = screen->availableGeometry();
         pos.setX(qMin(pos.x(), available.right() - width() - 8));
         pos.setY(qMin(pos.y(), available.bottom() - height() - 8));
         pos.setX(qMax(pos.x(), available.left() + 8));
         pos.setY(qMax(pos.y(), available.top() + 8));
-        move(pos);
     }
+
+    const QSize desired = size();
+    const bool useLayerShell = LayerShellHelper::isAvailable() && screen;
+
+    if (useLayerShell) {
+        // LayerShellQt requires a native QWindow before configuring.
+        // windowHandle() is null until the widget has a native window;
+        // WA_NativeWindow + winId() forces creation without yet showing.
+        if (!windowHandle()) {
+            setAttribute(Qt::WA_NativeWindow, true);
+            // Ensure the window handle exists before configuring layer-shell.
+            // winId() creates it; createWindowContainer is not needed.
+            (void)winId();
+        }
+        if (QWindow *win = windowHandle()) {
+            LayerShellHelper::configureForQuickPaste(win, screen, desired, pos);
+            m_layerShellConfigured = true;
+        } else {
+            // Should not happen — fallback to cursor move.
+            if (screen) move(pos);
+            m_layerShellConfigured = false;
+        }
+    } else {
+        // X11 / offscreen / no LayerShellQt — classic cursor popup.
+        if (screen)
+            move(pos);
+        m_layerShellConfigured = false;
+    }
+
     show();
     raise();
     activateWindow();
@@ -86,6 +119,14 @@ void QuickPasteMenu::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
     setFocus();
+}
+
+void QuickPasteMenu::hideEvent(QHideEvent *event)
+{
+    QWidget::hideEvent(event);
+    // Keep flag for diagnostics; LayerShellQt cleans its layer surface on hide.
+    // Don't reset m_layerShellConfigured here — it reflects last popup mode.
+    Q_UNUSED(event)
 }
 
 void QuickPasteMenu::keyPressEvent(QKeyEvent *event)

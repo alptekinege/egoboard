@@ -6,6 +6,7 @@
 #include "EgoboardDbusAdaptor.h"
 #include "ExportImportManager.h"
 #include "HotkeyManager.h"
+#include "LayerShellHelper.h"
 #include "ScriptActionManager.h"
 #include "SettingsManager.h"
 #include "SnippetManager.h"
@@ -294,6 +295,37 @@ int ApplicationContext::smokeTest()
         if (!m_snippets->deleteSnippet(sid)) {
             qCritical("smoke: deleteSnippet failed");
             return 1;
+        }
+    }
+
+    // Phase 4 smoke: LayerShellHelper (headless-safe, no window needed)
+    {
+        const QString plat = LayerShellHelper::platformName();
+        const bool wl = LayerShellHelper::isWayland();
+        const bool avail = LayerShellHelper::isAvailable();
+        // On offscreen (CI) expect !wayland && !available; on wayland
+        // expect available when LayerShellQt was linked. Either way must not crash.
+        if (plat.isEmpty()) {
+            qCritical("smoke: LayerShellHelper plat empty");
+            return 1;
+        }
+        if (wl && !avail) {
+#ifdef EGOBOARD_HAVE_LAYERSHELLQT
+            qCritical("smoke: on wayland but LayerShellQt reports unavailable");
+            return 1;
+#endif
+        }
+        if (!wl && avail) {
+            qCritical("smoke: LayerShellHelper claims available off wayland (%s)", qPrintable(plat));
+            return 1;
+        }
+        const QString diag = LayerShellHelper::diagnostics();
+        if (diag.isEmpty() || !diag.contains(plat, Qt::CaseInsensitive)) {
+            qCritical("smoke: LayerShellHelper diagnostics malformed");
+            return 1;
+        }
+        if (diag.contains(QStringLiteral("LayerShellQt")) && wl) {
+            // ok — built with LayerShellQt
         }
     }
 

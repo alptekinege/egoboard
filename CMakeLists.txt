@@ -32,6 +32,11 @@ pkg_check_modules(WAYLAND_CLIENT IMPORTED_TARGET wayland-client)
 # Optional: X11 XTest extension for auto-paste simulation on X11.
 find_package(X11 COMPONENTS Xtst QUIET)
 
+find_package(LayerShellQt QUIET)
+if(LayerShellQt_FOUND)
+    set(EGOBOARD_HAVE_LAYERSHELLQT ON)
+endif()
+
 configure_file(cmake/Version.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/Version.h")
 
 # --- Core library (Qt Core + Sql only, no GUI/KF6 => unit-testable) -----------
@@ -67,6 +72,7 @@ add_executable(egoboard
     src/app/ApplicationContext.cpp
     src/app/SingleInstanceGuard.cpp
     src/app/SettingsManager.cpp
+    src/app/LayerShellHelper.cpp
     src/app/ActiveWindowTracker.h
     src/app/X11ActiveWindowTracker.cpp
     src/app/WaylandActiveWindowTracker.cpp
@@ -116,6 +122,11 @@ target_link_libraries(egoboard PRIVATE
 
 target_compile_definitions(egoboard PRIVATE
     EGOBOARD_VERSION="${PROJECT_VERSION}")
+
+if(EGOBOARD_HAVE_LAYERSHELLQT)
+    target_link_libraries(egoboard PRIVATE LayerShellQt::Interface)
+    target_compile_definitions(egoboard PRIVATE EGOBOARD_HAVE_LAYERSHELLQT=1)
+endif()
 
 if(EGOBOARD_HAVE_XTEST)
     target_compile_definitions(egoboard PRIVATE EGOBOARD_HAVE_XTEST=1)
