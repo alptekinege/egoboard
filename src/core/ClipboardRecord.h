@@ -24,6 +24,7 @@ struct ClipboardRecord {
     int useCount = 0;
     QString sourceApp;
     QString sourceWindow;
+    QString ocrText;
 
     bool isValid() const { return id != 0; }
 };

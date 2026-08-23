@@ -9,6 +9,7 @@
 #include "StorageManager.h"
 #include "TrayController.h"
 #include "VacuumWorker.h"
+#include "OcrWorker.h"
 #include "WaylandActiveWindowTracker.h"
 #include "X11ActiveWindowTracker.h"
 #include "ui/MainWindow.h"
@@ -62,6 +63,10 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
     m_tray = new TrayController(m_storage, this);
     m_window = new MainWindow(*this);
     m_quickPaste = new QuickPasteMenu(m_storage, m_settings->quickPasteCount());
+    m_ocr = new OcrWorker(m_storage, this);
+    connect(m_ocr, &OcrWorker::recognized, this, [this](qint64 id, const QString &text){
+        m_storage->setOcrText(id, text);
+    });
 }
 
 ApplicationContext::~ApplicationContext()
@@ -112,6 +117,12 @@ void ApplicationContext::onCaptured(const ClipboardRecord &record)
     const qint64 id = m_storage->insertOrUpdate(record, &updatedExisting);
     if (id == 0)
         return;
+
+    // Queue OCR for new image entries (local tesseract, no network)
+    if (!updatedExisting && record.type == ContentType::Image && record.hasBlob && m_ocr
+        && m_settings && m_settings->ocrEnabled() && OcrWorker::isAvailable()) {
+        m_ocr->recognize(id, record.blobData);
+    }
 
     // Optional disk-size cap: check every N captures to amortize the cost.
     const qint64 cap = m_settings->diskCapBytes();

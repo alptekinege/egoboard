@@ -5,6 +5,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QRegularExpression>
 #include <QStandardPaths>
 
 namespace {
@@ -159,6 +160,52 @@ qint64 SettingsManager::diskCapBytes() const
 void SettingsManager::setDiskCapBytes(qint64 bytes)
 {
     m_config->group(kGroupHistory).writeEntry<qint64>("DiskCapBytes", qMax<qint64>(0, bytes));
+    save();
+}
+
+QStringList SettingsManager::ignoredSourceApps() const
+{
+    return m_config->group(kGroupHistory).readEntry("IgnoredApps", QStringList());
+}
+
+void SettingsManager::setIgnoredSourceApps(const QStringList &apps)
+{
+    QStringList cleaned;
+    cleaned.reserve(apps.size());
+    for (QString a : apps) {
+        a = a.trimmed();
+        if (!a.isEmpty()) cleaned << a;
+    }
+    cleaned.removeDuplicates();
+    m_config->group(kGroupHistory).writeEntry("IgnoredApps", cleaned);
+    save();
+}
+
+bool SettingsManager::isSourceIgnored(const QString &app) const
+{
+    if (app.isEmpty()) return false;
+    const QStringList ignored = ignoredSourceApps();
+    for (const QString &pat : ignored) {
+        if (pat.compare(app, Qt::CaseInsensitive) == 0) return true;
+        // also support wildcard *app* via simple contains
+        if (pat.contains(QLatin1Char('*'))) {
+            QRegularExpression re(QRegularExpression::wildcardToRegularExpression(pat), QRegularExpression::CaseInsensitiveOption);
+            if (re.match(app).hasMatch()) return true;
+        }
+    }
+    return false;
+}
+
+bool SettingsManager::ocrEnabled() const
+{
+    // Default: true if the system has tesseract, false otherwise — but we default to true
+    // and let the worker no-op gracefully when the binary is missing.
+    return m_config->group(kGroupHistory).readEntry("OcrEnabled", true);
+}
+
+void SettingsManager::setOcrEnabled(bool enabled)
+{
+    m_config->group(kGroupHistory).writeEntry("OcrEnabled", enabled);
     save();
 }
 

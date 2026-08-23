@@ -21,6 +21,7 @@ class SettingsManager;
 class StorageManager;
 class TrayController;
 class VacuumWorker;
+class OcrWorker;
 
 // Composition root: owns every subsystem and wires the signal/slot graph.
 // fullGui == false gives a headless configuration (storage/bookmarks/io only)
@@ -70,5 +71,6 @@ private:
     VacuumWorker *m_vacuumWorker = nullptr;
     QThread *m_vacuumThread = nullptr;
     QTimer *m_vacuumTimer = nullptr;
+    OcrWorker *m_ocr = nullptr;
     int m_captureCounter = 0;
 };

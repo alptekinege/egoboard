@@ -138,6 +138,8 @@ void ClipboardWatcher::processPending()
         record.sourceApp = source.appIdentifier;
         record.sourceWindow = source.windowTitle;
     }
+    if (m_settings && !record.sourceApp.isEmpty() && m_settings->isSourceIgnored(record.sourceApp))
+        return; // per-app ignore rule
     emit captured(record);
 }
 

@@ -30,6 +30,7 @@ public:
     int removeEntries(const QList<qint64> &ids) override;
     int clearHistory(bool includePinned) override;
     bool setPinned(qint64 id, bool pinned) override;
+    bool setOcrText(qint64 id, const QString &ocrText) override;
     QStringList sourceApps() const override;
     StorageStats stats() const override;
     int enforceDiskCap(qint64 maxBytes) override;

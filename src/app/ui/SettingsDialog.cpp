@@ -17,8 +17,10 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QPlainTextEdit>
 #include <QSpinBox>
 #include <QTabWidget>
+#include <QRegularExpression>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -75,6 +77,24 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
     privacyLayout->addWidget(m_sensitiveMark);
     privacyLayout->addWidget(m_sensitiveExclude);
     historyLayout->addWidget(privacyBox);
+
+    auto *rulesBox = new QGroupBox(tr("Per-app rules & OCR"), historyPage);
+    auto *rulesLayout = new QVBoxLayout(rulesBox);
+    auto *ignoredLabel = new QLabel(tr("Ignore clipboard from these apps (one per line, supports * wildcard):"), rulesBox);
+    ignoredLabel->setWordWrap(true);
+    rulesLayout->addWidget(ignoredLabel);
+    m_ignoredApps = new QPlainTextEdit(rulesBox);
+    m_ignoredApps->setPlaceholderText(tr("e.g.\norg.keepassxc.KeePassXC\n1Password\nfirefox*\ncom.github.*"));
+    m_ignoredApps->setMaximumHeight(90);
+    rulesLayout->addWidget(m_ignoredApps);
+    auto *ignoredHint = new QLabel(tr("Source app comes from the active window tracker (X11: process name, Wayland: app_id). Leave empty to capture everything."), rulesBox);
+    ignoredHint->setWordWrap(true);
+    ignoredHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+    rulesLayout->addWidget(ignoredHint);
+    m_ocrEnabled = new QCheckBox(tr("Enable OCR for images (local tesseract, searchable text)"), rulesBox);
+    m_ocrEnabled->setToolTip(tr("When enabled, copied images are OCR'd in the background and become searchable. Requires tesseract installed (no network)."));
+    rulesLayout->addWidget(m_ocrEnabled);
+    historyLayout->addWidget(rulesBox);
 
     historyLayout->addStretch(1);
     tabs->addTab(historyPage, tr("History && Privacy"));
@@ -255,6 +275,10 @@ void SettingsDialog::load()
         break;
     }
     m_diskCapMb->setValue(int(m_ctx.settings()->diskCapBytes() / (1024 * 1024)));
+    if (m_ignoredApps) {
+        m_ignoredApps->setPlainText(m_ctx.settings()->ignoredSourceApps().join(QStringLiteral("\n")));
+    }
+    if (m_ocrEnabled) m_ocrEnabled->setChecked(m_ctx.settings()->ocrEnabled());
 }
 
 void SettingsDialog::save()
@@ -274,4 +298,9 @@ void SettingsDialog::save()
     else
         m_ctx.settings()->setSensitiveMode(SettingsManager::SensitiveMode::Exclude);
     m_ctx.settings()->setDiskCapBytes(qint64(m_diskCapMb->value()) * 1024 * 1024);
+    if (m_ignoredApps) {
+        const QStringList apps = m_ignoredApps->toPlainText().split(QRegularExpression(QStringLiteral("[\n,]+")), Qt::SkipEmptyParts);
+        m_ctx.settings()->setIgnoredSourceApps(apps);
+    }
+    if (m_ocrEnabled) m_ctx.settings()->setOcrEnabled(m_ocrEnabled->isChecked());
 }

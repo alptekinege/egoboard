@@ -5,15 +5,49 @@
 
 namespace DatabaseSchema {
 
+static bool columnExists(QSqlDatabase &db, const QString &table, const QString &column)
+{
+    QSqlQuery q(db);
+    // Use PRAGMA table_info which is stable; pragma_table_info table-valued function
+    // does not reliably support bound parameters for the table name in all SQLite builds.
+    if (!q.exec(QStringLiteral("PRAGMA table_info(%1)").arg(table))) return false;
+    while (q.next()) {
+        if (q.value(1).toString().compare(column, Qt::CaseInsensitive) == 0) return true;
+    }
+    return false;
+}
+
 static bool ensureFts(QSqlDatabase &db)
 {
-    // FTS5 virtual table for fast full-text search over preview + text_data.
-    // Uses external content sync ('entries' table) so the index stays small and
-    // rebuildable. Gracefully no-ops if the SQLite build lacks FTS5.
+    // Handle migration from older 2-column FTS to 3-column (adds ocr_text).
+    // Also handles ocr_text column addition to entries table.
+    if (!columnExists(db, QStringLiteral("entries"), QStringLiteral("ocr_text"))) {
+        QSqlQuery alter(db);
+        // Ignore error if column already exists (race).
+        alter.exec(QStringLiteral("ALTER TABLE entries ADD COLUMN ocr_text TEXT"));
+    }
+
+    // Detect old FTS schema without ocr_text -> drop and recreate
+    bool needsRecreate = false;
+    {
+        QSqlQuery sq(db);
+        if (sq.exec(QStringLiteral("SELECT sql FROM sqlite_master WHERE type='table' AND name='entries_fts'")) && sq.next()) {
+            const QString sql = sq.value(0).toString();
+            if (!sql.contains(QStringLiteral("ocr_text"))) needsRecreate = true;
+        }
+    }
+    if (needsRecreate) {
+        QSqlQuery q(db);
+        q.exec(QStringLiteral("DROP TRIGGER IF EXISTS entries_ai"));
+        q.exec(QStringLiteral("DROP TRIGGER IF EXISTS entries_ad"));
+        q.exec(QStringLiteral("DROP TRIGGER IF EXISTS entries_au"));
+        q.exec(QStringLiteral("DROP TABLE IF EXISTS entries_fts"));
+    }
+
     QSqlQuery probe(db);
     if (!probe.exec(QStringLiteral(
             "CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts "
-            "USING fts5(preview, text_data, content='entries', content_rowid='id', "
+            "USING fts5(preview, text_data, ocr_text, content='entries', content_rowid='id', "
             "tokenize='unicode61')"))) {
         qWarning("egoboard: FTS5 not available, falling back to LIKE search: %s",
                  qPrintable(probe.lastError().text()));
@@ -23,18 +57,18 @@ static bool ensureFts(QSqlDatabase &db)
     static const QList<QString> triggers = {
         QStringLiteral(
             "CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN "
-            "INSERT INTO entries_fts(rowid, preview, text_data) "
-            "VALUES (new.id, new.preview, new.text_data); END"),
+            "INSERT INTO entries_fts(rowid, preview, text_data, ocr_text) "
+            "VALUES (new.id, new.preview, new.text_data, new.ocr_text); END"),
         QStringLiteral(
             "CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN "
-            "INSERT INTO entries_fts(entries_fts, rowid, preview, text_data) "
-            "VALUES ('delete', old.id, old.preview, old.text_data); END"),
+            "INSERT INTO entries_fts(entries_fts, rowid, preview, text_data, ocr_text) "
+            "VALUES ('delete', old.id, old.preview, old.text_data, old.ocr_text); END"),
         QStringLiteral(
             "CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN "
-            "INSERT INTO entries_fts(entries_fts, rowid, preview, text_data) "
-            "VALUES ('delete', old.id, old.preview, old.text_data); "
-            "INSERT INTO entries_fts(rowid, preview, text_data) "
-            "VALUES (new.id, new.preview, new.text_data); END"),
+            "INSERT INTO entries_fts(entries_fts, rowid, preview, text_data, ocr_text) "
+            "VALUES ('delete', old.id, old.preview, old.text_data, old.ocr_text); "
+            "INSERT INTO entries_fts(rowid, preview, text_data, ocr_text) "
+            "VALUES (new.id, new.preview, new.text_data, new.ocr_text); END"),
     };
     for (const QString &sql : triggers) {
         QSqlQuery q(db);
@@ -83,6 +117,7 @@ bool ensure(QSqlDatabase &db)
             " use_count INTEGER NOT NULL DEFAULT 0,"
             " source_app TEXT,"
             " source_window TEXT,"
+            " ocr_text TEXT,"
             " UNIQUE(content_hash))"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_entries_order ON entries(timestamp_ms DESC, id DESC)"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_entries_app ON entries(source_app)"),

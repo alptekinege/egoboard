@@ -48,6 +48,13 @@ public:
     qint64 diskCapBytes() const; // 0 = unlimited history
     void setDiskCapBytes(qint64 bytes);
 
+    QStringList ignoredSourceApps() const;
+    void setIgnoredSourceApps(const QStringList &apps);
+    bool isSourceIgnored(const QString &app) const;
+
+    bool ocrEnabled() const;
+    void setOcrEnabled(bool enabled);
+
     static QString defaultDatabasePath();
     static QString autostartDesktopFilePath();
 

@@ -82,6 +82,7 @@ add_executable(egoboard
     src/app/ui/ExportImportDialogs.cpp
     src/app/ui/CommandPalette.cpp
     src/app/ui/TimelineStrip.cpp
+    src/app/OcrWorker.cpp
     src/app/ui/CodePreviewHighlighter.cpp
     data/resources.qrc
 )

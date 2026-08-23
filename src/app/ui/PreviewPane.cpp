@@ -7,12 +7,12 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QPlainTextEdit>
+#include <QRegularExpression>
 #include <QScrollArea>
 #include <QStackedWidget>
 #include <QTextBrowser>
 #include <QVBoxLayout>
 #include "CodePreviewHighlighter.h"
-#include <QJsonDocument>
 
 namespace {
 
@@ -21,8 +21,37 @@ QString humanSize(qint64 bytes)
     if (bytes < 1024)
         return PreviewPane::tr("%1 B").arg(bytes);
     if (bytes < 1024 * 1024)
-        return PreviewPane::tr("%1 kB").arg(bytes / 1024.0, 0, 'f', 1);
+        return PreviewPane::tr("%1 kB").arg(bytes / 1024.0, 'f', 1);
     return PreviewPane::tr("%1 MB").arg(bytes / (1024.0 * 1024.0), 0, 'f', 1);
+}
+
+QStringList extractUrls(const QString &text)
+{
+    static const QRegularExpression urlRe(QStringLiteral(R"(https?://[^\s"'<>]+)"), QRegularExpression::CaseInsensitiveOption);
+    QStringList out;
+    auto it = urlRe.globalMatch(text);
+    while (it.hasNext()) {
+        auto m = it.next();
+        QString u = m.captured(0);
+        while (!u.isEmpty() && QStringLiteral(".,;!?)").contains(u.back())) u.chop(1);
+        if (!out.contains(u)) out << u;
+        if (out.size() >= 5) break;
+    }
+    return out;
+}
+
+QStringList extractHexColors(const QString &text)
+{
+    static const QRegularExpression colRe(QStringLiteral(R"(#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b)"));
+    QStringList out;
+    auto it = colRe.globalMatch(text);
+    while (it.hasNext()) {
+        auto m = it.next();
+        QString c = m.captured(0);
+        if (!out.contains(c, Qt::CaseInsensitive)) out << c;
+        if (out.size() >= 5) break;
+    }
+    return out;
 }
 
 } // namespace
@@ -52,6 +81,8 @@ PreviewPane::PreviewPane(QWidget *parent)
 
     m_metaLabel = new QLabel(this);
     m_metaLabel->setWordWrap(true);
+    m_metaLabel->setTextFormat(Qt::RichText);
+    m_metaLabel->setOpenExternalLinks(true);
     m_metaLabel->setContentsMargins(8, 4, 8, 4);
     layout->addWidget(m_metaLabel);
 
@@ -123,12 +154,11 @@ void PreviewPane::showRecord(const ClipboardRecord &record)
     meta << humanSize(record.sizeBytes);
     if (record.useCount > 0)
         meta << tr("pasted %1×").arg(record.useCount + 1);
-    setMeta(meta.join(QStringLiteral(" · ")));
+    QString extraMeta;
 
     switch (record.type) {
     case ContentType::Text: {
         QString display = record.textData;
-        // Auto pretty-print JSON when it looks like JSON
         const auto mode = CodePreviewHighlighter::detect(display);
         if (mode == CodePreviewHighlighter::Mode::Json) {
             QJsonParseError err;
@@ -140,6 +170,22 @@ void PreviewPane::showRecord(const ClipboardRecord &record)
         m_highlighter->setMode(mode);
         m_textEdit->setPlainText(display);
         m_stack->setCurrentWidget(m_textEdit->parentWidget());
+        {
+            const auto urls = extractUrls(display);
+            const auto cols = extractHexColors(display);
+            if (!urls.isEmpty()) {
+                QStringList linkHtml;
+                for (const QString &u : urls) linkHtml << QStringLiteral("<a href=\"%1\">%1</a>").arg(u.toHtmlEscaped());
+                extraMeta += QStringLiteral("<br/>🔗 ") + linkHtml.join(QStringLiteral(" · "));
+            }
+            if (!cols.isEmpty()) {
+                QStringList swatches;
+                for (const QString &c : cols) {
+                    swatches << QStringLiteral("<span style=\"background:%1; border:1px solid palette(mid); padding:0 8px; margin-right:4px; border-radius:3px;\">%1</span>").arg(c);
+                }
+                extraMeta += QStringLiteral("<br/>🎨 ") + swatches.join(QStringLiteral(" "));
+            }
+        }
         break;
     }
     case ContentType::RichText:
@@ -157,7 +203,12 @@ void PreviewPane::showRecord(const ClipboardRecord &record)
         const int maxWidth = qMax(200, width() - 32);
         m_imageLabel->setPixmap(QPixmap::fromImage(
             image.scaled(maxWidth, 4096, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
-        m_stack->setCurrentIndex(3); // image scroll page
+        if (!record.ocrText.isEmpty()) {
+            extraMeta += QStringLiteral("<br/>🔍 OCR: ") + record.ocrText.left(500).toHtmlEscaped().replace(QStringLiteral("\n"), QStringLiteral("<br/>"));
+        } else if (record.hasBlob) {
+            extraMeta += QStringLiteral("<br/><i>OCR: processing… or no text found</i>");
+        }
+        m_stack->setCurrentIndex(3);
         break;
     }
     case ContentType::Files: {
@@ -175,5 +226,10 @@ void PreviewPane::showRecord(const ClipboardRecord &record)
         m_stack->setCurrentWidget(m_filesList);
         break;
     }
+    }
+    {
+        QString base = meta.join(QStringLiteral(" · "));
+        if (!extraMeta.isEmpty()) base += extraMeta;
+        setMeta(base);
     }
 }

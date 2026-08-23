@@ -145,7 +145,7 @@ QVector<ClipboardRecord> StorageManager::fetchPage(const FilterSpec &filter, con
             const QString needle =
                 QStringLiteral("%") + SearchEngine::likeEscape(filter.searchText) + QStringLiteral("%");
             const QString placeholder = addBind(needle);
-            where << QStringLiteral("(preview LIKE %1 ESCAPE '\\' OR text_data LIKE %1 ESCAPE '\\')")
+            where << QStringLiteral("(preview LIKE %1 ESCAPE '\\' OR text_data LIKE %1 ESCAPE '\\' OR ocr_text LIKE %1 ESCAPE '\\')")
                          .arg(placeholder);
         }
     }
@@ -255,7 +255,7 @@ bool StorageManager::fetchFull(qint64 id, ClipboardRecord *out) const
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral(
         "SELECT id, timestamp_ms, content_type, content_hash, text_data, blob_data, preview,"
-        " size_bytes, pinned, sensitive, use_count, source_app, source_window"
+        " size_bytes, pinned, sensitive, use_count, source_app, source_window, ocr_text"
         " FROM entries WHERE id = :id"));
     query.bindValue(QStringLiteral(":id"), id);
     if (!query.exec() || !query.next()) {
@@ -277,6 +277,7 @@ bool StorageManager::fetchFull(qint64 id, ClipboardRecord *out) const
     out->useCount = query.value(10).toInt();
     out->sourceApp = query.value(11).toString();
     out->sourceWindow = query.value(12).toString();
+    out->ocrText = query.value(13).toString();
     return true;
 }
 
@@ -343,6 +344,17 @@ bool StorageManager::setPinned(qint64 id, bool pinned)
         return false;
     emit pinnedChanged(id, pinned);
     return true;
+}
+
+bool StorageManager::setOcrText(qint64 id, const QString &ocrText)
+{
+    if (!m_db.isOpen())
+        return false;
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral("UPDATE entries SET ocr_text = :t WHERE id = :id"));
+    query.bindValue(QStringLiteral(":t"), ocrText);
+    query.bindValue(QStringLiteral(":id"), id);
+    return query.exec() && query.numRowsAffected() > 0;
 }
 
 QStringList StorageManager::sourceApps() const

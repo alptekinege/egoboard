@@ -9,6 +9,7 @@ class QLabel;
 class QPushButton;
 class QRadioButton;
 class QSpinBox;
+class QPlainTextEdit;
 
 // Qt Widgets settings dialog (QTabWidget): General / History & Privacy /
 // Hotkeys / Storage. Writes through SettingsManager; KGlobalAccel-backed
@@ -41,4 +42,6 @@ private:
     QSpinBox *m_maxItemMb = nullptr;
     QSpinBox *m_diskCapMb = nullptr;
     QWidget *m_storagePage = nullptr;
+    QPlainTextEdit *m_ignoredApps = nullptr;
+    QCheckBox *m_ocrEnabled = nullptr;
 };

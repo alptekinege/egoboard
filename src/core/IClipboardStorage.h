@@ -45,6 +45,7 @@ public:
     virtual int clearHistory(bool includePinned) = 0;
 
     virtual bool setPinned(qint64 id, bool pinned) = 0;
+    virtual bool setOcrText(qint64 id, const QString &ocrText) = 0;
 
     virtual QStringList sourceApps() const = 0;
     virtual StorageStats stats() const = 0;
