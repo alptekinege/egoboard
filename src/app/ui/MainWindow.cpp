@@ -263,14 +263,17 @@ void MainWindow::applyCurrentFilter()
 
     const int datePreset = m_dateCombo->currentData().toInt();
     const QDateTime now = QDateTime::currentDateTime();
+    const QDateTime startOfToday(now.date(), QTime(0, 0));
     switch (datePreset) {
     case 1:
-        filter.fromMs = now.addDays(-1).toMSecsSinceEpoch();
+        filter.fromMs = startOfToday.toMSecsSinceEpoch();
         break;
-    case 2:
-        filter.fromMs = now.addDays(-2).toMSecsSinceEpoch();
-        filter.toMs = now.addDays(-1).toMSecsSinceEpoch();
+    case 2: {
+        const QDateTime startOfYesterday(startOfToday.date().addDays(-1), QTime(0, 0));
+        filter.fromMs = startOfYesterday.toMSecsSinceEpoch();
+        filter.toMs = startOfToday.toMSecsSinceEpoch() - 1;
         break;
+    }
     case 3:
         filter.fromMs = now.addDays(-7).toMSecsSinceEpoch();
         break;
@@ -336,7 +339,7 @@ void MainWindow::copyCurrent()
     ClipboardRecord record;
     if (!m_ctx.storage()->fetchFull(m_selectedId, &record))
         return;
-    m_ctx.autoPaster()->paste(record, nullptr);
+    m_ctx.autoPaster()->copyToClipboard(record);
 }
 
 void MainWindow::deleteSelected()

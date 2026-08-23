@@ -4,6 +4,7 @@
 #include "StorageManager.h"
 
 #include <QRandomGenerator>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 
 class TestStorage : public QObject
@@ -18,6 +19,7 @@ private slots:
     void filters();
     void pinnedAndRemove();
     void diskCap();
+    void emitsHistorySignals();
 
 private:
     ClipboardRecord makeRecord(const QByteArray &hash, const QString &text, qint64 timestamp);
@@ -181,6 +183,25 @@ void TestStorage::diskCap()
     m_storage->enforceDiskCap(55);
     QVERIFY(m_storage->stats().totalBytes <= 55);
     QVERIFY(m_storage->stats().entryCount > 0);
+}
+
+void TestStorage::emitsHistorySignals()
+{
+    QSignalSpy addedSpy(m_storage, &StorageManager::entryAdded);
+    QSignalSpy touchedSpy(m_storage, &StorageManager::entryTouched);
+
+    const qint64 id = m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("signal"), QStringLiteral("signal entry"), 1000));
+    QCOMPARE(addedSpy.count(), 1);
+    QCOMPARE(touchedSpy.count(), 0);
+    QCOMPARE(addedSpy.at(0).at(0).toLongLong(), id);
+
+    const qint64 duplicateId = m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("signal"), QStringLiteral("signal entry"), 2000));
+    QCOMPARE(duplicateId, id);
+    QCOMPARE(addedSpy.count(), 1);
+    QCOMPARE(touchedSpy.count(), 1);
+    QCOMPARE(touchedSpy.at(0).at(0).toLongLong(), id);
 }
 
 QTEST_GUILESS_MAIN(TestStorage)

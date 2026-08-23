@@ -63,14 +63,21 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
     if (!m_db.isOpen())
         return 0;
 
-    if (!m_db.transaction())
+    if (!m_db.transaction()) {
         qWarning("egoboard: cannot begin transaction: %s", qPrintable(m_db.lastError().text()));
+        return 0;
+    }
 
     {
         QSqlQuery find(m_db);
         find.prepare(QStringLiteral("SELECT id FROM entries WHERE content_hash = :h LIMIT 1"));
         find.bindValue(QStringLiteral(":h"), record.hash);
-        if (find.exec() && find.next()) {
+        if (!find.exec()) {
+            qWarning("egoboard: duplicate lookup failed: %s", qPrintable(find.lastError().text()));
+            m_db.rollback();
+            return 0;
+        }
+        if (find.next()) {
             const qint64 existingId = find.value(0).toLongLong();
             QSqlQuery touch(m_db);
             touch.prepare(QStringLiteral(
@@ -80,10 +87,15 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
             touch.bindValue(QStringLiteral(":app"), record.sourceApp);
             touch.bindValue(QStringLiteral(":win"), record.sourceWindow);
             touch.bindValue(QStringLiteral(":id"), existingId);
-            touch.exec();
-            m_db.commit();
+            if (!touch.exec() || !m_db.commit()) {
+                qWarning("egoboard: duplicate update failed: %s",
+                         qPrintable(touch.lastError().text()));
+                m_db.rollback();
+                return 0;
+            }
             if (updatedExisting)
                 *updatedExisting = true;
+            emit entryTouched(existingId);
             return existingId;
         }
     }
@@ -109,9 +121,14 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
         m_db.rollback();
         return 0;
     }
-    m_db.commit();
+    if (!m_db.commit()) {
+        qWarning("egoboard: insert commit failed: %s", qPrintable(m_db.lastError().text()));
+        m_db.rollback();
+        return 0;
+    }
 
     const qint64 id = insert.lastInsertId().toLongLong();
+    emit entryAdded(id);
     return id;
 }
 

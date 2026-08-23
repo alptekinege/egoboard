@@ -17,6 +17,9 @@ class AutoPaster : public QObject {
 public:
     explicit AutoPaster(ClipboardWatcher *watcher, QObject *parent = nullptr);
 
+    // Restores the record to the clipboard without hiding a window or
+    // simulating a paste keystroke.
+    bool copyToClipboard(const ClipboardRecord &record);
     void paste(const ClipboardRecord &record, QWidget *windowToHide = nullptr);
 
     static bool canSimulateKeys();

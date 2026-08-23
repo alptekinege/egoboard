@@ -25,9 +25,17 @@ GroupTreeModel::GroupTreeModel(BookmarkManager *bookmarks, QObject *parent)
     rebuild();
     connect(m_bookmarks, &BookmarkManager::groupsChanged, this, [this] { rebuild(); });
     connect(m_bookmarks, &BookmarkManager::membershipChanged, this, [this](qint64) {
-        // Only counts change; repaint the whole (small) tree.
-        emit dataChanged(index(0, 0), index(rowCount() - 1, 0),
-                         {EntryCountRole, Qt::DisplayRole, Qt::ToolTipRole});
+        // Counts can change at any depth. Notify each node so nested rows
+        // repaint without resetting the tree or collapsing expanded groups.
+        const QVector<int> roles{EntryCountRole, Qt::DisplayRole, Qt::ToolTipRole};
+        std::function<void(const QModelIndex &)> notify = [this, &roles, &notify](const QModelIndex &parent) {
+            for (int row = 0; row < rowCount(parent); ++row) {
+                const QModelIndex child = index(row, 0, parent);
+                emit dataChanged(child, child, roles);
+                notify(child);
+            }
+        };
+        notify({});
     });
 }
 

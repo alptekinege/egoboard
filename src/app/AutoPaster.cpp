@@ -75,6 +75,20 @@ AutoPaster::AutoPaster(ClipboardWatcher *watcher, QObject *parent)
 {
 }
 
+bool AutoPaster::copyToClipboard(const ClipboardRecord &record)
+{
+    auto mime = buildMimeData(record);
+    if (!mime) {
+        emit failed(QObject::tr("This entry has no stored payload (it exceeded the size limit)."));
+        return false;
+    }
+
+    if (m_watcher)
+        m_watcher->suppressOwnSets();
+    QGuiApplication::clipboard()->setMimeData(mime.release(), QClipboard::Clipboard);
+    return true;
+}
+
 bool AutoPaster::canSimulateKeys()
 {
 #ifdef EGOBOARD_HAVE_XTEST
