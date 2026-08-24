@@ -171,15 +171,6 @@ void MainWindow::buildUi()
                                         tr("Groups"));
     m_groupsAction->setCheckable(true);
 
-    QAction *exportAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("document-export")),
-                                               tr("Export"));
-    connect(exportAction, &QAction::triggered, this, &MainWindow::exportHistory);
-    QAction *importAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("document-import")),
-                                               tr("Import"));
-    connect(importAction, &QAction::triggered, this, &MainWindow::importHistory);
-
-    toolbar->addSeparator();
-
     QAction *paletteAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("system-search")),
                                                  tr("Palette"));
     paletteAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+K")));
@@ -521,53 +512,6 @@ void MainWindow::openSettings()
     SettingsDialog dialog(m_ctx, this);
     dialog.exec();
     m_delegate->clearGroupCache();
-}
-
-void MainWindow::exportHistory()
-{
-    ExportImportDialogs::ExportDialog dialog(m_ctx.bookmarks(), this);
-    if (dialog.exec() != QDialog::Accepted)
-        return;
-
-    ExportImportManager::ExportRequest request;
-    request.path = dialog.filePath();
-    switch (dialog.scope()) {
-    case ExportImportDialogs::ExportDialog::Everything:
-        request.scope = ExportImportManager::Scope::Everything;
-        break;
-    case ExportImportDialogs::ExportDialog::PinnedOnly:
-        request.scope = ExportImportManager::Scope::PinnedOnly;
-        break;
-    case ExportImportDialogs::ExportDialog::GroupSubtree:
-        request.scope = ExportImportManager::Scope::GroupSubtree;
-        request.groupId = dialog.groupId();
-        break;
-    }
-    QString error;
-    if (m_ctx.io()->exportToFile(request, &error))
-        QMessageBox::information(this, tr("Export finished"),
-                                 tr("History exported to %1.").arg(request.path));
-    else
-        QMessageBox::warning(this, tr("Export failed"), error);
-}
-
-void MainWindow::importHistory()
-{
-    ExportImportDialogs::ImportDialog dialog(this);
-    if (dialog.exec() != QDialog::Accepted)
-        return;
-    const auto result = m_ctx.io()->importFromFile(dialog.filePath(), dialog.mode());
-    if (!result.ok) {
-        QMessageBox::warning(this, tr("Import failed"), result.error);
-        return;
-    }
-    QMessageBox::information(
-        this, tr("Import finished"),
-        tr("Imported %1, merged %2, skipped %3 entries; %4 group(s) imported.")
-            .arg(result.entriesImported)
-            .arg(result.entriesMerged)
-            .arg(result.entriesSkipped)
-            .arg(result.groupsImported));
 }
 
 void MainWindow::clearHistory()

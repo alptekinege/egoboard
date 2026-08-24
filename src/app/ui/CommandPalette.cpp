@@ -126,8 +126,10 @@ CommandPalette::CommandPalette(IClipboardStorage *storage, QWidget *parent)
     layout->addWidget(m_hint);
 
     connect(m_input, &QLineEdit::textChanged, this, &CommandPalette::onTextChanged);
+    // activated() only. clicked() must NOT also be connected: on KDE/Plasma
+    // (activate-on-single-click) one mouse click emits BOTH, double-executing
+    // the entry (double clipboard set + double paste).
     connect(m_list, &QListView::activated, this, &CommandPalette::onActivated);
-    connect(m_list, &QListView::clicked, this, &CommandPalette::onActivated);
 
     // Enter in the input executes the top result
     connect(m_input, &QLineEdit::returnPressed, this, &CommandPalette::executeCurrent);

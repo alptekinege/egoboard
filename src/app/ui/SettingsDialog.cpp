@@ -11,6 +11,7 @@
 #include "StorageManager.h"
 #include "TransformEngine.h"
 #include "../../core/SensitiveDataDetector.h"
+#include "ExportImportDialogs.h"
 #include "ExportImportManager.h"
 
 #include <QClipboard>
@@ -18,6 +19,7 @@
 #include <QGuiApplication>
 #include <QInputDialog>
 #include <QLineEdit>
+#include <QPointer>
 
 #include <KGlobalAccel>
 #include <KKeySequenceWidget>
@@ -56,8 +58,8 @@ namespace {
 QString humanSize(qint64 bytes)
 {
     if (bytes < 1024 * 1024)
-        return SettingsDialog::tr("%1 kB").arg(bytes / 1024.0, 'f', 1);
-    return SettingsDialog::tr("%1 MB").arg(bytes / (1024.0 * 1024.0), 'f', 1);
+        return SettingsDialog::tr("%1 kB").arg(bytes / 1024.0, 0, 'f', 1);
+    return SettingsDialog::tr("%1 MB").arg(bytes / (1024.0 * 1024.0), 0, 'f', 1);
 }
 
 QString tesseractVersion()
@@ -127,9 +129,15 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
         m_appSuggestions->setEnabled(false);
         m_appSuggestions->clear();
         m_appSuggestions->addItem(tr("(loading…)"));
-        QtConcurrent::run([this]{
-            const QStringList apps = m_ctx.storage()->sourceApps();
-            QMetaObject::invokeMethod(this, [this, apps]{
+        // QPointer + qApp context: if the dialog dies while the DB query runs,
+        // the queued handoff never fires on a dangling `this`.
+        QPointer<SettingsDialog> guard(this);
+        QtConcurrent::run([guard]{
+            const QStringList apps = guard ? guard->m_ctx.storage()->sourceApps()
+                                           : QStringList();
+            QMetaObject::invokeMethod(qApp, [guard, apps]{
+                if (!guard) return;
+                auto *m_appSuggestions = guard->m_appSuggestions;
                 if (!m_appSuggestions) return;
                 m_appSuggestions->clear();
                 if (apps.isEmpty()) {
@@ -547,11 +555,13 @@ QWidget *SettingsDialog::buildSearchPreviewPage()
             return;
         }
         m_ocrStatus->setText(tr("Checking tesseract…"));
-        QtConcurrent::run([this]{
+        QPointer<SettingsDialog> guard(this);
+        QtConcurrent::run([guard]{
             const QString ver = tesseractVersion();
-            QMetaObject::invokeMethod(this, [this, ver]{
-                if (!m_ocrStatus) return;
-                m_ocrStatus->setText(tr("<b style='color:palette(highlight);'>tesseract OK</b> — %1").arg(ver.isEmpty() ? QStringLiteral("found in PATH") : ver));
+            QMetaObject::invokeMethod(qApp, [guard, ver]{
+                if (!guard) return;
+                if (!guard->m_ocrStatus) return;
+                guard->m_ocrStatus->setText(tr("<b style='color:palette(highlight);'>tesseract OK</b> — %1").arg(ver.isEmpty() ? QStringLiteral("found in PATH") : ver));
             }, Qt::QueuedConnection);
         });
     });
@@ -663,7 +673,7 @@ QWidget *SettingsDialog::buildStoragePage()
     maintHint->setWordWrap(true);
     maintHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
     maintenanceLayout->addWidget(maintHint);
-    // export/import inline
+    // export/import — full flows moved here from the main-window toolbar
     auto *ioRow = new QHBoxLayout();
     auto *exportBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-save")), tr("Export JSON…"), maintenanceBox);
     auto *importBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-open")), tr("Import JSON…"), maintenanceBox);
@@ -672,20 +682,47 @@ QWidget *SettingsDialog::buildStoragePage()
     ioRow->addStretch(1);
     maintenanceLayout->addLayout(ioRow);
     connect(exportBtn, &QPushButton::clicked, this, [this]{
-        QString p = QFileDialog::getSaveFileName(this, tr("Export history"), QDir::homePath()+QStringLiteral("/egoboard-export.json"), tr("JSON (*.json)"));
-        if (p.isEmpty()) return;
-        ExportImportManager::ExportRequest req; req.scope = ExportImportManager::Scope::Everything; req.path = p;
-        QString err;
-        if (!m_ctx.io()->exportToFile(req, &err)) QMessageBox::warning(this, tr("Export failed"), err);
-        else QMessageBox::information(this, tr("Export"), tr("Exported to %1").arg(p));
+        ExportImportDialogs::ExportDialog dialog(m_ctx.bookmarks(), this);
+        if (dialog.exec() != QDialog::Accepted)
+            return;
+        ExportImportManager::ExportRequest request;
+        request.path = dialog.filePath();
+        switch (dialog.scope()) {
+        case ExportImportDialogs::ExportDialog::Everything:
+            request.scope = ExportImportManager::Scope::Everything;
+            break;
+        case ExportImportDialogs::ExportDialog::PinnedOnly:
+            request.scope = ExportImportManager::Scope::PinnedOnly;
+            break;
+        case ExportImportDialogs::ExportDialog::GroupSubtree:
+            request.scope = ExportImportManager::Scope::GroupSubtree;
+            request.groupId = dialog.groupId();
+            break;
+        }
+        QString error;
+        if (!m_ctx.io()->exportToFile(request, &error))
+            QMessageBox::warning(this, tr("Export failed"), error);
+        else
+            QMessageBox::information(this, tr("Export finished"),
+                                     tr("History exported to %1.").arg(request.path));
         refreshDiagnostics();
     });
     connect(importBtn, &QPushButton::clicked, this, [this]{
-        QString p = QFileDialog::getOpenFileName(this, tr("Import history"), QDir::homePath(), tr("JSON (*.json)"));
-        if (p.isEmpty()) return;
-        auto res = m_ctx.io()->importFromFile(p, ExportImportManager::ImportMode::Merge);
-        if (!res.ok) QMessageBox::warning(this, tr("Import failed"), res.error);
-        else QMessageBox::information(this, tr("Import"), tr("Imported %1 entries, %2 groups").arg(res.entriesImported).arg(res.groupsImported));
+        ExportImportDialogs::ImportDialog dialog(this);
+        if (dialog.exec() != QDialog::Accepted)
+            return;
+        const auto result = m_ctx.io()->importFromFile(dialog.filePath(), dialog.mode());
+        if (!result.ok) {
+            QMessageBox::warning(this, tr("Import failed"), result.error);
+            return;
+        }
+        QMessageBox::information(
+            this, tr("Import finished"),
+            tr("Imported %1, merged %2, skipped %3 entries; %4 group(s) imported.")
+                .arg(result.entriesImported)
+                .arg(result.entriesMerged)
+                .arg(result.entriesSkipped)
+                .arg(result.groupsImported));
         refreshDiagnostics();
     });
     layout->addWidget(maintenanceBox);
@@ -824,10 +861,12 @@ QWidget *SettingsDialog::buildAutomationPage()
     });
     connect(m_scriptList, &QListWidget::itemChanged, this, [this](QListWidgetItem *it){
         if (!it) return;
+        if (m_populatingLists)
+            return; // echo of our own clear/insert — not a user toggle
         QString id = it->data(Qt::UserRole).toString();
         bool enabled = it->checkState()==Qt::Checked;
         m_ctx.settings()->setScriptDisabled(id, !enabled);
-        refreshDiagnostics();
+        scheduleDiagnosticsRefresh();
     });
 
     auto *dbusHint = new QLabel(tr("D-Bus: <code>org.egoboard.Egoboard</code> at <code>/org/egoboard/Egoboard</code> — <code>Search(query, limit)</code> for future KRunner plugin. Try: <code>qdbus org.egoboard.Egoboard /org/egoboard/Egoboard org.egoboard.Egoboard.Search hello 5</code>. Local session bus only, no network."), scriptBox);
@@ -923,6 +962,8 @@ QWidget *SettingsDialog::buildDiagnosticsPage()
 void SettingsDialog::populateTransformList()
 {
     if (!m_transformList) return;
+    QSignalBlocker transformSignals(m_transformList); // insertion emits itemChanged
+    m_populatingLists = true;
     m_transformList->clear();
     const auto descs = TransformEngine::allDescriptors();
     const QStringList hidden = m_ctx.settings()->hiddenTransforms();
@@ -937,14 +978,17 @@ void SettingsDialog::populateTransformList()
     disconnect(m_transformList, &QListWidget::itemChanged, nullptr, nullptr);
     connect(m_transformList, &QListWidget::itemChanged, this, [this](QListWidgetItem *it){
         Q_UNUSED(it);
+        if (m_populatingLists)
+            return; // echo of our own clear/insert — not a user toggle
         QStringList hidden;
         for (int i=0;i<m_transformList->count();++i) {
             auto *item = m_transformList->item(i);
             if (item->checkState()==Qt::Unchecked) hidden << item->data(Qt::UserRole).toString();
         }
         m_ctx.settings()->setHiddenTransforms(hidden);
-        refreshDiagnostics();
+        scheduleDiagnosticsRefresh();
     });
+    m_populatingLists = false;
 }
 
 void SettingsDialog::populateSnippetList()
@@ -962,8 +1006,13 @@ void SettingsDialog::populateSnippetList()
 void SettingsDialog::populateScriptList()
 {
     if (!m_scriptList) return;
+    QSignalBlocker scriptSignals(m_scriptList); // insertion emits itemChanged
+    m_populatingLists = true;
     m_scriptList->clear();
-    if (!m_ctx.scripts()) return;
+    if (!m_ctx.scripts()) {
+        m_populatingLists = false;
+        return;
+    }
     const auto acts = m_ctx.scripts()->actions();
     const QStringList disabled = m_ctx.settings()->disabledScripts();
     for (const auto &a : acts) {
@@ -978,6 +1027,7 @@ void SettingsDialog::populateScriptList()
     } else {
         m_scriptList->setEnabled(true);
     }
+    m_populatingLists = false;
 }
 
 void SettingsDialog::refreshDiagnostics()
@@ -1006,13 +1056,15 @@ void SettingsDialog::refreshDiagnostics()
         } else {
             // Show immediately without version probe (non-blocking), then fetch version async
             m_ocrStatus->setText(tr("<b>tesseract OK</b> — checking version… — <b>%1</b> images, <b>%2</b> with OCR text. Lang: <b>%3</b>").arg(stats.imageCount).arg(stats.ocrCount).arg(m_ctx.settings()->ocrLanguage()));
-            QtConcurrent::run([this]{
+            QPointer<SettingsDialog> guard(this);
+            QtConcurrent::run([guard]{
                 const QString ver = tesseractVersion();
-                const auto s = m_ctx.storage()->stats();
-                const QString lang = m_ctx.settings()->ocrLanguage();
-                QMetaObject::invokeMethod(this, [this, ver, s, lang]{
-                    if (!m_ocrStatus) return;
-                    m_ocrStatus->setText(tr("<b>tesseract OK</b> — %1 — <b>%2</b> images, <b>%3</b> with OCR text. Lang: <b>%4</b>").arg(ver.isEmpty() ? QStringLiteral("found in PATH") : ver).arg(s.imageCount).arg(s.ocrCount).arg(lang));
+                const auto s = guard ? guard->m_ctx.storage()->stats() : StorageStats{};
+                const QString lang = guard ? guard->m_ctx.settings()->ocrLanguage() : QString();
+                QMetaObject::invokeMethod(qApp, [guard, ver, s, lang]{
+                    if (!guard) return;
+                    if (!guard->m_ocrStatus) return;
+                    guard->m_ocrStatus->setText(tr("<b>tesseract OK</b> — %1 — <b>%2</b> images, <b>%3</b> with OCR text. Lang: <b>%4</b>").arg(ver.isEmpty() ? QStringLiteral("found in PATH") : ver).arg(s.imageCount).arg(s.ocrCount).arg(lang));
                 }, Qt::QueuedConnection);
             });
         }
@@ -1058,16 +1110,18 @@ void SettingsDialog::refreshDiagnostics()
         details += QStringLiteral("DB: <code>%1</code>").arg(m_ctx.storage()->databasePath().toHtmlEscaped());
         details += QStringLiteral("<br/><span style='color:palette(mid);'>checking KWin…</span>");
         m_platformDetails->setText(details);
-        QtConcurrent::run([this]{
+        QPointer<SettingsDialog> guard(this);
+        QtConcurrent::run([guard]{
             const QString kw = kwinVersion();
             const QString qpa = QGuiApplication::platformName();
-            const QString dbPath = m_ctx.storage()->databasePath();
-            QMetaObject::invokeMethod(this, [this, kw, qpa, dbPath]{
-                if (!m_platformDetails) return;
+            const QString dbPath = guard ? guard->m_ctx.storage()->databasePath() : QString();
+            QMetaObject::invokeMethod(qApp, [guard, kw, qpa, dbPath]{
+                if (!guard) return;
+                if (!guard->m_platformDetails) return;
                 QString d = QStringLiteral("QPA: <b>%1</b> · Qt %2<br/>").arg(qpa.toHtmlEscaped(), QString::fromUtf8(qVersion()));
                 if (!kw.isEmpty()) d += QStringLiteral("KWin: %1<br/>").arg(kw.toHtmlEscaped());
                 d += QStringLiteral("DB: <code>%1</code>").arg(dbPath.toHtmlEscaped());
-                m_platformDetails->setText(d);
+                guard->m_platformDetails->setText(d);
             }, Qt::QueuedConnection);
         });
     }
@@ -1104,12 +1158,14 @@ void SettingsDialog::refreshDiagnostics()
         diag += QStringLiteral("(versions: fetching tesseract/KWin async…)\n");
         m_diagBrowser->setPlainText(diag);
         // async patch versions
-        QtConcurrent::run([this]{
+        QPointer<SettingsDialog> guard(this);
+        QtConcurrent::run([guard]{
             const QString kw = kwinVersion();
             const QString tess = OcrWorker::isAvailable() ? tesseractVersion() : QString();
-            QMetaObject::invokeMethod(this, [this, kw, tess]{
-                if (!m_diagBrowser) return;
-                QString cur = m_diagBrowser->toPlainText();
+            QMetaObject::invokeMethod(qApp, [guard, kw, tess]{
+                if (!guard) return;
+                if (!guard->m_diagBrowser) return;
+                QString cur = guard->m_diagBrowser->toPlainText();
                 if (!kw.isEmpty() && !cur.contains(QStringLiteral("KWin:"))) {
                     cur.replace(QStringLiteral("QPA:"), QStringLiteral("KWin: %1\nQPA:").arg(kw));
                 }
@@ -1118,13 +1174,24 @@ void SettingsDialog::refreshDiagnostics()
                 } else {
                     cur.replace(QStringLiteral("(versions: fetching tesseract/KWin async…)\n"), QString());
                 }
-                m_diagBrowser->setPlainText(cur);
+                guard->m_diagBrowser->setPlainText(cur);
             }, Qt::QueuedConnection);
         });
     }
     // repopulate lists if needed
-    if (m_transformList && m_transformList->count()==0) populateTransformList();
-    if (m_scriptList) populateScriptList();
+    if (m_transformList && m_transformList->count()==0 && !m_populatingLists) populateTransformList();
+    if (m_scriptList && m_scriptList->count()==0 && !m_populatingLists) populateScriptList();
+}
+
+void SettingsDialog::scheduleDiagnosticsRefresh()
+{
+    // Coalesce: at most one refresh in flight. Runs from the event loop, so it
+    // cannot re-enter a signal handler that is currently emitting.
+    QTimer::singleShot(0, this, [this] {
+        if (m_populatingLists)
+            return; // a rebuild started meanwhile — its caller refreshes after
+        refreshDiagnostics();
+    });
 }
 
 void SettingsDialog::load()
@@ -1142,8 +1209,12 @@ void SettingsDialog::load()
     if (m_notifications) m_notifications->setChecked(m_ctx.settings()->notificationsEnabled());
 
     m_debounce->setValue(m_ctx.settings()->debounceMs());
-    m_maxItemMb->setValue(int(m_ctx.settings()->maxItemBytes() / (1024 * 1024)));
-    if (m_maxImageMb) m_maxImageMb->setValue(int(m_ctx.settings()->maxImageBytes() / (1024 * 1024)));
+    // Round up: a sub-MB limit (e.g. 512 kB) must not collapse to 0 = "no limit".
+    const auto mbCeil = [](qint64 bytes) {
+        return bytes <= 0 ? 0 : int((bytes + 1024 * 1024 - 1) / (1024 * 1024));
+    };
+    m_maxItemMb->setValue(mbCeil(m_ctx.settings()->maxItemBytes()));
+    if (m_maxImageMb) m_maxImageMb->setValue(mbCeil(m_ctx.settings()->maxImageBytes()));
     switch (m_ctx.settings()->sensitiveMode()) {
     case SettingsManager::SensitiveMode::Off:
         m_sensitiveOff->setChecked(true);
@@ -1156,7 +1227,7 @@ void SettingsDialog::load()
         break;
     }
     if (m_customPatterns) m_customPatterns->setPlainText(m_ctx.settings()->customSensitivePatterns().join(QStringLiteral("\n")));
-    m_diskCapMb->setValue(int(m_ctx.settings()->diskCapBytes() / (1024 * 1024)));
+    m_diskCapMb->setValue(mbCeil(m_ctx.settings()->diskCapBytes()));
     if (m_ignoredApps) {
         m_ignoredApps->setPlainText(m_ctx.settings()->ignoredSourceApps().join(QStringLiteral("\n")));
     }

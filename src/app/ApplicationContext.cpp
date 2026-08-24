@@ -75,6 +75,12 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
     m_window = new MainWindow(*this);
     m_quickPaste = new QuickPasteMenu(m_storage, m_settings->quickPasteCount());
     m_ocr = new OcrWorker(m_storage, this);
+    m_ocr->setLanguage(m_settings->ocrLanguage());
+    m_ocr->setMaxChars(m_settings->ocrMaxChars());
+    connect(m_settings, &SettingsManager::changed, this, [this] {
+        m_ocr->setLanguage(m_settings->ocrLanguage());
+        m_ocr->setMaxChars(m_settings->ocrMaxChars());
+    });
     connect(m_ocr, &OcrWorker::recognized, this, [this](qint64 id, const QString &text){
         m_storage->setOcrText(id, text);
     });

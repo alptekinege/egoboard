@@ -53,6 +53,31 @@ QByteArray hashPayloadLocal(ContentType t, const QByteArray &p) {
     return QCryptographicHash::hash(seed + p, QCryptographicHash::Sha256).toHex();
 }
 
+// Sensitive detection incl. user-defined patterns — must match ClipboardWatcher
+// so the wlr-data-control path enforces the same privacy rules on Wayland.
+bool isSensitiveWithCustom(const QString &text, SettingsManager *settings) {
+    if (SensitiveDataDetector::isSensitive(text)) return true;
+    if (!settings) return false;
+    const auto pats = settings->customSensitivePatterns();
+    for (const QString &pat : pats) {
+        QRegularExpression re(pat, QRegularExpression::CaseInsensitiveOption);
+        if (re.isValid() && re.match(text).hasMatch()) return true;
+    }
+    return false;
+}
+
+QStringList customKinds(const QString &text, SettingsManager *settings) {
+    QStringList out = SensitiveDataDetector::kinds(text);
+    if (!settings) return out;
+    const auto pats = settings->customSensitivePatterns();
+    for (const QString &pat : pats) {
+        QRegularExpression re(pat, QRegularExpression::CaseInsensitiveOption);
+        if (re.isValid() && re.match(text).hasMatch())
+            out << QStringLiteral("custom:%1").arg(pat.left(16));
+    }
+    return out;
+}
+
 } // namespace
 
 // Manager
@@ -294,8 +319,8 @@ void WlrDataControlHelper::handleSelection(void *offerId, bool primary) {
     const QString text = mimeData->text();
     if (!text.isEmpty() && m_settings) {
         const auto mode = m_settings->sensitiveMode();
-        if (mode == SettingsManager::SensitiveMode::Exclude && SensitiveDataDetector::isSensitive(text)) {
-            emit excludedSensitive(SensitiveDataDetector::kinds(text).join(QStringLiteral(", ")));
+        if (mode == SettingsManager::SensitiveMode::Exclude && isSensitiveWithCustom(text, m_settings)) {
+            emit excludedSensitive(customKinds(text, m_settings).join(QStringLiteral(", ")));
             delete mimeData; return;
         }
     }
@@ -358,7 +383,7 @@ void WlrDataControlHelper::handleSelection(void *offerId, bool primary) {
     delete mimeData;
     if (record.hash.isEmpty()) return;
     if (!text.isEmpty() && m_settings && m_settings->sensitiveMode()==SettingsManager::SensitiveMode::Mark)
-        record.sensitive = SensitiveDataDetector::isSensitive(text);
+        record.sensitive = isSensitiveWithCustom(text, m_settings);
     record.timestamp = QDateTime::currentMSecsSinceEpoch();
     ActiveWindowInfo src = m_tracker ? m_tracker->activeWindow() : ActiveWindowInfo{};
     record.sourceApp = src.appIdentifier; record.sourceWindow = src.windowTitle;

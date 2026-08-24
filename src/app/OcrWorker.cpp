@@ -22,6 +22,19 @@ bool OcrWorker::isAvailable()
     return !bin.isEmpty();
 }
 
+void OcrWorker::setLanguage(const QString &lang)
+{
+    const QString v = lang.trimmed().isEmpty() ? QStringLiteral("eng") : lang.trimmed();
+    QMetaObject::invokeMethod(this, [this, v] { m_language = v; }, Qt::QueuedConnection);
+}
+
+void OcrWorker::setMaxChars(int maxChars)
+{
+    const int capped = qBound(512, maxChars, 65536);
+    QMetaObject::invokeMethod(this, [this, capped] { m_maxChars = capped; },
+                              Qt::QueuedConnection);
+}
+
 void OcrWorker::recognize(qint64 entryId, const QImage &image)
 {
     if (entryId == 0 || image.isNull())
@@ -30,14 +43,23 @@ void OcrWorker::recognize(qint64 entryId, const QImage &image)
         emit failed(entryId, tr("tesseract not found"));
         return;
     }
-    // Copy image for the worker thread
-    QImage copy = image;
-    QtConcurrent::run([this, entryId, copy]() {
+    // Copy image + current settings for the worker thread; hop results back
+    // through a guarded queued invoke so shutdown cannot leave a dangling `this`.
+    const QImage copy = image;
+    const QString lang = m_language;
+    const int maxChars = qMax(1, m_maxChars);
+    QPointer<OcrWorker> guard(this);
+    QtConcurrent::run([guard, entryId, copy, lang, maxChars]() {
+        // All failures funnel through this helper: emit only while alive.
+        auto fail = [guard](qint64 id, const QString &reason) {
+            if (!guard) return;
+            QMetaObject::invokeMethod(guard, [guard, id, reason] {
+                emit guard->failed(id, reason);
+            }, Qt::QueuedConnection);
+        };
         QTemporaryDir dir;
         if (!dir.isValid()) {
-            QMetaObject::invokeMethod(this, [this, entryId]{
-                emit failed(entryId, tr("cannot create temp dir"));
-            }, Qt::QueuedConnection);
+            fail(entryId, OcrWorker::tr("cannot create temp dir"));
             return;
         }
         const QString pngPath = dir.filePath(QStringLiteral("ocr.png"));
@@ -47,25 +69,19 @@ void OcrWorker::recognize(qint64 entryId, const QImage &image)
             img = img.scaled(img.width()*2, img.height()*2, Qt::KeepAspectRatio, Qt::SmoothTransformation);
         }
         if (!img.save(pngPath, "PNG")) {
-            QMetaObject::invokeMethod(this, [this, entryId]{
-                emit failed(entryId, tr("cannot save temp image"));
-            }, Qt::QueuedConnection);
+            fail(entryId, OcrWorker::tr("cannot save temp image"));
             return;
         }
         QProcess proc;
         // --psm 6: assume uniform block of text; --oem 1: LSTM only
-        proc.start(QStringLiteral("tesseract"), {pngPath, QStringLiteral("stdout"), QStringLiteral("-l"), QStringLiteral("eng"), QStringLiteral("--psm"), QStringLiteral("6"), QStringLiteral("--oem"), QStringLiteral("1")});
+        proc.start(QStringLiteral("tesseract"), {pngPath, QStringLiteral("stdout"), QStringLiteral("-l"), lang, QStringLiteral("--psm"), QStringLiteral("6"), QStringLiteral("--oem"), QStringLiteral("1")});
         if (!proc.waitForStarted(2000)) {
-            QMetaObject::invokeMethod(this, [this, entryId]{
-                emit failed(entryId, tr("tesseract failed to start"));
-            }, Qt::QueuedConnection);
+            fail(entryId, OcrWorker::tr("tesseract failed to start"));
             return;
         }
         if (!proc.waitForFinished(15000)) {
             proc.kill();
-            QMetaObject::invokeMethod(this, [this, entryId]{
-                emit failed(entryId, tr("tesseract timeout"));
-            }, Qt::QueuedConnection);
+            fail(entryId, OcrWorker::tr("tesseract timeout"));
             return;
         }
         QString out;
@@ -76,21 +92,18 @@ void OcrWorker::recognize(qint64 entryId, const QImage &image)
             out = out.trimmed();
         } else {
             const QString err = QString::fromUtf8(proc.readAllStandardError()).trimmed();
-            QMetaObject::invokeMethod(this, [this, entryId, err]{
-                emit failed(entryId, err.isEmpty() ? tr("tesseract error") : err);
-            }, Qt::QueuedConnection);
+            fail(entryId, err.isEmpty() ? OcrWorker::tr("tesseract error") : err);
             return;
         }
         if (out.isEmpty()) {
-            QMetaObject::invokeMethod(this, [this, entryId]{
-                emit failed(entryId, tr("no text recognized"));
-            }, Qt::QueuedConnection);
+            fail(entryId, OcrWorker::tr("no text recognized"));
             return;
         }
         // Cap length to avoid DB bloat
-        if (out.size() > 8000) out = out.left(8000);
-        QMetaObject::invokeMethod(this, [this, entryId, out]{
-            emit recognized(entryId, out);
+        if (out.size() > maxChars) out = out.left(maxChars);
+        if (!guard) return;
+        QMetaObject::invokeMethod(guard, [guard, entryId, out] {
+            emit guard->recognized(entryId, out);
         }, Qt::QueuedConnection);
     });
 }

@@ -44,8 +44,6 @@ private:
     void togglePinSelected();
     void showContextMenu(const QPoint &pos);
     void openSettings();
-    void exportHistory();
-    void importHistory();
     void clearHistory();
     void updateActionStates();
     void openPalette();

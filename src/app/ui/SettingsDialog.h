@@ -38,8 +38,15 @@ private:
     void populateSnippetList();
     void populateTransformList();
     void populateScriptList();
+    // Coalesced deferred refresh: safe to call from list-item signal handlers
+    // while lists are being rebuilt (avoids re-entrant repaint loops).
+    void scheduleDiagnosticsRefresh();
 
     ApplicationContext &m_ctx;
+    // True while the transform/script lists are being cleared+refilled.
+    // QListWidget emits itemChanged during insertion; without this guard the
+    // itemChanged handlers below re-enter populate*() unboundedly (stack overflow).
+    bool m_populatingLists = false;
 
     // Behaviour
     QCheckBox *m_startVisible = nullptr;
