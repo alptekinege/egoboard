@@ -95,7 +95,11 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
 
     auto *layout = new QVBoxLayout(this);
     auto *tabs = new QTabWidget(this);
+    // Vertical tab column on the west side (9 tabs read much better as a list).
+    tabs->setTabPosition(QTabWidget::West);
+    tabs->setDocumentMode(true);
     tabs->addTab(buildBehaviourPage(), QIcon::fromTheme(QStringLiteral("configure")), tr("Behaviour"));
+    tabs->addTab(buildAppearancePage(), QIcon::fromTheme(QStringLiteral("preferences-desktop-theme")), tr("Appearance"));
     tabs->addTab(buildPlatformPage(), QIcon::fromTheme(QStringLiteral("computer")), tr("Platform"));
     tabs->addTab(buildHistoryPage(), QIcon::fromTheme(QStringLiteral("security-medium")), tr("History & Privacy"));
     tabs->addTab(buildSearchPreviewPage(), QIcon::fromTheme(QStringLiteral("system-search")), tr("Search & Preview"));
@@ -223,6 +227,41 @@ QWidget *SettingsDialog::buildBehaviourPage()
     autostartHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
     autostartLayout->addWidget(autostartHint);
     layout->addWidget(autostartBox);
+
+    layout->addStretch(1);
+    return page;
+}
+
+QWidget *SettingsDialog::buildAppearancePage()
+{
+    auto *page = new QWidget(this);
+    auto *layout = new QVBoxLayout(page);
+
+    auto *themeBox = new QGroupBox(tr("Theme"), page);
+    auto *themeLayout = new QVBoxLayout(themeBox);
+    m_themeCombo = new QComboBox(themeBox);
+    m_themeCombo->addItem(tr("System (follow desktop)"), QStringLiteral("system"));
+    m_themeCombo->addItem(tr("Light"), QStringLiteral("light"));
+    m_themeCombo->addItem(tr("Dark"), QStringLiteral("dark"));
+    auto *themeForm = new QFormLayout();
+    themeForm->addRow(tr("Color theme:"), m_themeCombo);
+    themeLayout->addLayout(themeForm);
+    auto *themeHint = new QLabel(tr("Light and Dark apply a palette on top of the current style; System restores the desktop theme. Applies immediately to the whole app and is remembered across restarts."), themeBox);
+    themeHint->setWordWrap(true);
+    themeHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+    themeLayout->addWidget(themeHint);
+    layout->addWidget(themeBox);
+
+    auto *toolbarBox = new QGroupBox(tr("Main window toolbar"), page);
+    auto *toolbarLayout = new QVBoxLayout(toolbarBox);
+    m_toolbarIconOnly = new QCheckBox(tr("Show buttons as icons only (compact)"), toolbarBox);
+    m_toolbarIconOnly->setToolTip(tr("Toolbar buttons appear as logos only — hover for the label. Text+icon otherwise."));
+    toolbarLayout->addWidget(m_toolbarIconOnly);
+    auto *toolbarHint = new QLabel(tr("Takes effect immediately, also while the window is open. Every button keeps its tooltip and shortcut."), toolbarBox);
+    toolbarHint->setWordWrap(true);
+    toolbarHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+    toolbarLayout->addWidget(toolbarHint);
+    layout->addWidget(toolbarBox);
 
     layout->addStretch(1);
     return page;
@@ -1241,6 +1280,12 @@ void SettingsDialog::load()
     if (m_previewCode) m_previewCode->setChecked(m_ctx.settings()->previewCodeHighlight());
     if (m_previewLinks) m_previewLinks->setChecked(m_ctx.settings()->previewLinkify());
     if (m_previewColors) m_previewColors->setChecked(m_ctx.settings()->previewColorSwatches());
+    if (m_themeCombo) {
+        const int idx = m_themeCombo->findData(m_ctx.settings()->theme());
+        if (idx >= 0) m_themeCombo->setCurrentIndex(idx);
+    }
+    if (m_toolbarIconOnly)
+        m_toolbarIconOnly->setChecked(m_ctx.settings()->toolbarIconOnly());
 }
 
 void SettingsDialog::save()
@@ -1277,6 +1322,10 @@ void SettingsDialog::save()
     if (m_previewCode) m_ctx.settings()->setPreviewCodeHighlight(m_previewCode->isChecked());
     if (m_previewLinks) m_ctx.settings()->setPreviewLinkify(m_previewLinks->isChecked());
     if (m_previewColors) m_ctx.settings()->setPreviewColorSwatches(m_previewColors->isChecked());
+    if (m_themeCombo)
+        m_ctx.settings()->setTheme(m_themeCombo->currentData().toString());
+    if (m_toolbarIconOnly)
+        m_ctx.settings()->setToolbarIconOnly(m_toolbarIconOnly->isChecked());
     // transform/script hidden/disabled are saved immediately on toggle, but also save here
     refreshDiagnostics();
 }

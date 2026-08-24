@@ -58,6 +58,10 @@ private:
     QComboBox *m_trayMode = nullptr;
     QCheckBox *m_notifications = nullptr;
 
+    // Appearance
+    QComboBox *m_themeCombo = nullptr;
+    QCheckBox *m_toolbarIconOnly = nullptr;
+
     // Platform
     QLabel *m_platformStatus = nullptr;
     QLabel *m_dataControlStatus = nullptr;
