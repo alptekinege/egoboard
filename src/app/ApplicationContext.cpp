@@ -12,6 +12,7 @@
 #include "SettingsManager.h"
 #include "SnippetManager.h"
 #include "StorageManager.h"
+#include "ThemeManager.h"
 #include "TrayController.h"
 #include "VacuumWorker.h"
 #include "OcrWorker.h"
@@ -124,6 +125,7 @@ void ApplicationContext::start()
             });
     connect(m_settings, &SettingsManager::changed, this, [this] {
         m_watcher->setDebounceInterval(m_settings->debounceMs());
+        ThemeManager::apply(m_settings->theme(), m_settings);
     });
 
     connect(m_hotkeys, &HotkeyManager::toggleRequested, this,
@@ -140,6 +142,8 @@ void ApplicationContext::start()
 
     m_watcher->start();
     m_dataControl->start();
+    // Apply the configured theme before any window is shown.
+    ThemeManager::apply(m_settings->theme(), m_settings);
     if (m_settings->startVisible())
         m_window->show();
 

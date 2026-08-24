@@ -366,6 +366,34 @@ void SettingsManager::setNotificationsEnabled(bool enabled)
     save();
 }
 
+QString SettingsManager::theme() const
+{
+    const QString v = m_config->group(kGroupUi).readEntry("Theme", QStringLiteral("system"));
+    if (v == QLatin1String("light") || v == QLatin1String("dark"))
+        return v;
+    return QStringLiteral("system");
+}
+
+void SettingsManager::setTheme(const QString &theme)
+{
+    QString v = theme;
+    if (v != QLatin1String("light") && v != QLatin1String("dark"))
+        v = QStringLiteral("system");
+    m_config->group(kGroupUi).writeEntry("Theme", v);
+    save();
+}
+
+bool SettingsManager::toolbarIconOnly() const
+{
+    return m_config->group(kGroupUi).readEntry("ToolbarIconOnly", false);
+}
+
+void SettingsManager::setToolbarIconOnly(bool iconOnly)
+{
+    m_config->group(kGroupUi).writeEntry("ToolbarIconOnly", iconOnly);
+    save();
+}
+
 void SettingsManager::save()
 {
     m_config->sync();

@@ -131,35 +131,37 @@ void MainWindow::buildUi()
     setCentralWidget(central);
 
     // --- actions ------------------------------------------------------------
-    auto *toolbar = addToolBar(tr("Toolbar"));
-    toolbar->setMovable(false);
-    toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_toolbar = addToolBar(tr("Toolbar"));
+    m_toolbar->setMovable(false);
+    m_toolbar->setToolButtonStyle(m_ctx.settings()->toolbarIconOnly()
+                                      ? Qt::ToolButtonIconOnly
+                                      : Qt::ToolButtonTextBesideIcon);
 
-    QAction *pasteNow = toolbar->addAction(QIcon::fromTheme(QStringLiteral("edit-paste")),
-                                           tr("Paste"));
+    QAction *pasteNow = m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("edit-paste")),
+                                            tr("Paste"));
     connect(pasteNow, &QAction::triggered, this, &MainWindow::pasteCurrent);
     m_pasteAction = pasteNow;
 
-    QAction *copyOnly = toolbar->addAction(QIcon::fromTheme(QStringLiteral("edit-copy")),
-                                           tr("Copy only"));
+    QAction *copyOnly = m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("edit-copy")),
+                                             tr("Copy only"));
     connect(copyOnly, &QAction::triggered, this, &MainWindow::copyCurrent);
     m_copyAction = copyOnly;
 
-    QAction *pin = toolbar->addAction(QIcon::fromTheme(QStringLiteral("bookmarks")),
-                                      tr("Pin"));
+    QAction *pin = m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("bookmarks")),
+                                        tr("Pin"));
     pin->setCheckable(true);
     connect(pin, &QAction::toggled, this, [this](bool) { togglePinSelected(); });
     m_pinAction = pin;
 
-    QAction *remove = toolbar->addAction(QIcon::fromTheme(QStringLiteral("edit-delete")),
-                                         tr("Delete"));
+    QAction *remove = m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("edit-delete")),
+                                           tr("Delete"));
     connect(remove, &QAction::triggered, this, &MainWindow::deleteSelected);
     m_deleteAction = remove;
 
-    toolbar->addSeparator();
+    m_toolbar->addSeparator();
 
-    QAction *pinnedOnly = toolbar->addAction(QIcon::fromTheme(QStringLiteral("folder-pin")),
-                                             tr("Pinned only"));
+    QAction *pinnedOnly = m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("folder-pin")),
+                                               tr("Pinned only"));
     pinnedOnly->setCheckable(true);
     connect(pinnedOnly, &QAction::toggled, this, [this](bool on) {
         FilterSpec filter = m_model->filter();
@@ -167,28 +169,28 @@ void MainWindow::buildUi()
         m_model->setFilter(filter);
     });
 
-    m_groupsAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("view-choose")),
+    m_groupsAction = m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("view-choose")),
                                         tr("Groups"));
     m_groupsAction->setCheckable(true);
 
-    QAction *paletteAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("system-search")),
+    QAction *paletteAction = m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("system-search")),
                                                  tr("Palette"));
     paletteAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+K")));
     paletteAction->setToolTip(tr("Command palette (Ctrl+K) — fast search & paste"));
     connect(paletteAction, &QAction::triggered, this, &MainWindow::openPalette);
 
-    QAction *snipAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("document-edit")), tr("Snippets"));
+    QAction *snipAction = m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("document-edit")), tr("Snippets"));
     snipAction->setToolTip(tr("Snippet templates — {{clipboard}}, {{date}} etc. Local only"));
     connect(snipAction, &QAction::triggered, this, &MainWindow::openSnippetDialog);
 
-    QAction *chainAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("view-refresh")), tr("Chain"));
+    QAction *chainAction = m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("view-refresh")), tr("Chain"));
     chainAction->setToolTip(tr("Transform chain — combine multiple transforms with live preview"));
     connect(chainAction, &QAction::triggered, this, &MainWindow::openTransformChain);
 
-    QAction *settingsAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("configure")),
+    QAction *settingsAction = m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("configure")),
                                                  tr("Settings"));
     connect(settingsAction, &QAction::triggered, this, &MainWindow::openSettings);
-    QAction *clearAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("edit-clear-all")),
+    QAction *clearAction = m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("edit-clear-all")),
                                               tr("Clear"));
     connect(clearAction, &QAction::triggered, this, &MainWindow::clearHistory);
 
@@ -274,6 +276,14 @@ void MainWindow::connectSignals()
     connect(m_ctx.storage(), &StorageManager::storageReset, this, [this] {
         refreshAppFilter();
         m_preview->showEmpty();
+    });
+    // Live appearance changes (theme is applied globally in ApplicationContext;
+    // here we restyle the toolbar button mode).
+    connect(m_ctx.settings(), &SettingsManager::changed, this, [this] {
+        if (!m_toolbar) return;
+        m_toolbar->setToolButtonStyle(m_ctx.settings()->toolbarIconOnly()
+                                          ? Qt::ToolButtonIconOnly
+                                          : Qt::ToolButtonTextBesideIcon);
     });
 }
 

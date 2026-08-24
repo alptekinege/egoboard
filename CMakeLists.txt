@@ -72,6 +72,7 @@ add_executable(egoboard
     src/app/ApplicationContext.cpp
     src/app/SingleInstanceGuard.cpp
     src/app/SettingsManager.cpp
+    src/app/ThemeManager.cpp
     src/app/LayerShellHelper.cpp
     src/app/WlrDataControlHelper.cpp
     src/app/ActiveWindowTracker.h

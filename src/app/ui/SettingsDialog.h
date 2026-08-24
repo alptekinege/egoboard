@@ -21,6 +21,7 @@ public:
     explicit SettingsDialog(ApplicationContext &context, QWidget *parent = nullptr);
 private:
     QWidget *buildBehaviourPage();
+    QWidget *buildAppearancePage();
     QWidget *buildPlatformPage();
     QWidget *buildHistoryPage();
     QWidget *buildSearchPreviewPage();

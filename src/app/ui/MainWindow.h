@@ -14,6 +14,7 @@ class QComboBox;
 class QLineEdit;
 class QListView;
 class QTimer;
+class QToolBar;
 class CommandPalette;
 class TimelineStrip;
 
@@ -64,6 +65,7 @@ private:
     QTimer *m_searchDebounce = nullptr;
 
     // toolbar / context actions
+    QToolBar *m_toolbar = nullptr;
     QAction *m_pinAction = nullptr;
     QAction *m_copyAction = nullptr;
     QAction *m_pasteAction = nullptr;

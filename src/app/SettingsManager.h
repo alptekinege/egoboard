@@ -90,6 +90,12 @@ public:
     bool notificationsEnabled() const;
     void setNotificationsEnabled(bool enabled);
 
+    // Appearance
+    QString theme() const; // "system" | "light" | "dark"
+    void setTheme(const QString &theme);
+    bool toolbarIconOnly() const; // main-window toolbar buttons show icons only
+    void setToolbarIconOnly(bool iconOnly);
+
     static QString defaultDatabasePath();
     static QString autostartDesktopFilePath();
 
