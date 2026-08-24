@@ -1,5 +1,47 @@
 #include "CodePreviewHighlighter.h"
+#include <QGuiApplication>
+#include <QPalette>
 #include <QRegularExpression>
+
+namespace {
+// Dark-surface variants of the VS-style colors (light variants are unreadable
+// on a dark Base color).
+struct ThemeFormats {
+    QTextCharFormat stringFmt;
+    QTextCharFormat keyFmt;
+    QTextCharFormat numberFmt;
+    QTextCharFormat keywordFmt;
+    QTextCharFormat commentFmt;
+};
+
+bool isDarkSurface()
+{
+    return QGuiApplication::palette().color(QPalette::Base).lightness() < 128;
+}
+
+ThemeFormats makeFormats()
+{
+    ThemeFormats f;
+    if (!isDarkSurface()) {
+        f.stringFmt.setForeground(QColor(QStringLiteral("#a31515")));
+        f.keyFmt.setForeground(QColor(QStringLiteral("#0451a5")));
+        f.keyFmt.setFontWeight(QFont::DemiBold);
+        f.numberFmt.setForeground(QColor(QStringLiteral("#098658")));
+        f.keywordFmt.setForeground(QColor(QStringLiteral("#0000ff")));
+        f.commentFmt.setForeground(QColor(QStringLiteral("#008000")));
+    } else {
+        // Breeze-dark code colors: readable on #1b1e21
+        f.stringFmt.setForeground(QColor(QStringLiteral("#f67400")));   // orange strings
+        f.keyFmt.setForeground(QColor(QStringLiteral("#8e44ad")));     // violet keys
+        f.keyFmt.setFontWeight(QFont::DemiBold);
+        f.numberFmt.setForeground(QColor(QStringLiteral("#f67400")));  // orange numbers
+        f.keywordFmt.setForeground(QColor(QStringLiteral("#1d99f3"))); // blue keywords
+        f.commentFmt.setForeground(QColor(QStringLiteral("#7f8c8d"))); // gray comments
+    }
+    f.commentFmt.setFontItalic(true);
+    return f;
+}
+} // namespace
 
 CodePreviewHighlighter::CodePreviewHighlighter(QTextDocument *doc)
     : QSyntaxHighlighter(doc) {}
@@ -31,16 +73,16 @@ CodePreviewHighlighter::Mode CodePreviewHighlighter::detect(const QString &text)
 
 void CodePreviewHighlighter::highlightBlock(const QString &text) {
     if (m_mode == Mode::Plain) return;
-    // Common formats
-    QTextCharFormat stringFmt; stringFmt.setForeground(QColor(QStringLiteral("#a31515")));
-    QTextCharFormat keyFmt; keyFmt.setForeground(QColor(QStringLiteral("#0451a5"))); keyFmt.setFontWeight(QFont::DemiBold);
-    QTextCharFormat numberFmt; numberFmt.setForeground(QColor(QStringLiteral("#098658")));
-    QTextCharFormat keywordFmt; keywordFmt.setForeground(QColor(QStringLiteral("#0000ff")));
-    QTextCharFormat commentFmt; commentFmt.setForeground(QColor(QStringLiteral("#008000"))); commentFmt.setFontItalic(true);
+    const ThemeFormats tf = makeFormats();
+    const QTextCharFormat &stringFmt = tf.stringFmt;
+    const QTextCharFormat &keyFmt = tf.keyFmt;
+    const QTextCharFormat &numberFmt = tf.numberFmt;
+    const QTextCharFormat &keywordFmt = tf.keywordFmt;
+    const QTextCharFormat &commentFmt = tf.commentFmt;
 
     if (m_mode == Mode::Json) {
         // strings "key" :
-        static const QRegularExpression keyRe(QStringLiteral("\"([^\"]+)\"\\s*:")); 
+        static const QRegularExpression keyRe(QStringLiteral("\"([^\"]+)\"\\s*:"));
         auto it = keyRe.globalMatch(text);
         while (it.hasNext()) { auto m = it.next(); setFormat(m.capturedStart(1)-1, m.capturedLength(1)+2, keyFmt); }
         static const QRegularExpression strRe(QStringLiteral("\"([^\"\\\\]|\\\\.)*\""));
