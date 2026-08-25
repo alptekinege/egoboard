@@ -1,5 +1,7 @@
 #include "SettingsManager.h"
 
+#include "SensitiveDataDetector.h"
+
 #include <KConfig>
 #include <KConfigGroup>
 
@@ -134,6 +136,8 @@ SettingsManager::SensitiveMode SettingsManager::sensitiveMode() const
         return SensitiveMode::Off;
     case static_cast<int>(SensitiveMode::Mark):
         return SensitiveMode::Mark;
+    case static_cast<int>(SensitiveMode::Redact):
+        return SensitiveMode::Redact;
     default:
         return SensitiveMode::Exclude;
     }
@@ -142,6 +146,38 @@ SettingsManager::SensitiveMode SettingsManager::sensitiveMode() const
 void SettingsManager::setSensitiveMode(SensitiveMode mode)
 {
     m_config->group(kGroupHistory).writeEntry("SensitiveMode", static_cast<int>(mode));
+    save();
+}
+
+QStringList SettingsManager::redactKinds() const
+{
+    const QStringList stored = m_config->group(kGroupHistory).readEntry("RedactKinds", QStringList());
+    if (stored.isEmpty())
+        return SensitiveDataDetector::allKinds(); // empty stored list = redact everything
+    return stored;
+}
+
+void SettingsManager::setRedactKinds(const QStringList &kinds)
+{
+    QStringList cleaned;
+    cleaned.reserve(kinds.size());
+    for (QString kind : kinds) {
+        kind = kind.trimmed();
+        if (!kind.isEmpty() && !cleaned.contains(kind))
+            cleaned << kind;
+    }
+    m_config->group(kGroupHistory).writeEntry("RedactKinds", cleaned);
+    save();
+}
+
+QList<ExpireRule> SettingsManager::expireRules() const
+{
+    return decodeRules(m_config->group(kGroupHistory).readEntry("ExpireRules", QStringList()));
+}
+
+void SettingsManager::setExpireRules(const QList<ExpireRule> &rules)
+{
+    m_config->group(kGroupHistory).writeEntry("ExpireRules", encodeRules(rules));
     save();
 }
 

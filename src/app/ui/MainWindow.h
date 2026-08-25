@@ -42,6 +42,7 @@ private:
     void pasteCurrent();
     void copyCurrent();
     void deleteSelected();
+    void deleteFiltered(); // bulk delete of everything matching the current filter
     void togglePinSelected();
     void showContextMenu(const QPoint &pos);
     void openSettings();
@@ -71,6 +72,9 @@ private:
     QAction *m_pasteAction = nullptr;
     QAction *m_deleteAction = nullptr;
     QAction *m_groupsAction = nullptr;
+    QAction *m_pinnedOnlyAction = nullptr;
+    QAction *m_sensitiveAction = nullptr; // audit view: sensitive entries only
+    QAction *m_deleteFilteredAction = nullptr;
 
     qint64 m_selectedId = 0;
     qint64 m_groupFilter = 0; // 0 = all

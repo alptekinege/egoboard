@@ -4,6 +4,7 @@
 #include "BookmarkManager.h"
 #include "ClipboardWatcher.h"
 #include "EgoboardDbusAdaptor.h"
+#include "ExpireScheduler.h"
 #include "ExportImportManager.h"
 #include "HotkeyManager.h"
 #include "LayerShellHelper.h"
@@ -71,6 +72,7 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
                                      this);
     m_dataControl = new WlrDataControlHelper(m_settings, m_tracker.get(), this);
     m_paster = new AutoPaster(m_watcher, this);
+    m_expire = new ExpireScheduler(m_storage, m_settings, this);
     m_hotkeys = new HotkeyManager(this);
     m_tray = new TrayController(m_storage, this);
     m_window = new MainWindow(*this);
@@ -123,6 +125,29 @@ void ApplicationContext::start()
                     QStringLiteral("security-medium"),
                     KNotification::CloseOnTimeout);
             });
+    const auto notifyRedacted = [](const QString &kinds) {
+        KNotification::event(
+            QStringLiteral("sensitiveRedacted"),
+            QObject::tr("Sensitive content redacted"),
+            QObject::tr("Stored with %1 hidden. Copy the entry again to get the redacted version.")
+                .arg(kinds.isEmpty() ? QObject::tr("secrets") : kinds),
+            QStringLiteral("security-medium"),
+            KNotification::CloseOnTimeout);
+    };
+    connect(m_watcher, &ClipboardWatcher::redactedSensitive, this, notifyRedacted);
+    connect(m_dataControl, &WlrDataControlHelper::redactedSensitive, this, notifyRedacted);
+
+    // Auto-expire rules: apply at startup + every 15 min + after capture bursts.
+    connect(m_watcher, &ClipboardWatcher::captured, m_expire,
+            &ExpireScheduler::scheduleAfterCapture);
+    connect(m_dataControl, &WlrDataControlHelper::captured, m_expire,
+            &ExpireScheduler::scheduleAfterCapture);
+    connect(m_expire, &ExpireScheduler::expired, this, [](int count) {
+        KNotification::event(QStringLiteral("entriesExpired"), QObject::tr("Auto-expire"),
+                             QObject::tr("%n old entrie(s) removed by your expire rules.", "", count),
+                             QStringLiteral("document-edit"), KNotification::CloseOnTimeout);
+    });
+    m_expire->start();
     connect(m_settings, &SettingsManager::changed, this, [this] {
         m_watcher->setDebounceInterval(m_settings->debounceMs());
         ThemeManager::apply(m_settings->theme(), m_settings);

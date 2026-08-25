@@ -11,6 +11,7 @@ class AutoPaster;
 class BookmarkManager;
 class ClipboardWatcher;
 class EgoboardDbusAdaptor;
+class ExpireScheduler;
 class ExportImportManager;
 class HotkeyManager;
 class IActiveWindowTracker;
@@ -73,6 +74,7 @@ private:
     std::shared_ptr<IActiveWindowTracker> m_tracker;
     ClipboardWatcher *m_watcher = nullptr;
     WlrDataControlHelper *m_dataControl = nullptr;
+    ExpireScheduler *m_expire = nullptr;
     AutoPaster *m_paster = nullptr;
     HotkeyManager *m_hotkeys = nullptr;
     TrayController *m_tray = nullptr;

@@ -23,7 +23,12 @@ and KDE Frameworks 6**. Works on both **X11 and Plasma Wayland** sessions.
   simulated via XTest (or `xdotool`). On Wayland, where key injection is not
   permitted for regular clients, a notification reminds you to press `Ctrl+V`.
 - **Privacy** — automatic detection of credit card numbers (Luhn-validated),
-  passwords/secrets and API tokens; such content can be marked or excluded.
+  passwords/secrets and API tokens; such content can be marked, excluded, or
+  **redacted** (stored as `••••`, per-kind toggles, the original never touches
+  disk). The **Audit view** filters flagged entries for bulk review & deletion.
+- **Auto-expire rules** — "delete unpinned Terminal copies after 24h":
+  rule-based retention by age, content type and source app, applied at startup
+  and on a 15-minute schedule (pinned entries survive by default).
 - **Export/Import** — the whole database (or selected groups) as JSON, with
   merge / overwrite / skip-duplicate conflict resolution when importing on
   another machine.

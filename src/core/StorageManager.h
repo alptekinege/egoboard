@@ -35,6 +35,13 @@ public:
     StorageStats stats() const override;
     int enforceDiskCap(qint64 maxBytes) override;
 
+    // Rule-based expiry: deletes entries older than olderThanMs, optionally
+    // restricted to a content type and a source-app wildcard ("firefox*").
+    // keepPinned=true protects pinned entries from deletion.
+    // Returns the number of deleted rows.
+    int expireEntries(qint64 olderThanMs, int contentType,
+                      const QString &sourceAppWildcard, bool keepPinned = true);
+
 private:
     static ClipboardRecord recordFromSummary(const QSqlQuery &query);
     bool exec(const QString &sql) const;

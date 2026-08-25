@@ -162,6 +162,8 @@ QVector<ClipboardRecord> StorageManager::fetchPage(const FilterSpec &filter, con
                      .arg(addBind(filter.groupId.value()));
     if (filter.pinnedOnly)
         where << QStringLiteral("pinned = 1");
+    if (filter.sensitiveOnly)
+        where << QStringLiteral("sensitive = 1");
     if (cursor.valid) {
         const QString tsPlaceholder = addBind(cursor.timestampMs);
         const QString idPlaceholder = addBind(cursor.id);
@@ -392,7 +394,60 @@ StorageStats StorageManager::stats() const
     if (query.exec(QStringLiteral("SELECT COUNT(*) FROM entries WHERE ocr_text IS NOT NULL AND ocr_text != ''"))
         && query.next())
         stats.ocrCount = query.value(0).toLongLong();
+    if (query.exec(QStringLiteral("SELECT COUNT(*) FROM entries WHERE sensitive = 1")) && query.next())
+        stats.sensitiveCount = query.value(0).toLongLong();
     return stats;
+}
+
+int StorageManager::expireEntries(qint64 olderThanMs, int contentType,
+                                  const QString &sourceAppWildcard, bool keepPinned)
+{
+    if (!m_db.isOpen() || olderThanMs <= 0)
+        return 0;
+
+    QStringList where;
+    QHash<QString, QVariant> binds; // unique named placeholders :w0, :w1, ...
+    int bindIndex = 0;
+    const auto addBind = [&binds, &bindIndex](const QVariant &value) {
+        const QString name = QStringLiteral(":w%1").arg(bindIndex++);
+        binds.insert(name, value);
+        return name;
+    };
+
+    where << QStringLiteral("timestamp_ms < %1").arg(addBind(olderThanMs));
+    if (contentType >= 0)
+        where << QStringLiteral("content_type = %1").arg(addBind(contentType));
+    if (keepPinned)
+        where << QStringLiteral("pinned = 0");
+    if (!sourceAppWildcard.isEmpty()) {
+        // Translate "firefox*" / "org.kde.*" into a LIKE pattern. Escape
+        // literal backslash/%/_ FIRST so only the wildcards converted below
+        // act as LIKE metacharacters.
+        QString pattern = sourceAppWildcard;
+        pattern.replace(QStringLiteral("\\"), QStringLiteral("\\\\"))
+               .replace(QStringLiteral("%"), QStringLiteral("\\%"))
+               .replace(QStringLiteral("_"), QStringLiteral("\\_"));
+        pattern.replace(QStringLiteral("*"), QStringLiteral("%"));
+        pattern.replace(QStringLiteral("?"), QStringLiteral("_"));
+        where << QStringLiteral("source_app LIKE %1 ESCAPE '\\'").arg(addBind(pattern));
+    }
+
+    QString sql = QStringLiteral("SELECT id FROM entries");
+    if (!where.isEmpty())
+        sql += QStringLiteral(" WHERE ") + where.join(QStringLiteral(" AND "));
+
+    QSqlQuery query(m_db);
+    query.prepare(sql);
+    for (auto it = binds.cbegin(); it != binds.cend(); ++it)
+        query.bindValue(it.key(), it.value());
+    if (!query.exec()) {
+        qWarning("egoboard: expireEntries failed: %s", qPrintable(query.lastError().text()));
+        return 0;
+    }
+    QList<qint64> victims;
+    while (query.next())
+        victims.append(query.value(0).toLongLong());
+    return victims.isEmpty() ? 0 : removeEntries(victims);
 }
 
 int StorageManager::enforceDiskCap(qint64 maxBytes)

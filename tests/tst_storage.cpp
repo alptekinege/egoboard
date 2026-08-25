@@ -24,6 +24,8 @@ private slots:
     void binaryPayloadAndMetadata();
     void searchEscapesLikeCharacters();
     void diskCapPreservesPinnedEntries();
+    void sensitiveFilterAndStats();
+    void expireRules();
 
 private:
     ClipboardRecord makeRecord(const QByteArray &hash, const QString &text, qint64 timestamp);
@@ -291,6 +293,90 @@ void TestStorage::diskCapPreservesPinnedEntries()
     ClipboardRecord full;
     QVERIFY(m_storage->fetchFull(pinnedId, &full));
     QVERIFY(full.pinned);
+}
+
+void TestStorage::sensitiveFilterAndStats()
+{
+    ClipboardRecord normal =
+        makeRecord(QByteArrayLiteral("s-normal"), QStringLiteral("nothing secret"), 1000);
+    m_storage->insertOrUpdate(normal);
+
+    ClipboardRecord secret = makeRecord(QByteArrayLiteral("s-secret"), QStringLiteral("password=hunter2"), 2000);
+    secret.sensitive = true;
+    m_storage->insertOrUpdate(secret);
+
+    QCOMPARE(m_storage->stats().sensitiveCount, qint64(1));
+
+    FilterSpec filter;
+    QCOMPARE(m_storage->fetchPage(filter, {}, 10).size(), 2);
+    filter.sensitiveOnly = true;
+    const auto page = m_storage->fetchPage(filter, {}, 10);
+    QCOMPARE(page.size(), 1);
+    QVERIFY(page.first().sensitive);
+    QVERIFY(!filter.isTrivial());
+}
+
+void TestStorage::expireRules()
+{
+    const qint64 oldText = m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("e-text"), QStringLiteral("old text"), 1000));
+    ClipboardRecord oldImage;
+    oldImage.hash = QByteArrayLiteral("e-image");
+    oldImage.type = ContentType::Image;
+    oldImage.blobData = QByteArrayLiteral("PNG");
+    oldImage.hasBlob = true;
+    oldImage.preview = QStringLiteral("Image");
+    oldImage.timestamp = 2000;
+    oldImage.sourceApp = QStringLiteral("spectacle");
+    m_storage->insertOrUpdate(oldImage);
+
+    ClipboardRecord pinned = makeRecord(QByteArrayLiteral("e-pinned"), QStringLiteral("keep pinned"), 3000);
+    const qint64 pinnedId = m_storage->insertOrUpdate(pinned);
+    QVERIFY(m_storage->setPinned(pinnedId, true));
+
+    m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("e-new"), QStringLiteral("fresh"), 90000));
+
+    QCOMPARE(m_storage->stats().entryCount, qint64(4));
+
+    // Expire everything older than 50s, keep pinned.
+    QCOMPARE(m_storage->expireEntries(50000, -1, QString(), true), 2);
+    QCOMPARE(m_storage->stats().entryCount, qint64(2));
+    ClipboardRecord gone;
+    QVERIFY(!m_storage->fetchFull(oldText, &gone)); // row expired
+
+    // Only images older than 50s from spectacle*.
+    ClipboardRecord oldSpectacle;
+    oldSpectacle.hash = QByteArrayLiteral("e-old-spec");
+    oldSpectacle.type = ContentType::Image;
+    oldSpectacle.timestamp = 4000;
+    oldSpectacle.sourceApp = QStringLiteral("spectacle");
+    oldSpectacle.preview = QStringLiteral("Image");
+    m_storage->insertOrUpdate(oldSpectacle);
+    ClipboardRecord oldFirefox;
+    oldFirefox.hash = QByteArrayLiteral("e-old-fx");
+    oldFirefox.type = ContentType::Image;
+    oldFirefox.timestamp = 4500;
+    oldFirefox.sourceApp = QStringLiteral("firefox");
+    oldFirefox.preview = QStringLiteral("Image");
+    m_storage->insertOrUpdate(oldFirefox);
+    ClipboardRecord freshImage;
+    freshImage.hash = QByteArrayLiteral("e-fresh-img");
+    freshImage.type = ContentType::Image;
+    freshImage.timestamp = 60000;
+    freshImage.sourceApp = QStringLiteral("spectacle");
+    freshImage.preview = QStringLiteral("Image");
+    m_storage->insertOrUpdate(freshImage);
+    QCOMPARE(m_storage->stats().entryCount, qint64(5));
+
+    // Only the old spectacle image qualifies: type and app wildcard both apply.
+    QCOMPARE(m_storage->expireEntries(50000, int(ContentType::Image), QStringLiteral("spectacle*"), true), 1);
+
+    // keepPinned=false also removes old pinned rows (and the old firefox image).
+    QCOMPARE(m_storage->expireEntries(50000, -1, QString(), false), 2);
+    ClipboardRecord full;
+    QVERIFY(!m_storage->fetchFull(pinnedId, &full));
+    QCOMPARE(m_storage->stats().entryCount, qint64(2)); // fresh text + fresh image
 }
 
 QTEST_GUILESS_MAIN(TestStorage)

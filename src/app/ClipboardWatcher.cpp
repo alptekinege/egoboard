@@ -86,6 +86,84 @@ QStringList customKinds(const QString &text, SettingsManager *settings)
     return out;
 }
 
+// Replaces every match of the user's custom patterns with "••••" (returns the
+// custom kinds that fired; ex. "custom:secret-\\w+").
+QStringList redactCustomPatterns(QString *text, SettingsManager *settings)
+{
+    QStringList kinds;
+    if (!settings || !text || text->isEmpty())
+        return kinds;
+    const auto pats = settings->customSensitivePatterns();
+    for (const QString &pat : pats) {
+        QRegularExpression re(pat, QRegularExpression::CaseInsensitiveOption);
+        if (!re.isValid())
+            continue;
+        QString replaced = *text;
+        replaced.replace(re, QStringLiteral("••••"));
+        if (replaced != *text) {
+            *text = replaced;
+            kinds << QStringLiteral("custom:%1").arg(pat.left(16));
+        }
+    }
+    return kinds;
+}
+
+// Redact mode: replaces detected secrets in a Text/RichText record payload
+// with "••••", re-hashing from the redacted content so dedup and FTS stay
+// consistent. Returns the kinds actually redacted (empty when nothing was).
+QStringList applyRedaction(ClipboardRecord *record, const QString &plainSource,
+                           SettingsManager *settings)
+{
+    if (!record || (record->type != ContentType::Text && record->type != ContentType::RichText))
+        return {};
+    const QStringList enabledKinds = settings ? settings->redactKinds() : QStringList();
+    QStringList redactedKinds;
+
+    if (record->type == ContentType::Text) {
+        SensitiveDataDetector::RedactionResult result =
+            SensitiveDataDetector::redact(record->textData, enabledKinds);
+        const QStringList custom = redactCustomPatterns(&result.text, settings);
+        if (result.redactedCount == 0 && custom.isEmpty())
+            return {};
+        const bool truncated = record->preview.endsWith(QChar(0x2026));
+        record->textData = result.text;
+        record->sizeBytes = result.text.toUtf8().size();
+        record->preview = singleLine(result.text);
+        if (truncated)
+            record->preview += QStringLiteral(" …");
+        record->hash = hashPayload(ContentType::Text, result.text.toUtf8());
+        record->sensitive = true;
+        redactedKinds = result.redactedKinds;
+        for (const QString &kind : custom)
+            if (!redactedKinds.contains(kind))
+                redactedKinds.append(kind);
+        return redactedKinds;
+    }
+
+    // RichText: the HTML payload is the source of truth (what gets stored).
+    SensitiveDataDetector::RedactionResult html =
+        SensitiveDataDetector::redact(record->textData, enabledKinds);
+    const QStringList htmlCustom = redactCustomPatterns(&html.text, settings);
+    if (html.redactedCount == 0 && htmlCustom.isEmpty())
+        return {};
+    SensitiveDataDetector::RedactionResult plain =
+        SensitiveDataDetector::redact(plainSource, enabledKinds);
+    (void)redactCustomPatterns(&plain.text, settings);
+    const bool truncated = record->preview.endsWith(QChar(0x2026));
+    record->textData = html.text;
+    record->sizeBytes = html.text.toUtf8().size();
+    record->preview = singleLine(plain.text);
+    if (truncated)
+        record->preview += QStringLiteral(" …");
+    record->hash = hashPayload(ContentType::RichText, html.text.toUtf8());
+    record->sensitive = true;
+    redactedKinds = html.redactedKinds;
+    for (const QString &kind : htmlCustom)
+        if (!redactedKinds.contains(kind))
+            redactedKinds.append(kind);
+    return redactedKinds;
+}
+
 } // namespace
 
 ClipboardWatcher::ClipboardWatcher(QClipboard *clipboard, SettingsManager *settings,
@@ -143,6 +221,15 @@ void ClipboardWatcher::processPending()
     if (record.hash.isEmpty())
         return; // nothing we care about (e.g. unknown formats)
 
+    record.timestamp = QDateTime::currentMSecsSinceEpoch();
+    if (m_activeWindow) {
+        const ActiveWindowInfo source = m_activeWindow->activeWindow();
+        record.sourceApp = source.appIdentifier;
+        record.sourceWindow = source.windowTitle;
+    }
+    if (m_settings && !record.sourceApp.isEmpty() && m_settings->isSourceIgnored(record.sourceApp))
+        return; // per-app ignore rule (runs before any sensitive-data policy)
+
     // Sensitive-data policy applies to anything that carries text.
     const QString text = mimeData->text();
     if (!text.isEmpty()) {
@@ -155,16 +242,12 @@ void ClipboardWatcher::processPending()
         }
         if (mode == SettingsManager::SensitiveMode::Mark)
             record.sensitive = isSensitiveWithCustom(text, m_settings);
+        if (mode == SettingsManager::SensitiveMode::Redact) {
+            const QStringList kinds = applyRedaction(&record, text, m_settings);
+            if (!kinds.isEmpty())
+                emit redactedSensitive(kinds.join(QStringLiteral(", ")));
+        }
     }
-
-    record.timestamp = QDateTime::currentMSecsSinceEpoch();
-    if (m_activeWindow) {
-        const ActiveWindowInfo source = m_activeWindow->activeWindow();
-        record.sourceApp = source.appIdentifier;
-        record.sourceWindow = source.windowTitle;
-    }
-    if (m_settings && !record.sourceApp.isEmpty() && m_settings->isSourceIgnored(record.sourceApp))
-        return; // per-app ignore rule
     emit captured(record);
 }
 

@@ -6,6 +6,8 @@
 #include <QRegularExpressionMatch>
 #include <QRegularExpressionMatchIterator>
 
+#include <algorithm>
+
 namespace {
 
 struct Rule {
@@ -89,6 +91,66 @@ QStringList SensitiveDataDetector::kinds(const QString &text)
     for (const Finding &finding : findings) {
         if (!result.contains(finding.kind))
             result.append(finding.kind);
+    }
+    return result;
+}
+
+QStringList SensitiveDataDetector::allKinds()
+{
+    QStringList result;
+    for (const Rule &rule : kRules) {
+        const QString kind = QString::fromLatin1(rule.kind);
+        if (!result.contains(kind))
+            result.append(kind);
+    }
+    return result;
+}
+
+SensitiveDataDetector::RedactionResult SensitiveDataDetector::redact(
+    const QString &text, const QStringList &enabledKinds)
+{
+    RedactionResult result;
+    result.text = text;
+    if (text.isEmpty())
+        return result;
+
+    // Keep only enabled kinds, then merge overlapping matches into maximal
+    // spans so replacement offsets never go stale (e.g. "Bearer sk-…" hits
+    // both bearer-token and api-key).
+    const bool allEnabled = enabledKinds.isEmpty();
+    QList<Finding> spans;
+    {
+        QList<Finding> findings;
+        const auto all = scan(text);
+        for (const Finding &finding : all)
+            if (allEnabled || enabledKinds.contains(finding.kind))
+                findings.append(finding);
+        std::sort(findings.begin(), findings.end(),
+                  [](const Finding &a, const Finding &b) {
+                      return a.offset < b.offset
+                          || (a.offset == b.offset && a.length > b.length);
+                  });
+        for (const Finding &finding : findings) {
+            if (!spans.isEmpty() && finding.offset < spans.last().offset + spans.last().length) {
+                const int end = qMax(spans.last().offset + spans.last().length,
+                                     finding.offset + finding.length);
+                spans.last().length = end - spans.last().offset;
+                if (!spans.last().kind.contains(finding.kind)) // may be comma-joined later
+                    spans.last().kind = spans.last().kind + QLatin1Char(',') + finding.kind;
+            } else {
+                spans.append(finding);
+            }
+        }
+    }
+
+    // Replace from the end so earlier offsets stay valid.
+    for (auto it = spans.crbegin(); it != spans.crend(); ++it) {
+        result.text.replace(it->offset, it->length, QStringLiteral("••••"));
+        ++result.redactedCount;
+        const QStringList kinds = it->kind.split(QLatin1Char(','), Qt::SkipEmptyParts);
+        for (const QString &kind : kinds)
+            if (!result.redactedKinds.contains(kind))
+                result.redactedKinds.append(kind);
     }
     return result;
 }

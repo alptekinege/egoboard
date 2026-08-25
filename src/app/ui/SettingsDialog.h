@@ -1,10 +1,14 @@
 #pragma once
 
+#include "ExpirePolicy.h"
+
 #include <QDialog>
+#include <QList>
 class ApplicationContext;
 class QCheckBox;
 class QComboBox;
 class QLabel;
+class QLineEdit;
 class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
@@ -39,6 +43,10 @@ private:
     void populateSnippetList();
     void populateTransformList();
     void populateScriptList();
+    // Redact mode: sync kind-toggle enabled state with the selected radio.
+    void updateRedactUi();
+    // Expire-rules editor: rebuild the list widget from m_expireRules.
+    void refreshExpireList();
     // Coalesced deferred refresh: safe to call from list-item signal handlers
     // while lists are being rebuilt (avoids re-entrant repaint loops).
     void scheduleDiagnosticsRefresh();
@@ -72,7 +80,17 @@ private:
     QSpinBox *m_debounce = nullptr;
     QRadioButton *m_sensitiveOff = nullptr;
     QRadioButton *m_sensitiveMark = nullptr;
+    QRadioButton *m_sensitiveRedact = nullptr;
     QRadioButton *m_sensitiveExclude = nullptr;
+    QList<QCheckBox *> m_redactKindBoxes; // one per SensitiveDataDetector::allKinds()
+    QPushButton *m_redactTestBtn = nullptr;
+    QLabel *m_redactTestResult = nullptr;
+    QListWidget *m_expireList = nullptr;
+    QComboBox *m_expireType = nullptr;
+    QLineEdit *m_expireApp = nullptr;
+    QSpinBox *m_expireAgeH = nullptr;
+    QCheckBox *m_expireKeepPinned = nullptr;
+    QList<ExpireRule> m_expireRules; // working copy, written on save
     QPlainTextEdit *m_customPatterns = nullptr;
     QPushButton *m_testSensitiveBtn = nullptr;
     QLabel *m_sensitiveTestResult = nullptr;

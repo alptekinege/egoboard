@@ -160,14 +160,33 @@ void MainWindow::buildUi()
 
     m_toolbar->addSeparator();
 
-    QAction *pinnedOnly = m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("folder-pin")),
+    m_pinnedOnlyAction = m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("folder-pin")),
                                                tr("Pinned only"));
-    pinnedOnly->setCheckable(true);
-    connect(pinnedOnly, &QAction::toggled, this, [this](bool on) {
+    m_pinnedOnlyAction->setCheckable(true);
+    connect(m_pinnedOnlyAction, &QAction::toggled, this, [this](bool on) {
         FilterSpec filter = m_model->filter();
         filter.pinnedOnly = on;
         m_model->setFilter(filter);
     });
+
+    m_sensitiveAction =
+        m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("security-medium")), tr("Audit"));
+    m_sensitiveAction->setCheckable(true);
+    m_sensitiveAction->setToolTip(tr("Audit view: only sensitive entries"));
+    connect(m_sensitiveAction, &QAction::toggled, this, [this](bool on) {
+        m_sensitiveAction->setToolTip(
+            tr("Audit view: only sensitive entries (%1 flagged)")
+                .arg(m_ctx.storage()->stats().sensitiveCount));
+        FilterSpec filter = m_model->filter();
+        filter.sensitiveOnly = on;
+        m_model->setFilter(filter);
+    });
+
+    m_deleteFilteredAction =
+        m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("edit-delete")),
+                             tr("Delete listed"));
+    m_deleteFilteredAction->setToolTip(tr("Delete every entry shown by the current filter (ask first)"));
+    connect(m_deleteFilteredAction, &QAction::triggered, this, &MainWindow::deleteFiltered);
 
     m_groupsAction = m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("view-choose")),
                                         tr("Groups"));
@@ -309,6 +328,10 @@ void MainWindow::applyCurrentFilter()
     filter.contentType = m_typeCombo->currentData().toInt();
     if (m_groupFilter != 0)
         filter.groupId = m_groupFilter;
+    if (m_sensitiveAction && m_sensitiveAction->isChecked())
+        filter.sensitiveOnly = true;
+    if (m_pinnedOnlyAction && m_pinnedOnlyAction->isChecked())
+        filter.pinnedOnly = true;
 
     const int datePreset = m_dateCombo->currentData().toInt();
     const QDateTime now = QDateTime::currentDateTime();
@@ -400,6 +423,26 @@ void MainWindow::deleteSelected()
         ids.append(index.data(ClipboardListModel::IdRole).toLongLong());
     if (ids.isEmpty())
         return;
+    m_ctx.storage()->removeEntries(ids);
+}
+
+void MainWindow::deleteFiltered()
+{
+    const FilterSpec filter = m_model->filter();
+    const auto all = m_ctx.storage()->fetchAll(filter);
+    if (all.isEmpty())
+        return;
+    QMessageBox box(this);
+    box.setWindowTitle(tr("Delete listed entries"));
+    box.setText(tr("Delete the %n entry/entries shown by the current filter?", "", all.size()));
+    box.setStandardButtons(QMessageBox::Yes | QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Cancel);
+    if (box.exec() != QMessageBox::Yes)
+        return;
+    QList<qint64> ids;
+    ids.reserve(all.size());
+    for (const ClipboardRecord &record : all)
+        ids.append(record.id);
     m_ctx.storage()->removeEntries(ids);
 }
 

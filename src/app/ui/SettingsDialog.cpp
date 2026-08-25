@@ -11,6 +11,7 @@
 #include "StorageManager.h"
 #include "TransformEngine.h"
 #include "../../core/SensitiveDataDetector.h"
+#include "../../core/ExpirePolicy.h"
 #include "ExportImportDialogs.h"
 #include "ExportImportManager.h"
 
@@ -354,15 +355,53 @@ QWidget *SettingsDialog::buildHistoryPage()
     auto *privacyLayout = new QVBoxLayout(privacyBox);
     m_sensitiveOff = new QRadioButton(tr("Keep everything without checks"), privacyBox);
     m_sensitiveMark = new QRadioButton(tr("Store but mark (credit cards, passwords, tokens)…"), privacyBox);
+    m_sensitiveRedact = new QRadioButton(tr("Redact before storing (secrets become ••••)…"), privacyBox);
     m_sensitiveExclude = new QRadioButton(tr("Never store sensitive content"), privacyBox);
     privacyLayout->addWidget(m_sensitiveOff);
     privacyLayout->addWidget(m_sensitiveMark);
+    privacyLayout->addWidget(m_sensitiveRedact);
     privacyLayout->addWidget(m_sensitiveExclude);
-    auto *privacyHint = new QLabel(tr("Detection: Luhn-validated credit cards, high-entropy secrets, API tokens (e.g. <code>AKIA…</code>, <code>ghp_…</code>, <code>sk-…</code>). <i>Exclude</i> is recommended for shared machines. Custom regex below extends detection."), privacyBox);
+    auto *privacyHint = new QLabel(tr("Detection: Luhn-validated credit cards, high-entropy secrets, API tokens (e.g. <code>AKIA…</code>, <code>ghp_…</code>, <code>sk-…</code>). <i>Exclude</i> is recommended for shared machines. <i>Redact</i> keeps the context but replaces the secret with <code>••••</code> — the original never touches disk. Custom regex below extends detection."), privacyBox);
     privacyHint->setWordWrap(true);
     privacyHint->setTextFormat(Qt::RichText);
     privacyHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
     privacyLayout->addWidget(privacyHint);
+
+    // Per-kind redaction toggles (only meaningful in Redact mode).
+    auto *kindLabel = new QLabel(tr("Redact these kinds (Redact mode):"), privacyBox);
+    privacyLayout->addWidget(kindLabel);
+    auto *kindRow = new QHBoxLayout();
+    kindRow->setSpacing(12);
+    const QStringList allKinds = SensitiveDataDetector::allKinds();
+    for (const QString &kind : allKinds) {
+        auto *box = new QCheckBox(kind, privacyBox);
+        box->setToolTip(kind);
+        kindRow->addWidget(box);
+        m_redactKindBoxes.append(box);
+    }
+    kindRow->addStretch(1);
+    privacyLayout->addLayout(kindRow);
+    auto *redactTestRow = new QHBoxLayout();
+    m_redactTestBtn = new QPushButton(tr("Test redaction"), privacyBox);
+    m_redactTestResult = new QLabel(privacyBox);
+    m_redactTestResult->setWordWrap(true);
+    m_redactTestResult->setTextFormat(Qt::RichText);
+    redactTestRow->addWidget(m_redactTestBtn);
+    redactTestRow->addWidget(m_redactTestResult, 1);
+    privacyLayout->addLayout(redactTestRow);
+    connect(m_redactTestBtn, &QPushButton::clicked, this, [this] {
+        const QString sample = QStringLiteral("Card: 4111 1111 1111 1111\npassword=hunter2\nAKIAIOSFODNN7EXAMPLE");
+        QStringList enabled;
+        for (QCheckBox *box : m_redactKindBoxes)
+            if (box->isChecked())
+                enabled << box->text();
+        const auto result = SensitiveDataDetector::redact(sample, enabled);
+        QString html = QStringLiteral("<b style='color:palette(highlight);'>Result:</b><br/><pre>%1</pre>")
+                           .arg(result.text.toHtmlEscaped());
+        m_redactTestResult->setText(html);
+    });
+    for (QRadioButton *radio : {m_sensitiveOff, m_sensitiveMark, m_sensitiveRedact, m_sensitiveExclude})
+        connect(radio, &QRadioButton::toggled, this, [this](bool) { updateRedactUi(); });
 
     auto *customRow = new QVBoxLayout();
     customRow->addWidget(new QLabel(tr("Custom sensitive patterns (one per line, QRegularExpression, case-insensitive):"), privacyBox));
@@ -391,6 +430,59 @@ QWidget *SettingsDialog::buildHistoryPage()
     });
     privacyLayout->addLayout(customRow);
     historyLayout->addWidget(privacyBox);
+
+    auto *expireBox = new QGroupBox(tr("Auto-expire rules"), historyPage);
+    auto *expireLayout = new QVBoxLayout(expireBox);
+    auto *expireHint = new QLabel(tr("Delete old entries that match all criteria — e.g. \"unpinned Terminal copies after 24h\". Runs on startup and every 15 minutes while egoboard is running."), expireBox);
+    expireHint->setWordWrap(true);
+    expireHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+    expireLayout->addWidget(expireHint);
+    m_expireList = new QListWidget(expireBox);
+    m_expireList->setMaximumHeight(104);
+    m_expireList->setSelectionMode(QAbstractItemView::SingleSelection);
+    expireLayout->addWidget(m_expireList);
+    auto *expireForm = new QGridLayout();
+    m_expireType = new QComboBox(expireBox);
+    m_expireType->addItem(tr("Any type"), -1);
+    m_expireType->addItem(tr("Text"), int(ContentType::Text));
+    m_expireType->addItem(tr("Rich text"), int(ContentType::RichText));
+    m_expireType->addItem(tr("Image"), int(ContentType::Image));
+    m_expireType->addItem(tr("Files"), int(ContentType::Files));
+    m_expireApp = new QLineEdit(expireBox);
+    m_expireApp->setPlaceholderText(tr("App wildcard e.g. org.kde.konsole* (empty = any)"));
+    m_expireAgeH = new QSpinBox(expireBox);
+    m_expireAgeH->setRange(1, 24 * 365);
+    m_expireAgeH->setValue(24);
+    m_expireAgeH->setSuffix(tr(" h"));
+    m_expireKeepPinned = new QCheckBox(tr("Keep pinned"), expireBox);
+    m_expireKeepPinned->setChecked(true);
+    auto *addExpireBtn = new QPushButton(tr("Add rule"), expireBox);
+    auto *removeExpireBtn = new QPushButton(tr("Remove"), expireBox);
+    expireForm->addWidget(m_expireType, 0, 0);
+    expireForm->addWidget(m_expireApp, 0, 1);
+    expireForm->addWidget(m_expireAgeH, 0, 2);
+    expireForm->addWidget(m_expireKeepPinned, 0, 3);
+    expireForm->addWidget(addExpireBtn, 0, 4);
+    expireForm->addWidget(removeExpireBtn, 1, 4);
+    expireForm->setColumnStretch(1, 1);
+    expireLayout->addLayout(expireForm);
+    connect(addExpireBtn, &QPushButton::clicked, this, [this] {
+        ExpireRule rule;
+        rule.contentType = m_expireType->currentData().toInt();
+        rule.sourceAppWildcard = m_expireApp->text().trimmed();
+        rule.ageSeconds = qint64(m_expireAgeH->value()) * 3600;
+        rule.keepPinned = m_expireKeepPinned->isChecked();
+        m_expireRules.append(rule);
+        refreshExpireList();
+    });
+    connect(removeExpireBtn, &QPushButton::clicked, this, [this] {
+        const int row = m_expireList->currentRow();
+        if (row >= 0 && row < m_expireRules.size()) {
+            m_expireRules.removeAt(row);
+            refreshExpireList();
+        }
+    });
+    historyLayout->addWidget(expireBox);
 
     auto *rulesBox = new QGroupBox(tr("Per-app rules"), historyPage);
     auto *rulesLayout = new QVBoxLayout(rulesBox);
@@ -1261,10 +1353,20 @@ void SettingsDialog::load()
     case SettingsManager::SensitiveMode::Mark:
         m_sensitiveMark->setChecked(true);
         break;
+    case SettingsManager::SensitiveMode::Redact:
+        m_sensitiveRedact->setChecked(true);
+        break;
     case SettingsManager::SensitiveMode::Exclude:
         m_sensitiveExclude->setChecked(true);
         break;
     }
+    const QStringList redactKinds = m_ctx.settings()->redactKinds();
+    for (QCheckBox *box : m_redactKindBoxes)
+        if (box)
+            box->setChecked(redactKinds.contains(box->text()));
+    updateRedactUi();
+    m_expireRules = m_ctx.settings()->expireRules();
+    refreshExpireList();
     if (m_customPatterns) m_customPatterns->setPlainText(m_ctx.settings()->customSensitivePatterns().join(QStringLiteral("\n")));
     m_diskCapMb->setValue(mbCeil(m_ctx.settings()->diskCapBytes()));
     if (m_ignoredApps) {
@@ -1305,8 +1407,16 @@ void SettingsDialog::save()
         m_ctx.settings()->setSensitiveMode(SettingsManager::SensitiveMode::Off);
     else if (m_sensitiveMark->isChecked())
         m_ctx.settings()->setSensitiveMode(SettingsManager::SensitiveMode::Mark);
+    else if (m_sensitiveRedact->isChecked())
+        m_ctx.settings()->setSensitiveMode(SettingsManager::SensitiveMode::Redact);
     else
         m_ctx.settings()->setSensitiveMode(SettingsManager::SensitiveMode::Exclude);
+    QStringList redactKinds;
+    for (QCheckBox *box : m_redactKindBoxes)
+        if (box && box->isChecked())
+            redactKinds << box->text();
+    m_ctx.settings()->setRedactKinds(redactKinds);
+    m_ctx.settings()->setExpireRules(m_expireRules);
     if (m_customPatterns) {
         const QStringList pats = m_customPatterns->toPlainText().split(QRegularExpression(QStringLiteral("[\n,]+")), Qt::SkipEmptyParts);
         m_ctx.settings()->setCustomSensitivePatterns(pats);
@@ -1328,4 +1438,46 @@ void SettingsDialog::save()
         m_ctx.settings()->setToolbarIconOnly(m_toolbarIconOnly->isChecked());
     // transform/script hidden/disabled are saved immediately on toggle, but also save here
     refreshDiagnostics();
+}
+
+void SettingsDialog::updateRedactUi()
+{
+    if (!m_sensitiveRedact)
+        return;
+    const bool redact = m_sensitiveRedact->isChecked();
+    for (QCheckBox *box : m_redactKindBoxes)
+        if (box)
+            box->setEnabled(redact);
+    if (m_redactTestBtn)
+        m_redactTestBtn->setEnabled(redact);
+}
+
+void SettingsDialog::refreshExpireList()
+{
+    if (!m_expireList)
+        return;
+    m_expireList->clear();
+    for (const ExpireRule &rule : m_expireRules) {
+        QString typeName;
+        if (rule.contentType >= 0 && rule.contentType <= int(ContentType::Files))
+            typeName = QString::fromLatin1(contentTypeTag(static_cast<ContentType>(rule.contentType)));
+        else
+            typeName = tr("any");
+        const QString app = rule.sourceAppWildcard.isEmpty() ? tr("any app")
+                                                              : tr("from %1").arg(rule.sourceAppWildcard);
+        QString age;
+        if (rule.ageSeconds % 86400 == 0)
+            age = tr("%1 d").arg(rule.ageSeconds / 86400);
+        else if (rule.ageSeconds % 3600 == 0)
+            age = tr("%1 h").arg(rule.ageSeconds / 3600);
+        else if (rule.ageSeconds % 60 == 0)
+            age = tr("%1 m").arg(rule.ageSeconds / 60);
+        else
+            age = tr("%1 s").arg(rule.ageSeconds);
+        const QString pin = rule.keepPinned ? tr("keep pinned") : tr("pinned removed too");
+        auto *item = new QListWidgetItem(tr("%1 · %2 · older than %3 · %4")
+                                             .arg(typeName, app, age, pin),
+                                         m_expireList);
+        item->setData(Qt::UserRole, rule.toString());
+    }
 }

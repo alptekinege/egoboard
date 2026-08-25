@@ -1,6 +1,10 @@
 #pragma once
 
+#include "ExpirePolicy.h"
+
+#include <QList>
 #include <QObject>
+#include <QStringList>
 
 class KConfig;
 // Typed access to ~/.config/egoboardrc (KConfig). Emits changed() so
@@ -12,6 +16,7 @@ public:
         Off = 0,
         Mark = 1, // store but flag in the UI
         Exclude = 2, // never store
+        Redact = 3, // store with detected secrets replaced by "••••"
     };
     Q_ENUM(SensitiveMode)
 
@@ -40,6 +45,15 @@ public:
 
     SensitiveMode sensitiveMode() const;
     void setSensitiveMode(SensitiveMode mode);
+
+    // Which built-in kinds are redacted in Redact mode ("creditcard",
+    // "credential", "api-key", ...). Empty list = redact every kind.
+    QStringList redactKinds() const;
+    void setRedactKinds(const QStringList &kinds);
+
+    // Auto-expire rules (Track E). Stored as one encoded string per rule.
+    QList<ExpireRule> expireRules() const;
+    void setExpireRules(const QList<ExpireRule> &rules);
 
     qint64 maxItemBytes() const; // payload cap per entry (text)
     void setMaxItemBytes(qint64 bytes);

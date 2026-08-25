@@ -12,6 +12,7 @@ endfunction()
 
 egoboard_add_test(tst_storage)
 egoboard_add_test(tst_sensitive)
+egoboard_add_test(tst_expire)
 egoboard_add_test(tst_bookmarks)
 egoboard_add_test(tst_exportimport)
 egoboard_add_test(tst_transforms)

@@ -13,10 +13,11 @@ struct FilterSpec {
     QString sourceApp; // empty = all
     std::optional<qint64> groupId; // entries assigned to this group
     bool pinnedOnly = false;
+    bool sensitiveOnly = false; // audit view: only entries flagged sensitive
 
     bool isTrivial() const
     {
         return searchText.isEmpty() && contentType == -1 && fromMs == 0 && toMs == 0
-            && sourceApp.isEmpty() && !groupId.has_value() && !pinnedOnly;
+            && sourceApp.isEmpty() && !groupId.has_value() && !pinnedOnly && !sensitiveOnly;
     }
 };

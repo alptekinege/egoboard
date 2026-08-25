@@ -52,6 +52,7 @@ add_library(egoboard_core STATIC
     src/core/BookmarkManager.cpp
     src/core/ExportImportManager.cpp
     src/core/SensitiveDataDetector.cpp
+    src/core/ExpirePolicy.cpp
     src/core/ClipboardListModel.cpp
 )
 add_library(egoboard::core ALIAS egoboard_core)
@@ -79,6 +80,7 @@ add_executable(egoboard
     src/app/X11ActiveWindowTracker.cpp
     src/app/WaylandActiveWindowTracker.cpp
     src/app/ClipboardWatcher.cpp
+    src/app/ExpireScheduler.cpp
     src/app/AutoPaster.cpp
     src/app/HotkeyManager.cpp
     src/app/TrayController.cpp

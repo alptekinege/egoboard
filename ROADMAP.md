@@ -2,7 +2,7 @@
 
 > Local-first clipboard history for KDE Plasma. This roadmap balances what's already solid (SQLite + WAL history, X11/Wayland tracking, virtualized two-pane UI, groups & pins) with modern features worth adding next — without turning the app into a cloud service.
 
-**Status:** `v0.1.0` · Qt 6 + KF6 · local-only · MIT · no compilation required for this document.
+**Status:** `v0.1.0` · Qt 6 + KF6 · local-only · MIT · no compilation required for this document. Phases 1–4b and Track E (minus SQLCipher) are delivered; remaining candidates: semantic search (Track A), KRunner plugin / browser companion / LAN sync (Track D), SQLCipher (Track E).
 
 ---
 
@@ -91,10 +91,12 @@ export const meta = { label: "Pretty JSON", match: /^\s*\{/ };
 
 ### Track E — Privacy & Security Hardening
 
-* **Redaction mode**: detected secrets are stored as `••••` unless user explicitly reveals; `Exclude` mode already exists — add per-pattern toggles (cards / tokens / private keys).
-* **Encrypted at rest** (opt-in): SQLCipher build flag for the DB file; key held in KWallet.
-* **Auto-expire rules**: "delete unpinned Terminal copies after 24h", "keep Images for 7 days".
-* **Audit view**: filter `sensitive = 1` and bulk-delete.
+> **Status:** Track E mostly delivered — redaction, auto-expire rules and the audit view shipped; SQLCipher at-rest encryption is the one remaining (deferred) item.
+
+* **Redaction mode** ✅ — `SensitiveMode::Redact` stores detected secrets as `••••` (the original never touches disk), with per-kind toggles (cards / tokens / private keys / custom patterns) in Settings → History & Privacy.
+* **Encrypted at rest** (opt-in, deferred): SQLCipher build flag for the DB file; key held in KWallet. Requires a dependency + DB-migration story — the next candidate after this track.
+* **Auto-expire rules** ✅ — rule engine (`ExpireRule` + `ExpireScheduler`): age × content type × source-app wildcard, keep-pinned toggle, JSON-style rules in KConfig, applied at startup and every 15 minutes.
+* **Audit view** ✅ — "Audit" toolbar toggle filters `sensitive = 1` (stats-driven count), plus bulk "Delete listed" with confirmation.
 
 ### Track F — UX Polish
 
@@ -154,4 +156,4 @@ Feedback loop: check one phase, implement, run `cmake --build build && ctest --t
 
 ---
 
-*Last updated: 2026-08-23 · Maintainer: local development · Next review after Phase 1.*
+*Last updated: 2026-08-25 · Maintainer: local development · Next review after Track E checkoff — SQLCipher remains the next big item.*

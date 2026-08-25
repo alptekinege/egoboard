@@ -34,6 +34,7 @@ public:
 signals:
     void captured(const ClipboardRecord &record);
     void excludedSensitive(const QString &reason);
+    void redactedSensitive(const QString &kinds); // Redact mode: secrets replaced
     void activeChanged(bool active);
 
 private:
