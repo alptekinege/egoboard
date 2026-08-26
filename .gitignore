@@ -57,3 +57,4 @@ dist/
 *.AppImage
 packaging/appimage/tools/
 .commandcode
+docs/plans/
