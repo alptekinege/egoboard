@@ -4,6 +4,7 @@
 #include "../HotkeyManager.h"
 #include "../LayerShellHelper.h"
 #include "../WlrDataControlHelper.h"
+#include "../EncryptionManager.h"
 #include "../ScriptActionManager.h"
 #include "../SettingsManager.h"
 #include "../OcrWorker.h"
@@ -566,6 +567,45 @@ QWidget *SettingsDialog::buildHistoryPage()
     ocrHint->setWordWrap(true);
     ocrHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
     rulesLayout->addWidget(ocrHint);
+
+    auto *encryptBox = new QGroupBox(tr("Encryption at rest (SQLCipher, opt-in)"), rulesBox);
+    auto *encryptLayout = new QVBoxLayout(encryptBox);
+    m_encryptionEnabled = new QCheckBox(tr("Encrypt database at rest (key in KWallet)"), encryptBox);
+    m_encryptionEnabled->setToolTip(tr("When enabled the DB file is encrypted with SQLCipher; key held in KWallet folder egoboard / entry dbKey. Requires build -DEGOBOARD_USE_SQLCIPHER=ON."));
+    encryptLayout->addWidget(m_encryptionEnabled);
+    m_encryptionStatus = new QLabel(encryptBox);
+    m_encryptionStatus->setWordWrap(true);
+    m_encryptionStatus->setTextFormat(Qt::RichText);
+    m_encryptionStatus->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px; border: 1px solid palette(mid); border-radius: 6px; padding: 6px;"));
+    encryptLayout->addWidget(m_encryptionStatus);
+    auto *encRow = new QHBoxLayout();
+    m_encryptionSetupBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("security-medium")), tr("Generate / store key"), encryptBox);
+    m_encryptionRemoveBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-delete")), tr("Remove key"), encryptBox);
+    encRow->addWidget(m_encryptionSetupBtn);
+    encRow->addWidget(m_encryptionRemoveBtn);
+    encRow->addStretch(1);
+    encryptLayout->addLayout(encRow);
+    auto *encHint = new QLabel(tr("Key loss = data loss. The app never writes the key to egoboardrc. Build without SQLCipher keeps history as before."), encryptBox);
+    encHint->setWordWrap(true);
+    encHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+    encryptLayout->addWidget(encHint);
+    rulesLayout->addWidget(encryptBox);
+    connect(m_encryptionSetupBtn, &QPushButton::clicked, this, [this]{
+        EncryptionManager enc;
+        const QString key = EncryptionManager::generateKey();
+        const auto st = enc.writeKey(key);
+        if (st == EncryptionManager::Status::Ok)
+            QMessageBox::information(this, tr("Encryption"), tr("New key stored in KWallet (folder egoboard / dbKey). Enable the checkbox and restart to encrypt on next open."));
+        else
+            QMessageBox::warning(this, tr("Encryption"), tr("Could not store key: %1").arg(enc.walletStatusText()));
+        refreshDiagnostics();
+    });
+    connect(m_encryptionRemoveBtn, &QPushButton::clicked, this, [this]{
+        if (QMessageBox::question(this, tr("Encryption"), tr("Remove the KWallet key? You must also uncheck encryption and re-open the DB.")) != QMessageBox::Yes) return;
+        EncryptionManager enc;
+        enc.removeKey();
+        refreshDiagnostics();
+    });
 
     historyLayout->addWidget(rulesBox);
     historyLayout->addStretch(1);
@@ -1235,6 +1275,16 @@ void SettingsDialog::refreshDiagnostics()
         else
             m_dataControlStatus->setText(WlrDataControlHelper::isWayland() ? QStringLiteral("wlr-data-control: <b>inactive</b>") : QStringLiteral("wlr-data-control: <b>n/a</b>"));
     }
+    if (m_encryptionStatus) {
+        EncryptionManager enc;
+        const QString cipher = m_ctx.storage()->cipherVersion();
+        const bool avail = m_ctx.storage()->isSqlCipherAvailable();
+        const bool enabled = m_ctx.settings()->encryptionEnabled();
+        QString txt = tr("KWallet: %1 · SQLCipher: %2 · cipher: %3 · enabled: %4")
+                          .arg(enc.walletStatusText(), avail ? tr("yes") : tr("no"), cipher.isEmpty() ? tr("n/a") : cipher, enabled ? tr("yes") : tr("no"));
+        if (enabled && !avail) txt += tr(" — rebuild with -DEGOBOARD_USE_SQLCIPHER=ON + sqlcipher");
+        m_encryptionStatus->setText(txt);
+    }
     if (m_platformDetails) {
         // Show immediately without kwin probe, then fetch async
         QString details = QStringLiteral("QPA: <b>%1</b> · Qt %2<br/>").arg(QGuiApplication::platformName().toHtmlEscaped(), QString::fromUtf8(qVersion()));
@@ -1282,6 +1332,7 @@ void SettingsDialog::refreshDiagnostics()
         if (q.exec(QStringLiteral("SELECT COUNT(*) FROM entries_fts")) && q.next())
             diag += QStringLiteral("FTS rows: %1\n").arg(q.value(0).toLongLong());
         diag += QStringLiteral("OCR: %1 lang=%2 maxChars=%3\n").arg(OcrWorker::isAvailable()?QStringLiteral("available"):QStringLiteral("missing"), m_ctx.settings()->ocrLanguage()).arg(m_ctx.settings()->ocrMaxChars());
+        diag += QStringLiteral("Encryption: %1 enabled=%2 sqlcipher=%3 cipher=%4\n").arg(EncryptionManager{}.walletStatusText(), m_ctx.settings()->encryptionEnabled() ? QStringLiteral("yes") : QStringLiteral("no"), m_ctx.storage()->isSqlCipherAvailable() ? QStringLiteral("yes") : QStringLiteral("no"), m_ctx.storage()->cipherVersion());
         diag += QStringLiteral("Preview: codeHighlight=%1 linkify=%2 colorSwatches=%3\n").arg(m_ctx.settings()->previewCodeHighlight() ? QStringLiteral("on") : QStringLiteral("off")).arg(m_ctx.settings()->previewLinkify() ? QStringLiteral("on") : QStringLiteral("off")).arg(m_ctx.settings()->previewColorSwatches() ? QStringLiteral("on") : QStringLiteral("off"));
         diag += QStringLiteral("Platform: %1\n").arg(LayerShellHelper::diagnostics().remove(QRegularExpression(QStringLiteral("<[^>]*>"))));
         diag += QStringLiteral("DataControl: %1\n").arg(m_ctx.dataControl() ? m_ctx.dataControl()->diagnostics().remove(QRegularExpression(QStringLiteral("<[^>]*>"))) : QStringLiteral("n/a"));
@@ -1379,6 +1430,7 @@ void SettingsDialog::load()
         else m_ocrLang->setCurrentText(m_ctx.settings()->ocrLanguage());
     }
     if (m_ocrMaxChars) m_ocrMaxChars->setValue(m_ctx.settings()->ocrMaxChars());
+    if (m_encryptionEnabled) m_encryptionEnabled->setChecked(m_ctx.settings()->encryptionEnabled());
     if (m_previewCode) m_previewCode->setChecked(m_ctx.settings()->previewCodeHighlight());
     if (m_previewLinks) m_previewLinks->setChecked(m_ctx.settings()->previewLinkify());
     if (m_previewColors) m_previewColors->setChecked(m_ctx.settings()->previewColorSwatches());
@@ -1429,6 +1481,7 @@ void SettingsDialog::save()
     if (m_ocrEnabled) m_ctx.settings()->setOcrEnabled(m_ocrEnabled->isChecked());
     if (m_ocrLang) m_ctx.settings()->setOcrLanguage(m_ocrLang->currentText());
     if (m_ocrMaxChars) m_ctx.settings()->setOcrMaxChars(m_ocrMaxChars->value());
+    if (m_encryptionEnabled) m_ctx.settings()->setEncryptionEnabled(m_encryptionEnabled->isChecked());
     if (m_previewCode) m_ctx.settings()->setPreviewCodeHighlight(m_previewCode->isChecked());
     if (m_previewLinks) m_ctx.settings()->setPreviewLinkify(m_previewLinks->isChecked());
     if (m_previewColors) m_ctx.settings()->setPreviewColorSwatches(m_previewColors->isChecked());

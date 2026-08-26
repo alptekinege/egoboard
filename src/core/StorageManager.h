@@ -42,6 +42,13 @@ public:
     int expireEntries(qint64 olderThanMs, int contentType,
                       const QString &sourceAppWildcard, bool keepPinned = true);
 
+    bool setEncryptionKey(const QString &key);
+    bool changeEncryptionKey(const QString &newKey);
+    bool verifyEncryptionKey() const;
+    bool isSqlCipherAvailable() const;
+    QString cipherVersion() const;
+    bool isEncrypted() const { return m_encrypted; }
+
 private:
     static ClipboardRecord recordFromSummary(const QSqlQuery &query);
     bool exec(const QString &sql) const;
@@ -50,4 +57,5 @@ private:
     QString m_connectionName; // unique per instance (tests create several)
     QSqlDatabase m_db;
     int m_insertCounter = 0; // throttles enforceDiskCap frequency
+    bool m_encrypted = false;
 };

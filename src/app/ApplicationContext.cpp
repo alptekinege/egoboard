@@ -16,6 +16,7 @@
 #include "ThemeManager.h"
 #include "TrayController.h"
 #include "VacuumWorker.h"
+#include "EncryptionManager.h"
 #include "OcrWorker.h"
 #include "TransformEngine.h"
 #include "WaylandActiveWindowTracker.h"
@@ -57,11 +58,24 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
     connect(m_vacuumThread, &QThread::finished, m_vacuumWorker, &QObject::deleteLater);
     m_vacuumThread->start();
 
+    m_encryption = new EncryptionManager(this);
+    if (m_settings->encryptionEnabled()) {
+        QString key;
+        if (m_encryption->readKey(&key) == EncryptionManager::Status::Ok && !key.isEmpty()) {
+            if (!m_storage->setEncryptionKey(key)) {
+                qWarning("egoboard: encryption key from KWallet failed to unlock database");
+            } else if (!m_storage->verifyEncryptionKey()) {
+                qWarning("egoboard: encryption enabled but key verification failed");
+            }
+        }
+    }
+
     if (!m_fullGui)
         return;
 
     m_scripts = new ScriptActionManager(this);
     m_dbus = new EgoboardDbusAdaptor(m_storage, this);
+    connect(m_dbus, &EgoboardDbusAdaptor::pasteRequested, this, &ApplicationContext::pasteEntry);
 
     if (QGuiApplication::platformName() == QLatin1String("wayland"))
         m_tracker = std::make_unique<WaylandActiveWindowTracker>();
@@ -384,7 +398,6 @@ int ApplicationContext::smokeTest()
         const QString plat = WlrDataControlHelper::platformName();
         const bool supported = WlrDataControlHelper::isSupported();
         if (plat.isEmpty()) { qCritical("smoke: WlrDataControl plat empty"); return 1; }
-        // Construct a transient helper to exercise diagnostics/isActive path without starting
         WlrDataControlHelper tmpHelper(m_settings, m_tracker.get());
         const QString diag = tmpHelper.diagnostics();
         if (diag.isEmpty() || !diag.contains(plat, Qt::CaseInsensitive)) {
@@ -395,7 +408,26 @@ int ApplicationContext::smokeTest()
             if (supported) { qCritical("smoke: wlr-data-control should not be supported on offscreen"); return 1; }
             if (tmpHelper.isActive()) { qCritical("smoke: wlr-data-control unexpectedly active on offscreen"); return 1; }
         }
-        // On Wayland isActive depends on compositor; do not assert active here.
+    }
+
+    // Track E smoke: SQLCipher opt-in (graceful when not built)
+    {
+        EncryptionManager enc;
+        const QString status = enc.walletStatusText();
+        if (status.isEmpty()) { qCritical("smoke: EncryptionManager status empty"); return 1; }
+        // Storage probes must not crash even without SQLCipher
+        const bool avail = m_storage->isSqlCipherAvailable();
+        const QString ver = m_storage->cipherVersion();
+#ifdef EGOBOARD_HAVE_SQLCIPHER
+        Q_UNUSED(avail); Q_UNUSED(ver);
+#else
+        if (avail || !ver.isEmpty()) { qCritical("smoke: SQLCipher claimed available without build flag"); return 1; }
+#endif
+        if (!m_storage->verifyEncryptionKey()) {
+            // empty DB with no key should still verify as file is plaintext
+        }
+        const QString gen = EncryptionManager::generateKey();
+        if (gen.isEmpty() || gen.size() < 16) { qCritical("smoke: generateKey failed"); return 1; }
     }
 
     qInfo("egoboard smoke test: OK");

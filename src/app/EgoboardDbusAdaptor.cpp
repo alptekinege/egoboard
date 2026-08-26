@@ -36,8 +36,13 @@ QStringList EgoboardDbusAdaptor::Search(const QString &query, int limit)
     const auto page = m_storage->fetchPage(filter, {}, limit, &hasMore);
     out.reserve(page.size());
     for (const auto &r : page) {
-        // id<TAB>preview — easy to parse from qdbus / scripts
         out.append(QString::number(r.id) + QLatin1Char('\t') + r.preview.left(200).replace(QLatin1Char('\n'), QLatin1Char(' ')));
     }
     return out;
+}
+
+bool EgoboardDbusAdaptor::Paste(qint64 id)
+{
+    emit pasteRequested(id);
+    return true;
 }

@@ -48,7 +48,7 @@ Dependencies (Arch/Arch-derivative package names):
         kstatusnotifieritem kf6-kwindowsystem kf6-kxmlgui extra-cmake-modules \
         wayland sqlite
 
-Optional: `libxtst` (auto-paste on X11 without xdotool), `xdotool`.
+Optional: `libxtst` (auto-paste on X11 without xdotool), `xdotool`, `sqlcipher` + `kwallet` (encrypted DB at rest, `cmake -DEGOBOARD_USE_SQLCIPHER=ON`), `krunner` (KRunner `eb <query>` → clipboard history).
 
     cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
     cmake --build build

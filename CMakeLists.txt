@@ -29,9 +29,23 @@ find_package(WaylandScanner REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(WAYLAND_CLIENT IMPORTED_TARGET wayland-client)
 
+option(EGOBOARD_USE_SQLCIPHER "Enable SQLCipher at-rest encryption (opt-in, KWallet-held key)" OFF)
+
+find_package(KF6Wallet QUIET)
+if(EGOBOARD_USE_SQLCIPHER AND KF6Wallet_FOUND)
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(SQLCIPHER QUIET sqlcipher)
+        if(SQLCIPHER_FOUND)
+            set(EGOBOARD_HAVE_SQLCIPHER ON)
+        endif()
+    endif()
+endif()
+
 # Optional: X11 XTest extension for auto-paste simulation on X11.
 find_package(X11 COMPONENTS Xtst QUIET)
 
+find_package(KF6Runner QUIET)
 find_package(LayerShellQt QUIET)
 if(LayerShellQt_FOUND)
     set(EGOBOARD_HAVE_LAYERSHELLQT ON)
@@ -85,6 +99,7 @@ add_executable(egoboard
     src/app/HotkeyManager.cpp
     src/app/TrayController.cpp
     src/app/ScriptActionManager.cpp
+    src/app/EncryptionManager.cpp
     src/app/EgoboardDbusAdaptor.cpp
     src/core/GroupTreeModel.cpp # Gui-dependent (QIcon in DecorationRole)
     src/app/ui/MainWindow.cpp
@@ -138,6 +153,18 @@ if(EGOBOARD_HAVE_XTEST)
     target_compile_definitions(egoboard PRIVATE EGOBOARD_HAVE_XTEST=1)
     target_include_directories(egoboard PRIVATE ${X11_INCLUDE_DIR})
     target_link_libraries(egoboard PRIVATE ${X11_Xtst_LIB} ${X11_LIBRARIES})
+endif()
+
+if(EGOBOARD_HAVE_SQLCIPHER)
+    target_compile_definitions(egoboard PRIVATE EGOBOARD_HAVE_SQLCIPHER=1)
+    target_link_libraries(egoboard PRIVATE KF6::Wallet)
+    if(TARGET PkgConfig::SQLCIPHER)
+        target_link_libraries(egoboard PRIVATE PkgConfig::SQLCIPHER)
+    endif()
+endif()
+
+if(KF6Runner_FOUND)
+    add_subdirectory(src/krunner)
 endif()
 
 # --- Warnings -----------------------------------------------------------------

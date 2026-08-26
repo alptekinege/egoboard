@@ -1,0 +1,16 @@
+{
+    "KPlugin": {
+        "Authors": [{ "Name": "Egoboard", "Email": "egoboard@local" }],
+        "Category": "Utilities",
+        "Description": "Search Egoboard clipboard history (eb <query>)",
+        "Description[de]": "Egoboard Zwischenablage durchsuchen",
+        "EnabledByDefault": true,
+        "Icon": "edit-paste",
+        "Id": "egoboard",
+        "License": "MIT",
+        "Name": "Egoboard",
+        "Version": "0.1.0",
+        "Website": "https://github.com/alptekinege/egoboard"
+    },
+    "X-KRunner-TriggerWords": ["eb "]
+}

@@ -19,9 +19,13 @@ public:
     explicit EgoboardDbusAdaptor(IClipboardStorage *storage, QObject *parent = nullptr);
     bool registerService();
 
+signals:
+    void pasteRequested(qint64 id);
+
 public slots:
     // Returns previews (joined as "id<TAB>preview" strings) for quick scripting.
     QStringList Search(const QString &query, int limit);
+    bool Paste(qint64 id);
     int Ping(int v) { return v; }
 
 private:

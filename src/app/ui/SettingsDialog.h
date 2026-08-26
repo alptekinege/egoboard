@@ -104,6 +104,10 @@ private:
     QSpinBox *m_ocrMaxChars = nullptr;
     QListWidget *m_appSuggestions = nullptr;
     QPushButton *m_addIgnoreBtn = nullptr;
+    QCheckBox *m_encryptionEnabled = nullptr;
+    QLabel *m_encryptionStatus = nullptr;
+    QPushButton *m_encryptionSetupBtn = nullptr;
+    QPushButton *m_encryptionRemoveBtn = nullptr;
 
     // Search & preview
     QLabel *m_ftsStatus = nullptr;

@@ -2,7 +2,7 @@
 
 > Local-first clipboard history for KDE Plasma. This roadmap balances what's already solid (SQLite + WAL history, X11/Wayland tracking, virtualized two-pane UI, groups & pins) with modern features worth adding next — without turning the app into a cloud service.
 
-**Status:** `v0.1.0` · Qt 6 + KF6 · local-only · MIT · no compilation required for this document. Phases 1–4b and Track E (minus SQLCipher) are delivered; remaining candidates: semantic search (Track A), KRunner plugin / browser companion / LAN sync (Track D), SQLCipher (Track E).
+**Status:** `v0.1.0` · Qt 6 + KF6 · local-only · MIT · no compilation required for this document. Phases 1–4b, Track E and KRunner are delivered; remaining candidates: semantic search (Track A), browser companion / LAN sync (Track D).
 
 ---
 
@@ -84,17 +84,18 @@ export const meta = { label: "Pretty JSON", match: /^\s*\{/ };
 
 ### Track D — Platform & Integration
 
-* **Wayland layer-shell quick-paste**: migrate `QuickPasteMenu` to `wlr-layer-shell` where available for correct exclusive positioning and keyboard grab.
-* **Wayland clipboard via `wlr-data-control`** (optional privileged helper) for more reliable history on compositors that support it.
+* **Wayland layer-shell quick-paste** ✅: `QuickPasteMenu` promoted to `LayerShell` where available.
+* **Wayland clipboard via `wlr-data-control`** ✅ (optional privileged helper) for more reliable history.
+* **KRunner plugin** ✅: `src/krunner/EgoboardRunner` (`KRunner::AbstractRunner`, trigger `eb `, D-Bus `Search`/`Paste` via `org.egoboard.Egoboard`).
 * **KDE Connect / LAN sync** (opt-in, E2E-encrypted): sync pinned snippets across devices on the same network using a pairing code — never a central server. History sync stays off by default.
 * **Browser companion** (optional WebExtension, local WebSocket on `127.0.0.1`): copy code blocks with one click, preserve source URL.
 
 ### Track E — Privacy & Security Hardening
 
-> **Status:** Track E mostly delivered — redaction, auto-expire rules and the audit view shipped; SQLCipher at-rest encryption is the one remaining (deferred) item.
+> **Status:** Track E delivered — redaction, auto-expire rules, audit view and SQLCipher opt-in (KWallet-held key, `-DEGOBOARD_USE_SQLCIPHER`) shipped.
 
 * **Redaction mode** ✅ — `SensitiveMode::Redact` stores detected secrets as `••••` (the original never touches disk), with per-kind toggles (cards / tokens / private keys / custom patterns) in Settings → History & Privacy.
-* **Encrypted at rest** (opt-in, deferred): SQLCipher build flag for the DB file; key held in KWallet. Requires a dependency + DB-migration story — the next candidate after this track.
+* **Encrypted at rest** ✅ (opt-in): SQLCipher build flag (`-DEGOBOARD_USE_SQLCIPHER`, `EGOBOARD_HAVE_SQLCIPHER`) for the DB file; key held in KWallet (`egoboard/dbKey`); `History/EncryptionEnabled` flag; graceful fallback when not built.
 * **Auto-expire rules** ✅ — rule engine (`ExpireRule` + `ExpireScheduler`): age × content type × source-app wildcard, keep-pinned toggle, JSON-style rules in KConfig, applied at startup and every 15 minutes.
 * **Audit view** ✅ — "Audit" toolbar toggle filters `sensitive = 1` (stats-driven count), plus bulk "Delete listed" with confirmation.
 
@@ -102,7 +103,7 @@ export const meta = { label: "Pretty JSON", match: /^\s*\{/ };
 
 * **Timeline / calendar strip** above the list (like a commit graph) for jumping by day.
 * **Inline diff** for dedup: "same hash as 2h ago — updated `use_count`".
-* **Global search widget** (Plasma applet / KRunner plugin) so `KRunner → eb <query>` opens directly.
+* **Global search widget** ✅ (KRunner plugin) so `KRunner → eb <query>` opens directly.
 * **Accessibility**: full keyboard navigation, screen-reader labels, high-contrast delegate.
 
 ---
@@ -156,4 +157,4 @@ Feedback loop: check one phase, implement, run `cmake --build build && ctest --t
 
 ---
 
-*Last updated: 2026-08-25 · Maintainer: local development · Next review after Track E checkoff — SQLCipher remains the next big item.*
+*Last updated: 2026-08-25 · Maintainer: local development · Next review after KRunner — remaining: semantic search (Track A), browser/LAN sync (Track D).*

@@ -110,6 +110,9 @@ public:
     bool toolbarIconOnly() const; // main-window toolbar buttons show icons only
     void setToolbarIconOnly(bool iconOnly);
 
+    bool encryptionEnabled() const;
+    void setEncryptionEnabled(bool enabled);
+
     static QString defaultDatabasePath();
     static QString autostartDesktopFilePath();
 

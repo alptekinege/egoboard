@@ -430,6 +430,17 @@ void SettingsManager::setToolbarIconOnly(bool iconOnly)
     save();
 }
 
+bool SettingsManager::encryptionEnabled() const
+{
+    return m_config->group(kGroupHistory).readEntry("EncryptionEnabled", false);
+}
+
+void SettingsManager::setEncryptionEnabled(bool enabled)
+{
+    m_config->group(kGroupHistory).writeEntry("EncryptionEnabled", enabled);
+    save();
+}
+
 void SettingsManager::save()
 {
     m_config->sync();

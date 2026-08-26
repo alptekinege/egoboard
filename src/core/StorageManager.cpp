@@ -481,3 +481,38 @@ bool StorageManager::exec(const QString &sql) const
     }
     return true;
 }
+
+bool StorageManager::setEncryptionKey(const QString &key)
+{
+    if (key.isEmpty())
+        return false;
+    const bool ok = DatabaseSchema::setKey(m_db, key);
+    m_encrypted = ok;
+    return ok;
+}
+
+bool StorageManager::changeEncryptionKey(const QString &newKey)
+{
+    const bool ok = DatabaseSchema::rekey(m_db, newKey);
+    if (ok)
+        m_encrypted = !newKey.isEmpty();
+    return ok;
+}
+
+bool StorageManager::verifyEncryptionKey() const
+{
+    QSqlDatabase db = m_db;
+    return DatabaseSchema::probeKey(db);
+}
+
+bool StorageManager::isSqlCipherAvailable() const
+{
+    QSqlDatabase db = m_db;
+    return DatabaseSchema::isSqlCipherAvailable(db);
+}
+
+QString StorageManager::cipherVersion() const
+{
+    QSqlDatabase db = m_db;
+    return DatabaseSchema::cipherVersion(db);
+}

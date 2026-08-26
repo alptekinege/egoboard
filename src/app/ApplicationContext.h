@@ -24,6 +24,7 @@ class SettingsManager;
 class SnippetManager;
 class StorageManager;
 class TrayController;
+class EncryptionManager;
 class VacuumWorker;
 class WlrDataControlHelper;
 class OcrWorker;
@@ -85,5 +86,6 @@ private:
     QThread *m_vacuumThread = nullptr;
     QTimer *m_vacuumTimer = nullptr;
     OcrWorker *m_ocr = nullptr;
+    EncryptionManager *m_encryption = nullptr;
     int m_captureCounter = 0;
 };

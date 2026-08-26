@@ -96,6 +96,71 @@ static bool ensureFts(QSqlDatabase &db)
     return true;
 }
 
+bool isSqlCipherAvailable(QSqlDatabase &db)
+{
+    QSqlQuery q(db);
+    if (!q.exec(QStringLiteral("PRAGMA cipher_version")))
+        return false;
+    if (q.next())
+        return !q.value(0).toString().trimmed().isEmpty();
+    return q.isValid();
+}
+
+QString cipherVersion(QSqlDatabase &db)
+{
+    QSqlQuery q(db);
+    if (q.exec(QStringLiteral("PRAGMA cipher_version")) && q.next())
+        return q.value(0).toString();
+    return {};
+}
+
+static QString escapeKey(const QString &key)
+{
+    QString out = key;
+    out.replace(QStringLiteral("'"), QStringLiteral("''"));
+    return out;
+}
+
+bool setKey(QSqlDatabase &db, const QString &key)
+{
+    if (key.isEmpty())
+        return false;
+    QSqlQuery q(db);
+    const QString sql = QStringLiteral("PRAGMA key = '%1'").arg(escapeKey(key));
+    if (!q.exec(sql)) {
+        qWarning("egoboard: PRAGMA key failed: %s", qPrintable(q.lastError().text()));
+        return false;
+    }
+    return probeKey(db);
+}
+
+bool rekey(QSqlDatabase &db, const QString &newKey)
+{
+    QSqlQuery q(db);
+    QString sql;
+    if (newKey.isEmpty())
+        sql = QStringLiteral("PRAGMA rekey = ''");
+    else
+        sql = QStringLiteral("PRAGMA rekey = '%1'").arg(escapeKey(newKey));
+    if (!q.exec(sql)) {
+        qWarning("egoboard: PRAGMA rekey failed: %s", qPrintable(q.lastError().text()));
+        return false;
+    }
+    return true;
+}
+
+bool probeKey(QSqlDatabase &db)
+{
+    QSqlQuery q(db);
+    if (!q.exec(QStringLiteral("SELECT count(*) FROM sqlite_master"))) {
+        qWarning("egoboard: probeKey failed: %s", qPrintable(q.lastError().text()));
+        return false;
+    }
+    if (!q.next())
+        return false;
+    return true;
+}
+
 bool ensure(QSqlDatabase &db)
 {
     static const QList<QString> statements = {

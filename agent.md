@@ -15,7 +15,7 @@ This document defines the strict writing style, coding standards, architectural 
   - **KDE Frameworks 6 (KF6)**: `ConfigCore`, `GlobalAccel`, `Notifications`, `StatusNotifierItem`, `WindowSystem`, `XmlGui`
   - **Wayland**: `wayland-client` + `wayland-scanner` (vendored `wlr-foreign-toplevel-management-unstable-v1.xml`)
   - **X11 / XTest**: `libXtst` (optional build-time auto-paste simulation) + `xdotool` (runtime fallback)
-  - **Database**: SQLite 3 (WAL mode, foreign keys enabled)
+  - **Database**: SQLite 3 (WAL mode, foreign keys enabled); optional SQLCipher (`-DEGOBOARD_USE_SQLCIPHER=ON`, KWallet key)
 
 ---
 
@@ -67,6 +67,7 @@ src/
    - `src/core/` builds as the standalone library `egoboard_core` and links **only** against `Qt6::Core` and `Qt6::Sql`.
    - **Never** add UI (`QtWidgets`, `QPainter`, `QWidget`, `QApplication`) or `KF6*` headers to `src/core/` files.
    - Exception: `GroupTreeModel` uses `QIcon` for `Qt::DecorationRole` and is compiled into the app target.
+   - Encryption: `DatabaseSchema` (`PRAGMA key/rekey/cipher_version`) and `StorageManager` (`setEncryptionKey`) stay headless; KWallet access lives in `src/app/EncryptionManager` only (guarded by `EGOBOARD_HAVE_SQLCIPHER`).
 2. **Interface Seams**:
    - Use abstract interfaces (`IClipboardStorage`, `IActiveWindowTracker`) to allow unit testing with fakes and isolate platform-specific logic.
 3. **Composition Root**:
