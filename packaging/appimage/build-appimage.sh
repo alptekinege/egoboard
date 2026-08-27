@@ -71,10 +71,17 @@ cmake -B "${BUILD_DIR}" -S "${ROOT_DIR}" -G Ninja \
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DBUILD_TESTING=OFF
 
-cmake --build "${BUILD_DIR}" --target egoboard
+cmake --build "${BUILD_DIR}" --target egoboard krunner_egoboard
 
 log_info "Installing to AppDir staging area..."
 DESTDIR="${APPDIR}" cmake --install "${BUILD_DIR}"
+
+# KRunner plugin targets the host KDE install, not the AppImage. Strip it
+# from the staging area so it doesn't ship inside the AppImage.
+rm -f "${APPDIR}/usr/lib/qt6/plugins/kf6/krunner/libkrunner_egoboard.so"
+rm -rf "${APPDIR}/usr/lib/qt6/plugins/kf6/krunner"
+rm -f "${APPDIR}/usr/plugins/kf6/krunner/libkrunner_egoboard.so"
+rm -rf "${APPDIR}/usr/plugins/kf6/krunner"
 
 # ------------------------------------------------------------------------------
 # 3. Deploy Desktop File, Icons, and AppRun
