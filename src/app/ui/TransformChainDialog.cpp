@@ -175,8 +175,8 @@ void TransformChainDialog::rebuildPreview()
         }
         if (!r.ok) {
             error = r.error;
-            // Keep partial preview up to failure point
-            cur = cur; // retain last ok
+            // Keep partial preview up to failure point.
+            // `cur` already holds the last successful output here.
             break;
         }
         cur = r.output;

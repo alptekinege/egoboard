@@ -194,12 +194,12 @@ QMimeData *GroupTreeModel::mimeData(const QModelIndexList &indexes) const
     }
     if (ids.isEmpty())
         return nullptr;
-    auto *mime = new QMimeData;
+    auto mime = std::make_unique<QMimeData>();
     QByteArray encoded;
     QDataStream stream(&encoded, QIODevice::WriteOnly);
     stream << ids;
     mime->setData(QString::fromLatin1(kGroupMime), encoded);
-    return mime;
+    return mime.release();
 }
 
 bool GroupTreeModel::canDropMimeData(const QMimeData *data, Qt::DropAction, int, int,
