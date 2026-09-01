@@ -56,6 +56,6 @@ private:
     QString m_path;
     QString m_connectionName; // unique per instance (tests create several)
     QSqlDatabase m_db;
-    int m_insertCounter = 0; // throttles enforceDiskCap frequency
+    std::atomic_int m_insertCounter{0}; // throttles enforceDiskCap frequency
     bool m_encrypted = false;
 };

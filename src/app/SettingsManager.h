@@ -2,6 +2,7 @@
 
 #include "ExpirePolicy.h"
 
+#include <memory>
 #include <QList>
 #include <QObject>
 #include <QStringList>
@@ -22,6 +23,11 @@ public:
 
     explicit SettingsManager(QObject *parent = nullptr);
     ~SettingsManager() override;
+
+    SettingsManager(const SettingsManager&) = delete;
+    SettingsManager& operator=(const SettingsManager&) = delete;
+    SettingsManager(SettingsManager&&) = delete;
+    SettingsManager& operator=(SettingsManager&&) = delete;
 
     // General
     bool startVisible() const;

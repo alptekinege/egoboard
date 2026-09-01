@@ -89,7 +89,7 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
     m_expire = new ExpireScheduler(m_storage, m_settings, this);
     m_hotkeys = new HotkeyManager(this);
     m_tray = new TrayController(m_storage, this);
-    m_window = new MainWindow(*this);
+    m_window = std::make_unique<MainWindow>(*this);
     m_quickPaste = new QuickPasteMenu(m_storage, m_settings->quickPasteCount());
     m_ocr = new OcrWorker(m_storage, this);
     m_ocr->setLanguage(m_settings->ocrLanguage());
@@ -231,7 +231,7 @@ void ApplicationContext::pasteEntry(qint64 entryId)
     if (m_dataControl) m_dataControl->suppressOwnSets();
     QWidget *hideTarget = nullptr;
     if (m_window->isVisible())
-        hideTarget = m_window;
+        hideTarget = m_window.get();
     else if (m_quickPaste->isVisible())
         hideTarget = m_quickPaste;
     m_paster->paste(record, hideTarget);

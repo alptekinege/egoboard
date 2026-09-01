@@ -51,7 +51,7 @@ public:
     WlrDataControlHelper *dataControl() const { return m_dataControl; }
     AutoPaster *autoPaster() const { return m_paster; }
     HotkeyManager *hotkeys() const { return m_hotkeys; }
-    MainWindow *window() const { return m_window; }
+    MainWindow *window() const { return m_window.get(); }
     QuickPasteMenu *quickPaste() const { return m_quickPaste; }
 
     void toggleMainWindow();
@@ -79,7 +79,7 @@ private:
     AutoPaster *m_paster = nullptr;
     HotkeyManager *m_hotkeys = nullptr;
     TrayController *m_tray = nullptr;
-    MainWindow *m_window = nullptr;
+    std::unique_ptr<MainWindow> m_window;
     QuickPasteMenu *m_quickPaste = nullptr;
 
     VacuumWorker *m_vacuumWorker = nullptr;

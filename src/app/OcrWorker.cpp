@@ -25,14 +25,15 @@ bool OcrWorker::isAvailable()
 void OcrWorker::setLanguage(const QString &lang)
 {
     const QString v = lang.trimmed().isEmpty() ? QStringLiteral("eng") : lang.trimmed();
-    QMetaObject::invokeMethod(this, [this, v] { m_language = v; }, Qt::QueuedConnection);
+    // Direct assignment is safe because recognize() snapshots these values
+    // before dispatching to the thread pool.
+    m_language = v;
 }
 
 void OcrWorker::setMaxChars(int maxChars)
 {
     const int capped = qBound(512, maxChars, 65536);
-    QMetaObject::invokeMethod(this, [this, capped] { m_maxChars = capped; },
-                              Qt::QueuedConnection);
+    m_maxChars = capped;
 }
 
 void OcrWorker::recognize(qint64 entryId, const QImage &image)

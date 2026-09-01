@@ -221,6 +221,10 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode)
     }
 
     QSqlDatabase db = m_storage->database();
+    if (!db.isOpen()) {
+        result.error = tr("Database connection is not open");
+        return result;
+    }
 
     if (mode == ImportMode::Overwrite) {
         m_storage->clearHistory(true);
