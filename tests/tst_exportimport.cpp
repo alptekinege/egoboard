@@ -21,6 +21,8 @@ private slots:
     void skipDuplicates();
     void pinnedOnlyExport();
     void groupSubtreePreservesHierarchy();
+    void rejectsMalformedImportFiles();
+    void reportsExportWriteErrors();
 
 private:
     void seed(StorageManager *storage, BookmarkManager *bookmarks);
@@ -257,6 +259,49 @@ void TestExportImport::groupSubtreePreservesHierarchy()
     QCOMPARE(importedRoot->parentId, qint64(0));
     QCOMPARE(importedChild->parentId, importedRoot->id);
     QCOMPARE(m_bookmarks->entryCount(importedChild->id), 1);
+}
+
+void TestExportImport::rejectsMalformedImportFiles()
+{
+    const QString malformed = m_dir.filePath(QStringLiteral("malformed.json"));
+    {
+        QFile file(malformed);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(file.write("not json") > 0);
+    }
+    auto result = m_io->importFromFile(malformed, ExportImportManager::ImportMode::Merge);
+    QVERIFY(!result.ok);
+    QVERIFY(!result.error.isEmpty());
+    QCOMPARE(m_storage->stats().entryCount, qint64(0));
+
+    const QString wrongFormat = m_dir.filePath(QStringLiteral("wrong-format.json"));
+    {
+        QFile file(wrongFormat);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(file.write(R"({"format":"other","version":1})") > 0);
+    }
+    result = m_io->importFromFile(wrongFormat, ExportImportManager::ImportMode::Merge);
+    QVERIFY(!result.ok);
+    QVERIFY(!result.error.isEmpty());
+
+    const QString newer = m_dir.filePath(QStringLiteral("newer.json"));
+    {
+        QFile file(newer);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(file.write(R"({"format":"egoboard-export","version":2})") > 0);
+    }
+    result = m_io->importFromFile(newer, ExportImportManager::ImportMode::Merge);
+    QVERIFY(!result.ok);
+    QVERIFY(result.error.contains(QStringLiteral("newer"), Qt::CaseInsensitive));
+}
+
+void TestExportImport::reportsExportWriteErrors()
+{
+    ExportImportManager::ExportRequest request;
+    request.path = m_dir.filePath(QStringLiteral("missing-directory/export.json"));
+    QString error;
+    QVERIFY(!m_io->exportToFile(request, &error));
+    QVERIFY(!error.isEmpty());
 }
 
 QTEST_GUILESS_MAIN(TestExportImport)

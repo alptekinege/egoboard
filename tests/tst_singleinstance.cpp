@@ -2,6 +2,7 @@
 
 #include "SingleInstanceGuard.h"
 
+#include <QLocalSocket>
 #include <QRandomGenerator>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -15,6 +16,8 @@ private slots:
     void primaryAcquiresLock();
     void secondaryFailsLockAndTriggersShow();
     void lockFreedOnDestruction();
+    void sendShowFailsWithoutServer();
+    void ignoresNonShowMessages();
 
 private:
     QTemporaryDir m_tempDir;
@@ -63,6 +66,28 @@ void TestSingleInstance::lockFreedOnDestruction()
     // guard2 can now acquire the lock
     SingleInstanceGuard guard2(m_lockPath, m_serverName);
     QVERIFY(guard2.tryLock());
+}
+
+void TestSingleInstance::sendShowFailsWithoutServer()
+{
+    SingleInstanceGuard guard(m_lockPath, m_serverName);
+    QVERIFY(!guard.sendShow());
+}
+
+void TestSingleInstance::ignoresNonShowMessages()
+{
+    SingleInstanceGuard primary(m_lockPath, m_serverName);
+    QVERIFY(primary.tryLock());
+    QSignalSpy showSpy(&primary, &SingleInstanceGuard::showRequested);
+
+    QLocalSocket socket;
+    socket.connectToServer(m_serverName);
+    QVERIFY(socket.waitForConnected(300));
+    QVERIFY(socket.write("hide\n") > 0);
+    QVERIFY(socket.waitForBytesWritten(300));
+    socket.disconnectFromServer();
+    QTest::qWait(50);
+    QCOMPARE(showSpy.count(), 0);
 }
 
 QTEST_GUILESS_MAIN(TestSingleInstance)

@@ -23,6 +23,8 @@ private slots:
     void chainByNames();
     void chainFails();
     void allDescriptors();
+    void resolvesNamesAndHandlesEmptyChains();
+    void preservesLineTransformEdgeCases();
 };
 
 void TestTransforms::trim()
@@ -170,6 +172,43 @@ void TestTransforms::allDescriptors()
         QVERIFY(id.has_value());
         QCOMPARE(static_cast<int>(*id), static_cast<int>(d.id));
     }
+}
+
+void TestTransforms::resolvesNamesAndHandlesEmptyChains()
+{
+    const auto trim = TransformEngine::idForName(QStringLiteral("  TRIM  "));
+    QVERIFY(trim.has_value());
+    QCOMPARE(*trim, TransformEngine::TransformId::Trim);
+
+    const auto json = TransformEngine::idForName(QStringLiteral("JSON Pretty"));
+    QVERIFY(json.has_value());
+    QCOMPARE(*json, TransformEngine::TransformId::JsonPretty);
+    QVERIFY(!TransformEngine::idForName(QStringLiteral("does-not-exist")).has_value());
+
+    QString failed = QStringLiteral("stale");
+    const auto empty = TransformEngine::applyChain(QStringLiteral("unchanged"), {});
+    QVERIFY(empty.ok);
+    QCOMPARE(empty.output, QStringLiteral("unchanged"));
+
+    const auto byNames = TransformEngine::applyChainByNames(QStringLiteral("unchanged"), {}, &failed);
+    QVERIFY(byNames.ok);
+    QCOMPARE(byNames.output, QStringLiteral("unchanged"));
+    QCOMPARE(failed, QStringLiteral("stale"));
+}
+
+void TestTransforms::preservesLineTransformEdgeCases()
+{
+    QCOMPARE(TransformEngine::apply(TransformEngine::TransformId::SortLines, QString()).output,
+             QString());
+    QCOMPARE(TransformEngine::apply(TransformEngine::TransformId::TrimLines,
+                                    QStringLiteral("  a  \n\n  b  ")).output,
+             QStringLiteral("a\n\nb"));
+    QCOMPARE(TransformEngine::apply(TransformEngine::TransformId::UniqueLines,
+                                    QStringLiteral("a\na\n\na\n")).output,
+             QStringLiteral("a\n"));
+    QCOMPARE(TransformEngine::apply(TransformEngine::TransformId::RemoveEmptyLines,
+                                    QStringLiteral("\n  \nvalue\n")).output,
+             QStringLiteral("value"));
 }
 
 QTEST_GUILESS_MAIN(TestTransforms)

@@ -23,6 +23,9 @@ private slots:
     void appliesRuleAgainstStorage();
     void schedulerAppliesConfiguredRulesAndEmitsSignal();
     void schedulerStartAppliesRules();
+    void rejectsNonPositiveAndOverflowAges();
+    void decodesOnlyValidRules();
+    void schedulerIgnoresInvalidAndEmptyRules();
 
 private:
     ClipboardRecord makeRecord(const QByteArray &hash, const QString &text, qint64 timestamp);
@@ -203,6 +206,65 @@ void TestExpire::schedulerStartAppliesRules()
     QCOMPARE(spy.count(), 1);
     QCOMPARE(spy.first().at(0).toInt(), 1);
     QCOMPARE(storage.stats().entryCount, qint64(0));
+}
+
+void TestExpire::rejectsNonPositiveAndOverflowAges()
+{
+    const QStringList invalid = {
+        QStringLiteral("any||0|1"),
+        QStringLiteral("any||0s|1"),
+        QStringLiteral("any||-1|1"),
+        QStringLiteral("any||1w|1"),
+        QStringLiteral("any||999999999999999999999999d|1")
+    };
+    for (const QString &encoded : invalid) {
+        const ExpireRule rule = ExpireRule::fromString(encoded);
+        QVERIFY2(!rule.isValid(), qPrintable(encoded));
+    }
+
+    ExpireRule zero;
+    QVERIFY(!zero.isValid());
+    QCOMPARE(zero.toString(), QStringLiteral("any||0|1"));
+}
+
+void TestExpire::decodesOnlyValidRules()
+{
+    const QStringList encoded = {
+        QStringLiteral("text|terminal*|60|1"),
+        QStringLiteral("broken"),
+        QStringLiteral("any||0|1"),
+        QStringLiteral("image||2h|0")
+    };
+    const QList<ExpireRule> decoded = decodeRules(encoded);
+    QCOMPARE(decoded.size(), 2);
+    QCOMPARE(decoded.at(0).contentType, int(ContentType::Text));
+    QCOMPARE(decoded.at(0).ageSeconds, qint64(60));
+    QCOMPARE(decoded.at(1).contentType, int(ContentType::Image));
+    QCOMPARE(decoded.at(1).ageSeconds, qint64(2 * 3600));
+    QVERIFY(!decoded.at(1).keepPinned);
+}
+
+void TestExpire::schedulerIgnoresInvalidAndEmptyRules()
+{
+    const QString path = m_dir.filePath(
+        QStringLiteral("expire-invalid-sched-%1.db").arg(QRandomGenerator::global()->generate64()));
+    StorageManager storage(path);
+    SettingsManager settings;
+    storage.insertOrUpdate(makeRecord(QByteArrayLiteral("invalid-rule"), QStringLiteral("old"), 1));
+
+    ExpireRule invalid;
+    invalid.ageSeconds = 0;
+    settings.setExpireRules({invalid});
+    ExpireScheduler scheduler(&storage, &settings);
+    QSignalSpy spy(&scheduler, &ExpireScheduler::expired);
+    scheduler.applyRules();
+    QCOMPARE(spy.count(), 0);
+    QCOMPARE(storage.stats().entryCount, qint64(1));
+
+    settings.setExpireRules({});
+    scheduler.applyRules();
+    QCOMPARE(spy.count(), 0);
+    QCOMPARE(storage.stats().entryCount, qint64(1));
 }
 
 QTEST_GUILESS_MAIN(TestExpire)

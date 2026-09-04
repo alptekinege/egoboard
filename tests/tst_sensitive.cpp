@@ -25,6 +25,8 @@ private slots:
     void detectsAwsKeysAndBoundaries();
     void detectsJwtAndBearerVariations();
     void multiSecretFullSanitization();
+    void reportsFindingSpans();
+    void ignoresUnknownRedactionKinds();
 };
 
 void TestSensitive::detectsCreditCards()
@@ -289,6 +291,31 @@ void TestSensitive::multiSecretFullSanitization()
     QVERIFY(result.text.contains(QStringLiteral("SLACK=")));
     QVERIFY(result.text.contains(QStringLiteral("CARD=")));
     QVERIFY(result.text.contains(QStringLiteral("OPENAI=")));
+}
+
+void TestSensitive::reportsFindingSpans()
+{
+    const QString text = QStringLiteral("prefix password=hunter2 suffix");
+    const auto findings = SensitiveDataDetector::scan(text);
+    QCOMPARE(findings.size(), 1);
+    QCOMPARE(findings.first().kind, QStringLiteral("credential"));
+    QCOMPARE(findings.first().offset, text.indexOf(QStringLiteral("password=hunter2")));
+    QCOMPARE(findings.first().length, QStringLiteral("password=hunter2").size());
+}
+
+void TestSensitive::ignoresUnknownRedactionKinds()
+{
+    const QString input = QStringLiteral("password=hunter2 and 4111 1111 1111 1111");
+    const auto result = SensitiveDataDetector::redact(input, {QStringLiteral("not-a-kind")});
+    QCOMPARE(result.text, input);
+    QCOMPARE(result.redactedCount, 0);
+    QVERIFY(result.redactedKinds.isEmpty());
+
+    const auto credentialOnly = SensitiveDataDetector::redact(
+        input, {QStringLiteral("credential"), QStringLiteral("credential")});
+    QCOMPARE(credentialOnly.redactedCount, 1);
+    QCOMPARE(credentialOnly.redactedKinds, QStringList{QStringLiteral("credential")});
+    QVERIFY(credentialOnly.text.contains(QStringLiteral("4111 1111 1111 1111")));
 }
 
 QTEST_GUILESS_MAIN(TestSensitive)

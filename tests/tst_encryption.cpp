@@ -13,6 +13,8 @@ private slots:
     void storageProbesDoNotCrash();
     void cipherVersionEmptyWhenNotBuilt();
     void settingsFlagRoundTrip();
+    void reportsUnavailableBackendConsistently();
+    void rejectsEmptyRekey();
 };
 
 void TestEncryption::walletStatusNotEmpty()
@@ -69,6 +71,34 @@ void TestEncryption::settingsFlagRoundTrip()
     const QString path = dir.filePath(QStringLiteral("history3.db"));
     StorageManager storage(path);
     QVERIFY(!storage.isEncrypted());
+}
+
+void TestEncryption::reportsUnavailableBackendConsistently()
+{
+    EncryptionManager encryption;
+#ifndef EGOBOARD_HAVE_SQLCIPHER
+    QVERIFY(!encryption.isAvailable());
+    QCOMPARE(encryption.readKey(nullptr), EncryptionManager::Status::NotAvailable);
+    QCOMPARE(encryption.writeKey(QStringLiteral("key")), EncryptionManager::Status::NotAvailable);
+    QCOMPARE(encryption.removeKey(), EncryptionManager::Status::NotAvailable);
+    QVERIFY(!EncryptionManager::isSqlCipherAvailable());
+#else
+    QSKIP("SQLCipher/KWallet availability depends on the runtime environment");
+#endif
+}
+
+void TestEncryption::rejectsEmptyRekey()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    StorageManager storage(dir.filePath(QStringLiteral("rekey.db")));
+    const bool rekeyed = storage.changeEncryptionKey(QString());
+#ifndef EGOBOARD_HAVE_SQLCIPHER
+    QVERIFY(rekeyed);
+    QVERIFY(!storage.isEncrypted());
+#else
+    Q_UNUSED(rekeyed);
+#endif
 }
 
 QTEST_GUILESS_MAIN(TestEncryption)

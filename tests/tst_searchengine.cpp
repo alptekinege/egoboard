@@ -24,6 +24,8 @@ private slots:
     void ftsAvailabilityAndExecution();
     void ftsMatchesOcrText();
     void ftsTriggersOnUpdateAndDelete();
+    void ftsUpdatesWhenOcrTextChanges();
+    void combinesSearchWithMetadataFilters();
 
 private:
     QTemporaryDir m_dir;
@@ -193,6 +195,66 @@ void TestSearchEngine::ftsTriggersOnUpdateAndDelete()
     // Delete and verify FTS trigger deleted it
     QVERIFY(m_storage->remove(id));
     QCOMPARE(m_storage->fetchPage(f1, {}, 10).size(), 0);
+}
+
+void TestSearchEngine::ftsUpdatesWhenOcrTextChanges()
+{
+    ClipboardRecord image;
+    image.hash = QByteArrayLiteral("ocr_update");
+    image.type = ContentType::Image;
+    image.blobData = QByteArrayLiteral("image");
+    image.hasBlob = true;
+    image.preview = QStringLiteral("Screenshot");
+    image.timestamp = 1000;
+    const qint64 id = m_storage->insertOrUpdate(image);
+    QVERIFY(id > 0);
+
+    QVERIFY(m_storage->setOcrText(id, QStringLiteral("initial recognized text")));
+    FilterSpec initial;
+    initial.searchText = QStringLiteral("initial");
+    QCOMPARE(m_storage->fetchPage(initial, {}, 10).size(), 1);
+
+    QVERIFY(m_storage->setOcrText(id, QStringLiteral("replacement recognized text")));
+    QCOMPARE(m_storage->fetchPage(initial, {}, 10).size(), 0);
+    FilterSpec replacement;
+    replacement.searchText = QStringLiteral("replacement");
+    QCOMPARE(m_storage->fetchPage(replacement, {}, 10).size(), 1);
+
+    QVERIFY(m_storage->setOcrText(id, QString()));
+    QCOMPARE(m_storage->fetchPage(replacement, {}, 10).size(), 0);
+}
+
+void TestSearchEngine::combinesSearchWithMetadataFilters()
+{
+    ClipboardRecord matching;
+    matching.hash = QByteArrayLiteral("combined-match");
+    matching.type = ContentType::Text;
+    matching.textData = QStringLiteral("shared phrase");
+    matching.preview = matching.textData;
+    matching.timestamp = 2000;
+    matching.sourceApp = QStringLiteral("terminal");
+    matching.pinned = true;
+    m_storage->insertOrUpdate(matching);
+
+    ClipboardRecord wrongApp = matching;
+    wrongApp.hash = QByteArrayLiteral("combined-wrong-app");
+    wrongApp.sourceApp = QStringLiteral("browser");
+    m_storage->insertOrUpdate(wrongApp);
+
+    ClipboardRecord wrongPin = matching;
+    wrongPin.hash = QByteArrayLiteral("combined-wrong-pin");
+    wrongPin.pinned = false;
+    m_storage->insertOrUpdate(wrongPin);
+
+    FilterSpec filter;
+    filter.searchText = QStringLiteral("shared");
+    filter.sourceApp = QStringLiteral("terminal");
+    filter.pinnedOnly = true;
+    filter.fromMs = 2000;
+    filter.toMs = 2000;
+    const auto results = m_storage->fetchPage(filter, {}, 10);
+    QCOMPARE(results.size(), 1);
+    QCOMPARE(results.first().hash, QByteArrayLiteral("combined-match"));
 }
 
 QTEST_GUILESS_MAIN(TestSearchEngine)

@@ -17,6 +17,8 @@ private slots:
     void expireRulesPersistence();
     void ignoredSourceAppsWildcardMatching();
     void boundsAndLimits();
+    void normalizesCollectionsAndUiValues();
+    void persistsAcrossInstances();
 
 private:
     QTemporaryDir m_tempDir;
@@ -172,6 +174,64 @@ void TestSettings::boundsAndLimits()
 
     settings.setMaxImageBytes(16 * 1024 * 1024);
     QCOMPARE(settings.maxImageBytes(), qint64(16 * 1024 * 1024));
+}
+
+void TestSettings::normalizesCollectionsAndUiValues()
+{
+    SettingsManager settings;
+
+    settings.setRedactKinds({QStringLiteral(" aws-key "), QString(), QStringLiteral("aws-key"),
+                              QStringLiteral(" jwt ")});
+    const QStringList expectedRedactKinds = {QStringLiteral("aws-key"), QStringLiteral("jwt")};
+    QCOMPARE(settings.redactKinds(), expectedRedactKinds);
+
+    settings.setIgnoredSourceApps({QStringLiteral(" firefox* "), QString(), QStringLiteral("firefox*"),
+                                   QStringLiteral(" kate ")});
+    const QStringList expectedIgnoredApps = {QStringLiteral("firefox*"), QStringLiteral("kate")};
+    QCOMPARE(settings.ignoredSourceApps(), expectedIgnoredApps);
+
+    settings.setCustomSensitivePatterns({QStringLiteral(" password "), QString(), QStringLiteral(" token ")});
+    const QStringList expectedPatterns = {QStringLiteral("password"), QStringLiteral("token")};
+    QCOMPARE(settings.customSensitivePatterns(), expectedPatterns);
+
+    settings.setTrayMode(QStringLiteral("invalid"));
+    QCOMPARE(settings.trayMode(), QStringLiteral("auto"));
+    settings.setTrayMode(QStringLiteral("hidden"));
+    QCOMPARE(settings.trayMode(), QStringLiteral("hidden"));
+
+    settings.setTheme(QStringLiteral("invalid"));
+    QCOMPARE(settings.theme(), QStringLiteral("system"));
+    settings.setTheme(QStringLiteral("light"));
+    QCOMPARE(settings.theme(), QStringLiteral("light"));
+
+    settings.setOcrLanguage(QStringLiteral("   "));
+    QCOMPARE(settings.ocrLanguage(), QStringLiteral("eng"));
+    settings.setOcrLanguage(QStringLiteral("  deu  "));
+    QCOMPARE(settings.ocrLanguage(), QStringLiteral("deu"));
+
+    settings.setOcrMaxChars(1);
+    QCOMPARE(settings.ocrMaxChars(), 512);
+    settings.setOcrMaxChars(100000);
+    QCOMPARE(settings.ocrMaxChars(), 65536);
+}
+
+void TestSettings::persistsAcrossInstances()
+{
+    {
+        SettingsManager settings;
+        settings.setStartVisible(true);
+        settings.setOcrEnabled(false);
+        settings.setNotificationsEnabled(false);
+        settings.setDisabledScripts({QStringLiteral("script-a")});
+        settings.setHiddenTransforms({QStringLiteral("json-pretty")});
+    }
+
+    SettingsManager loaded;
+    QCOMPARE(loaded.startVisible(), true);
+    QCOMPARE(loaded.ocrEnabled(), false);
+    QCOMPARE(loaded.notificationsEnabled(), false);
+    QVERIFY(loaded.isScriptDisabled(QStringLiteral("script-a")));
+    QVERIFY(loaded.isTransformHidden(QStringLiteral("JSON-PRETTY")));
 }
 
 QTEST_GUILESS_MAIN(TestSettings)

@@ -82,8 +82,8 @@ static bool ensureFts(QSqlDatabase &db)
         QSqlQuery rebuild(db);
         QSqlQuery countFts(db);
         QSqlQuery countEntries(db);
-        bool needsRebuild = true;
-        if (countFts.exec(QStringLiteral("SELECT COUNT(*) FROM entries_fts"))
+        bool needsRebuild = needsRecreate;
+        if (!needsRebuild && countFts.exec(QStringLiteral("SELECT COUNT(*) FROM entries_fts"))
             && countFts.next() && countEntries.exec(QStringLiteral("SELECT COUNT(*) FROM entries"))
             && countEntries.next()) {
             needsRebuild = countFts.value(0).toLongLong() != countEntries.value(0).toLongLong();

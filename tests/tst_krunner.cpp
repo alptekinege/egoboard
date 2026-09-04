@@ -12,6 +12,8 @@ private slots:
     void searchRespectsLimit();
     void pasteEmitsSignal();
     void pingReturnsSame();
+    void searchNormalizesLimitsAndPreviewText();
+    void pasteAcceptsAnyIdAndEmitsIt();
 };
 
 void TestKRunner::searchReturnsIdTabPreview()
@@ -85,6 +87,55 @@ void TestKRunner::pingReturnsSame()
     StorageManager storage(dir.filePath(QStringLiteral("history.db")));
     EgoboardDbusAdaptor adaptor(&storage);
     QCOMPARE(adaptor.Ping(42), 42);
+}
+
+void TestKRunner::searchNormalizesLimitsAndPreviewText()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    StorageManager storage(dir.filePath(QStringLiteral("history.db")));
+    for (int i = 0; i < 12; ++i) {
+        ClipboardRecord record;
+        record.type = ContentType::Text;
+        record.textData = QStringLiteral("entry %1").arg(i);
+        record.preview = record.textData;
+        record.hash = QByteArrayLiteral("limit-") + QByteArray::number(i);
+        record.timestamp = 1000 + i;
+        QVERIFY(storage.insertOrUpdate(record) != 0);
+    }
+
+    EgoboardDbusAdaptor adaptor(&storage);
+    QCOMPARE(adaptor.Search(QString(), 0).size(), 10);
+    QCOMPARE(adaptor.Search(QString(), -5).size(), 10);
+    QCOMPARE(adaptor.Search(QString(), 100).size(), 12);
+
+    ClipboardRecord longPreview;
+    longPreview.type = ContentType::Text;
+    longPreview.textData = QStringLiteral("payload");
+    longPreview.preview = QStringLiteral("a").repeated(250).insert(50, QLatin1Char('\n'));
+    longPreview.hash = QByteArrayLiteral("long-preview");
+    longPreview.timestamp = 5000;
+    QVERIFY(storage.insertOrUpdate(longPreview) != 0);
+
+    const QStringList rows = adaptor.Search(QStringLiteral("payload"), 1);
+    QCOMPARE(rows.size(), 1);
+    const QStringList parts = rows.first().split(QLatin1Char('\t'));
+    QCOMPARE(parts.size(), 2);
+    QVERIFY(parts.at(1).size() <= 200);
+    QVERIFY(!parts.at(1).contains(QLatin1Char('\n')));
+}
+
+void TestKRunner::pasteAcceptsAnyIdAndEmitsIt()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    StorageManager storage(dir.filePath(QStringLiteral("history.db")));
+    EgoboardDbusAdaptor adaptor(&storage);
+    QSignalSpy spy(&adaptor, &EgoboardDbusAdaptor::pasteRequested);
+
+    QVERIFY(adaptor.Paste(999999));
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.first().first().toLongLong(), qint64(999999));
 }
 
 QTEST_GUILESS_MAIN(TestKRunner)

@@ -24,6 +24,8 @@ private slots:
     void dragAndDropMime();
     void pinnedChangedUpdatesRowWithoutFullReset();
     void removalAndResetRefreshes();
+    void invalidIndexesAndParentsAreSafe();
+    void refreshEmitsResetAndInitialPageSignal();
 
 private:
     ClipboardRecord makeRecord(const QByteArray &hash, const QString &text, qint64 timestamp);
@@ -293,6 +295,47 @@ void TestListModel::removalAndResetRefreshes()
 
     m_storage->clearHistory(true);
     QTRY_COMPARE(model.rowCount(), 0);
+}
+
+void TestListModel::invalidIndexesAndParentsAreSafe()
+{
+    m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("parent-test"), QStringLiteral("parent"), 1000));
+    ClipboardListModel model(m_storage);
+    model.refresh();
+    const QModelIndex validParent = model.index(0, 0);
+    QVERIFY(validParent.isValid());
+    QCOMPARE(model.rowCount(QModelIndex()), 1);
+    QCOMPARE(model.rowCount(validParent), 0);
+    QVERIFY(!model.data(QModelIndex(), ClipboardListModel::IdRole).isValid());
+    QVERIFY(!model.data(model.index(1, 0), ClipboardListModel::IdRole).isValid());
+    QVERIFY(!model.canFetchMore(validParent));
+
+    model.fetchMore(validParent);
+    QCOMPARE(model.rowCount(), 1);
+    QVERIFY(model.mimeData({QModelIndex()}) == nullptr);
+}
+
+void TestListModel::refreshEmitsResetAndInitialPageSignal()
+{
+    ClipboardListModel model(m_storage);
+    QSignalSpy resetSpy(&model, &QAbstractItemModel::modelReset);
+    QSignalSpy loadedSpy(&model, &ClipboardListModel::initialPageLoaded);
+
+    model.refresh();
+    QCOMPARE(resetSpy.count(), 1);
+    QCOMPARE(loadedSpy.count(), 1);
+    QCOMPARE(loadedSpy.first().at(0).toBool(), true);
+
+    m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("signal-model"), QStringLiteral("loaded"), 1000));
+    QCOMPARE(resetSpy.count(), 2);
+    QCOMPARE(loadedSpy.count(), 2);
+    QCOMPARE(loadedSpy.last().at(0).toBool(), false);
+    QCOMPARE(model.filter().isTrivial(), true);
+
+    model.refresh();
+    QCOMPARE(resetSpy.count(), 3);
+    QCOMPARE(loadedSpy.count(), 3);
+    QCOMPARE(loadedSpy.last().at(0).toBool(), false);
 }
 
 QTEST_GUILESS_MAIN(TestListModel)

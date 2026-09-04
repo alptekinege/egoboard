@@ -27,6 +27,8 @@ private slots:
     void dragAndDropGroupReparenting();
     void cyclePreventionInDragAndDrop();
     void rebuildsOnGroupChanges();
+    void rejectsInvalidDropPayloads();
+    void deduplicatesDraggedGroups();
 
 private:
     QTemporaryDir m_dir;
@@ -299,6 +301,64 @@ void TestGroupTreeModel::rebuildsOnGroupChanges()
     m_bookmarks->deleteGroup(model.index(0, 0).data(GroupTreeModel::GroupIdRole).toLongLong());
     QCOMPARE(resetSpy.count(), 2);
     QCOMPARE(model.rowCount(), 0);
+}
+
+void TestGroupTreeModel::rejectsInvalidDropPayloads()
+{
+    const qint64 target = m_bookmarks->createGroup(QStringLiteral("Target"));
+    QVERIFY(target > 0);
+    GroupTreeModel model(m_bookmarks);
+    const QModelIndex targetIndex = model.indexForGroup(target);
+    QVERIFY(targetIndex.isValid());
+
+    QMimeData unsupported;
+    unsupported.setData(QStringLiteral("text/plain"), QByteArrayLiteral("not a group"));
+    QVERIFY(!model.canDropMimeData(&unsupported, Qt::MoveAction, -1, -1, targetIndex));
+    QVERIFY(!model.dropMimeData(&unsupported, Qt::MoveAction, -1, -1, targetIndex));
+
+    QMimeData emptyEntries;
+    QByteArray emptyEncoded;
+    QDataStream emptyStream(&emptyEncoded, QIODevice::WriteOnly);
+    emptyStream << QList<qint64>{};
+    emptyEntries.setData(QStringLiteral("application/x-egoboard-entry-ids"), emptyEncoded);
+    QVERIFY(model.canDropMimeData(&emptyEntries, Qt::CopyAction, -1, -1, targetIndex));
+    QVERIFY(!model.dropMimeData(&emptyEntries, Qt::CopyAction, -1, -1, targetIndex));
+
+    QMimeData malformed;
+    malformed.setData(QStringLiteral("application/x-egoboard-group-ids"), QByteArrayLiteral("bad payload"));
+    QVERIFY(model.canDropMimeData(&malformed, Qt::MoveAction, -1, -1, targetIndex));
+    QVERIFY(!model.dropMimeData(&malformed, Qt::MoveAction, -1, -1, targetIndex));
+
+    QList<qint64> entryIds{1};
+    QByteArray entryEncoded;
+    QDataStream entryStream(&entryEncoded, QIODevice::WriteOnly);
+    entryStream << entryIds;
+    QMimeData validEntries;
+    validEntries.setData(QStringLiteral("application/x-egoboard-entry-ids"), entryEncoded);
+    QVERIFY(!model.dropMimeData(&validEntries, Qt::IgnoreAction, -1, -1, targetIndex));
+}
+
+void TestGroupTreeModel::deduplicatesDraggedGroups()
+{
+    const qint64 source = m_bookmarks->createGroup(QStringLiteral("Source"));
+    const qint64 target = m_bookmarks->createGroup(QStringLiteral("Target"));
+    GroupTreeModel model(m_bookmarks);
+
+    const QModelIndexList indexes{model.indexForGroup(source), model.indexForGroup(source)};
+    std::unique_ptr<QMimeData> mime(model.mimeData(indexes));
+    QVERIFY(mime != nullptr);
+
+    QByteArray encoded = mime->data(QStringLiteral("application/x-egoboard-group-ids"));
+    QDataStream stream(&encoded, QIODevice::ReadOnly);
+    QList<qint64> ids;
+    stream >> ids;
+    QCOMPARE(ids, QList<qint64>{source});
+
+    QVERIFY(model.dropMimeData(mime.get(), Qt::MoveAction, -1, -1,
+                               model.indexForGroup(target)));
+    const auto moved = m_bookmarks->group(source);
+    QVERIFY(moved.has_value());
+    QCOMPARE(moved->parentId, target);
 }
 
 QTEST_GUILESS_MAIN(TestGroupTreeModel)

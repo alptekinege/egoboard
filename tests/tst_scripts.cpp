@@ -22,6 +22,8 @@ private slots:
     void handlesSyntaxErrors();
     void rejectsOversizedInput();
     void handlesMissingScript();
+    void handlesNullAndUndefinedResults();
+    void reloadRemovesDeletedActions();
 
 private:
     QTemporaryDir m_tempDir;
@@ -206,6 +208,55 @@ void TestScripts::handlesMissingScript()
     auto res = manager.apply(QStringLiteral("does_not_exist"), QStringLiteral("data"));
     QVERIFY(!res.ok);
     QVERIFY(res.error.contains(QStringLiteral("not found")));
+}
+
+void TestScripts::handlesNullAndUndefinedResults()
+{
+    const QString dirPath = ScriptActionManager::actionsDir();
+    QDir().mkpath(dirPath);
+
+    const QString nullPath = QDir(dirPath).filePath(QStringLiteral("null-result.js"));
+    QFile nullFile(nullPath);
+    QVERIFY(nullFile.open(QIODevice::WriteOnly | QIODevice::Text));
+    QVERIFY(nullFile.write("function transform(text) { return null; }\n") > 0);
+    nullFile.close();
+
+    const QString undefinedPath = QDir(dirPath).filePath(QStringLiteral("undefined-result.js"));
+    QFile undefinedFile(undefinedPath);
+    QVERIFY(undefinedFile.open(QIODevice::WriteOnly | QIODevice::Text));
+    QVERIFY(undefinedFile.write("function transform(text) { }\n") > 0);
+    undefinedFile.close();
+
+    ScriptActionManager manager;
+    const auto nullResult = manager.apply(QStringLiteral("null-result"), QStringLiteral("data"));
+    QVERIFY(nullResult.ok);
+    QCOMPARE(nullResult.output, QString());
+    QVERIFY(nullResult.error.isEmpty());
+
+    const auto undefinedResult = manager.apply(QStringLiteral("undefined-result"), QStringLiteral("data"));
+    QVERIFY(undefinedResult.ok);
+    QCOMPARE(undefinedResult.output, QString());
+    QVERIFY(undefinedResult.error.isEmpty());
+}
+
+void TestScripts::reloadRemovesDeletedActions()
+{
+    const QString dirPath = ScriptActionManager::actionsDir();
+    QDir().mkpath(dirPath);
+    const QString scriptPath = QDir(dirPath).filePath(QStringLiteral("reloadable.js"));
+    QFile file(scriptPath);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    QVERIFY(file.write("function transform(text) { return text; }\n") > 0);
+    file.close();
+
+    ScriptActionManager manager;
+    QVERIFY(manager.hasAction(QStringLiteral("reloadable")));
+    QVERIFY(QFile::remove(scriptPath));
+    manager.reload();
+    QVERIFY(!manager.hasAction(QStringLiteral("reloadable")));
+    const auto result = manager.apply(QStringLiteral("reloadable"), QStringLiteral("data"));
+    QVERIFY(!result.ok);
+    QVERIFY(result.error.contains(QStringLiteral("not found")));
 }
 
 QTEST_GUILESS_MAIN(TestScripts)

@@ -12,6 +12,37 @@ function(egoboard_add_test name)
 endfunction()
 
 egoboard_add_test(tst_storage)
+egoboard_add_test(tst_schema)
+egoboard_add_test(tst_vacuum)
+# Auto-paste MIME reconstruction is headless-safe with the offscreen platform
+add_executable(tst_autopaster tst_autopaster.cpp ../src/app/AutoPaster.cpp ../src/app/ClipboardWatcher.cpp ../src/app/SettingsManager.cpp)
+target_include_directories(tst_autopaster PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(tst_autopaster PRIVATE egoboard::core Qt6::Gui Qt6::Widgets Qt6::Test KF6::ConfigCore KF6::Notifications)
+target_compile_options(tst_autopaster PRIVATE -Wall -Wextra)
+add_test(NAME tst_autopaster COMMAND tst_autopaster)
+
+find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets)
+add_executable(tst_ui tst_ui.cpp ../src/app/ThemeManager.cpp ../src/app/ui/CodePreviewHighlighter.cpp)
+target_include_directories(tst_ui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/app/ui ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(tst_ui PRIVATE Qt6::Widgets Qt6::Gui Qt6::Test)
+target_compile_options(tst_ui PRIVATE -Wall -Wextra)
+add_test(NAME tst_ui COMMAND tst_ui)
+
+# Clipboard classification and privacy-policy tests use the offscreen QClipboard
+add_executable(tst_clipboardwatcher tst_clipboardwatcher.cpp ../src/app/ClipboardWatcher.cpp ../src/app/SettingsManager.cpp)
+target_include_directories(tst_clipboardwatcher PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(tst_clipboardwatcher PRIVATE egoboard::core Qt6::Gui Qt6::Test KF6::ConfigCore)
+target_compile_options(tst_clipboardwatcher PRIVATE -Wall -Wextra)
+add_test(NAME tst_clipboardwatcher COMMAND tst_clipboardwatcher)
+
+# OCR boundary tests; recognition assertions remain environment-independent
+find_package(Qt6 6.8 REQUIRED COMPONENTS Concurrent)
+add_executable(tst_ocrworker tst_ocrworker.cpp ../src/app/OcrWorker.cpp)
+target_include_directories(tst_ocrworker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/core)
+target_link_libraries(tst_ocrworker PRIVATE egoboard::core Qt6::Core Qt6::Gui Qt6::Concurrent Qt6::Test)
+target_compile_options(tst_ocrworker PRIVATE -Wall -Wextra)
+add_test(NAME tst_ocrworker COMMAND tst_ocrworker)
+
 egoboard_add_test(tst_sensitive)
 egoboard_add_test(tst_expire)
 target_sources(tst_expire PRIVATE ../src/app/ExpireScheduler.cpp ../src/app/SettingsManager.cpp)

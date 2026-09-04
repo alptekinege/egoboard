@@ -30,6 +30,10 @@ private slots:
     void clearHistorySelectiveAndTotal();
     void ocrTextStorageAndStats();
     void sourceAppsDistinctListing();
+    void rejectsInvalidRequests();
+    void appliesInclusiveTimeBoundsAndCombinedFilters();
+    void paginatesEntriesWithEqualTimestamps();
+    void clearsOcrTextAndReturnsFullPayloads();
 
 private:
     ClipboardRecord makeRecord(const QByteArray &hash, const QString &text, qint64 timestamp);
@@ -495,6 +499,101 @@ void TestStorage::sourceAppsDistinctListing()
     // Ordered by COLLATE NOCASE
     QVERIFY(apps.contains(QStringLiteral("firefox"), Qt::CaseInsensitive));
     QVERIFY(apps.contains(QStringLiteral("kate"), Qt::CaseInsensitive));
+}
+
+void TestStorage::rejectsInvalidRequests()
+{
+    bool hasMore = true;
+    QVERIFY(m_storage->fetchPage(FilterSpec{}, {}, 0, &hasMore).isEmpty());
+    QVERIFY(!hasMore);
+    hasMore = true;
+    QVERIFY(m_storage->fetchPage(FilterSpec{}, {}, -1, &hasMore).isEmpty());
+    QVERIFY(!hasMore);
+
+    ClipboardRecord record;
+    QVERIFY(!m_storage->fetchFull(99999, &record));
+    QVERIFY(!m_storage->fetchFull(99999, nullptr));
+    QVERIFY(!m_storage->remove(99999));
+    QVERIFY(!m_storage->setPinned(99999, true));
+    QVERIFY(!m_storage->setOcrText(99999, QStringLiteral("missing")));
+    QCOMPARE(m_storage->removeEntries({99999}), 0);
+    QCOMPARE(m_storage->expireEntries(0, -1, QString(), true), 0);
+    QCOMPARE(m_storage->expireEntries(-1, -1, QString(), false), 0);
+    QCOMPARE(m_storage->enforceDiskCap(0), 0);
+    QCOMPARE(m_storage->enforceDiskCap(-1), 0);
+}
+
+void TestStorage::appliesInclusiveTimeBoundsAndCombinedFilters()
+{
+    ClipboardRecord before = makeRecord(QByteArrayLiteral("bounds-before"), QStringLiteral("before"), 1000);
+    m_storage->insertOrUpdate(before);
+
+    ClipboardRecord matching = makeRecord(QByteArrayLiteral("bounds-match"), QStringLiteral("matching"), 2000);
+    matching.pinned = true;
+    matching.sensitive = true;
+    m_storage->insertOrUpdate(matching);
+
+    ClipboardRecord different = makeRecord(QByteArrayLiteral("bounds-different"), QStringLiteral("different"), 3000);
+    different.type = ContentType::Image;
+    different.sourceApp = QStringLiteral("other-app");
+    m_storage->insertOrUpdate(different);
+
+    FilterSpec filter;
+    filter.fromMs = 2000;
+    filter.toMs = 2000;
+    filter.contentType = int(ContentType::Text);
+    filter.sourceApp = QStringLiteral("tester");
+    filter.pinnedOnly = true;
+    filter.sensitiveOnly = true;
+
+    const auto page = m_storage->fetchPage(filter, {}, 10);
+    QCOMPARE(page.size(), 1);
+    QCOMPARE(page.first().preview, QStringLiteral("matching"));
+    QVERIFY(!filter.isTrivial());
+}
+
+void TestStorage::paginatesEntriesWithEqualTimestamps()
+{
+    const qint64 first = m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("same-time-1"), QStringLiteral("one"), 5000));
+    const qint64 second = m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("same-time-2"), QStringLiteral("two"), 5000));
+    const qint64 third = m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("same-time-3"), QStringLiteral("three"), 5000));
+
+    bool hasMore = false;
+    const auto firstPage = m_storage->fetchPage(FilterSpec{}, {}, 2, &hasMore);
+    QCOMPARE(firstPage.size(), 2);
+    QVERIFY(hasMore);
+    QCOMPARE(firstPage.at(0).id, third);
+    QCOMPARE(firstPage.at(1).id, second);
+
+    const PageCursor cursor{true, firstPage.last().timestamp, firstPage.last().id};
+    const auto secondPage = m_storage->fetchPage(FilterSpec{}, cursor, 2, &hasMore);
+    QCOMPARE(secondPage.size(), 1);
+    QVERIFY(!hasMore);
+    QCOMPARE(secondPage.first().id, first);
+}
+
+void TestStorage::clearsOcrTextAndReturnsFullPayloads()
+{
+    ClipboardRecord record = makeRecord(QByteArrayLiteral("full-payload"), QStringLiteral("full text"), 1000);
+    const qint64 id = m_storage->insertOrUpdate(record);
+    QVERIFY(m_storage->setOcrText(id, QStringLiteral("recognized")));
+    QCOMPARE(m_storage->stats().ocrCount, qint64(1));
+
+    QVERIFY(m_storage->setOcrText(id, QString()));
+    QCOMPARE(m_storage->stats().ocrCount, qint64(0));
+
+    ClipboardRecord full;
+    QVERIFY(m_storage->fetchFull(id, &full));
+    QCOMPARE(full.textData, QStringLiteral("full text"));
+    QCOMPARE(full.ocrText, QString());
+
+    const auto allFull = m_storage->fetchAllFull(FilterSpec{});
+    QCOMPARE(allFull.size(), 1);
+    QCOMPARE(allFull.first().id, id);
+    QCOMPARE(allFull.first().textData, QStringLiteral("full text"));
 }
 
 QTEST_GUILESS_MAIN(TestStorage)
