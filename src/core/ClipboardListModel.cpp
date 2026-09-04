@@ -23,10 +23,12 @@ void ClipboardListModel::connectStorage()
     connect(m_storage, &IClipboardStorage::storageReset, this, &ClipboardListModel::refresh);
     // Pinned toggles only change decoration, not order; repaint instead of reload.
     connect(m_storage, &IClipboardStorage::pinnedChanged, this,
-            [this](qint64 id, bool) {
+            [this](qint64 id, bool pinned) {
                 const int row = rowForId(id);
-                if (row >= 0)
+                if (row >= 0) {
+                    m_rows[row].pinned = pinned;
                     emit dataChanged(index(row), index(row), {PinnedRole, Qt::DisplayRole});
+                }
             });
 }
 

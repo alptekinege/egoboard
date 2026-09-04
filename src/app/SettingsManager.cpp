@@ -242,7 +242,7 @@ bool SettingsManager::isSourceIgnored(const QString &app) const
     const QStringList ignored = ignoredSourceApps();
     for (const QString &pat : ignored) {
         if (pat.compare(app, Qt::CaseInsensitive) == 0) return true;
-        if (pat.contains(QLatin1Char('*'))) {
+        if (pat.contains(QLatin1Char('*')) || pat.contains(QLatin1Char('?'))) {
             QRegularExpression re(QRegularExpression::wildcardToRegularExpression(pat), QRegularExpression::CaseInsensitiveOption);
             if (re.match(app).hasMatch()) return true;
         }

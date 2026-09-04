@@ -19,6 +19,12 @@ private slots:
     void redactsNothingWhenDisabled();
     void redactKeepsNonSensitiveText();
     void redactMergesOverlappingSpans();
+    void detectsAllPrivateKeyTypes();
+    void detectsAllGitHubTokenTypes();
+    void detectsAllSlackTokenTypes();
+    void detectsAwsKeysAndBoundaries();
+    void detectsJwtAndBearerVariations();
+    void multiSecretFullSanitization();
 };
 
 void TestSensitive::detectsCreditCards()
@@ -152,6 +158,137 @@ void TestSensitive::redactMergesOverlappingSpans()
         QStringLiteral("before -----BEGIN RSA PRIVATE KEY----- after"));
     QCOMPARE(wide.text, QStringLiteral("before •••• after"));
     QCOMPARE(wide.redactedCount, 1);
+}
+
+void TestSensitive::detectsAllPrivateKeyTypes()
+{
+    const QStringList headers = {
+        QStringLiteral("-----BEGIN PRIVATE KEY-----"),
+        QStringLiteral("-----BEGIN RSA PRIVATE KEY-----"),
+        QStringLiteral("-----BEGIN EC PRIVATE KEY-----"),
+        QStringLiteral("-----BEGIN DSA PRIVATE KEY-----"),
+        QStringLiteral("-----BEGIN OPENSSH PRIVATE KEY-----"),
+        QStringLiteral("-----BEGIN PGP PRIVATE KEY-----")
+    };
+
+    for (const QString &header : headers) {
+        const QString fullText = QStringLiteral("key data:\n%1\nMIIE...\n-----END-----").arg(header);
+        QVERIFY2(SensitiveDataDetector::isSensitive(fullText), qPrintable(header));
+        QVERIFY(SensitiveDataDetector::kinds(fullText).contains(QStringLiteral("private-key")));
+
+        const auto redacted = SensitiveDataDetector::redact(fullText, {QStringLiteral("private-key")});
+        QVERIFY(!redacted.text.contains(header));
+        QVERIFY(redacted.text.contains(QStringLiteral("••••")));
+    }
+}
+
+void TestSensitive::detectsAllGitHubTokenTypes()
+{
+    const QStringList prefixes = {
+        QStringLiteral("ghp_"), // personal access token
+        QStringLiteral("gho_"), // oauth token
+        QStringLiteral("ghu_"), // user-to-server token
+        QStringLiteral("ghs_"), // server-to-server token
+        QStringLiteral("ghr_")  // refresh token
+    };
+
+    for (const QString &pfx : prefixes) {
+        const QString token = pfx + QStringLiteral("1234567890abcdefghijklmnopqrstuvwxyz");
+        const QString text = QStringLiteral("GITHUB_TOKEN=%1").arg(token);
+        QVERIFY2(SensitiveDataDetector::isSensitive(text), qPrintable(token));
+        QVERIFY(SensitiveDataDetector::kinds(text).contains(QStringLiteral("github-token")));
+    }
+
+    // Too short (less than 20 chars after prefix)
+    QVERIFY(!SensitiveDataDetector::kinds(QStringLiteral("ghp_short12345")).contains(QStringLiteral("github-token")));
+}
+
+void TestSensitive::detectsAllSlackTokenTypes()
+{
+    const QStringList prefixes = {
+        QStringLiteral("xoxb-"), // bot token
+        QStringLiteral("xoxa-"), // app token
+        QStringLiteral("xoxp-"), // user token
+        QStringLiteral("xoxr-"), // refresh token
+        QStringLiteral("xoxs-")  // session token
+    };
+
+    for (const QString &pfx : prefixes) {
+        const QString token = pfx + QStringLiteral("123456789012-345678901234-abcdefghijklmnopqrstuv");
+        const QString text = QStringLiteral("SLACK=%1").arg(token);
+        QVERIFY2(SensitiveDataDetector::isSensitive(text), qPrintable(token));
+        QVERIFY(SensitiveDataDetector::kinds(text).contains(QStringLiteral("slack-token")));
+    }
+}
+
+void TestSensitive::detectsAwsKeysAndBoundaries()
+{
+    // Valid 16-character alphanumeric suffix after AKIA
+    const QString validKey = QStringLiteral("AKIAIOSFODNN7EXAMPLE");
+    QVERIFY(SensitiveDataDetector::kinds(validKey).contains(QStringLiteral("aws-key")));
+
+    // 15 characters: invalid
+    const QString shortKey = QStringLiteral("AKIAIOSFODNN7EXAMP");
+    QVERIFY(!SensitiveDataDetector::kinds(shortKey).contains(QStringLiteral("aws-key")));
+
+    // Wrong prefix: invalid
+    const QString wrongPrefix = QStringLiteral("BKIAIOSFODNN7EXAMPLE");
+    QVERIFY(!SensitiveDataDetector::kinds(wrongPrefix).contains(QStringLiteral("aws-key")));
+
+    // Special characters in suffix: invalid
+    const QString punctKey = QStringLiteral("AKIAIOSFODNN7EXAM!");
+    QVERIFY(!SensitiveDataDetector::kinds(punctKey).contains(QStringLiteral("aws-key")));
+}
+
+void TestSensitive::detectsJwtAndBearerVariations()
+{
+    const QString jwt = QStringLiteral("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c");
+    QVERIFY(SensitiveDataDetector::kinds(jwt).contains(QStringLiteral("jwt")));
+
+    const QString bearer = QStringLiteral("Authorization: Bearer mySecretTokenValue12345678==");
+    QVERIFY(SensitiveDataDetector::kinds(bearer).contains(QStringLiteral("bearer-token")));
+
+    // Redacting Bearer token replaces it with bullets
+    const auto res = SensitiveDataDetector::redact(bearer, {QStringLiteral("bearer-token")});
+    QVERIFY(!res.text.contains(QStringLiteral("mySecretTokenValue12345678==")));
+    QVERIFY(res.text.contains(QStringLiteral("Authorization: ••••")));
+}
+
+void TestSensitive::multiSecretFullSanitization()
+{
+    const QString source = QStringLiteral(
+        "Config:\n"
+        "AWS_KEY=AKIAIOSFODNN7EXAMPLE\n"
+        "GH_TOKEN=ghp_1234567890abcdefghijklmnopqrstuvwxyz\n"
+        "SLACK=xoxb-1234567890-abcdefghijklmnop\n"
+        "CARD=4111 1111 1111 1111\n"
+        "OPENAI=sk-1234567890abcdef1234567890abcdef\n"
+        "PASS: password=superSecretPassword123\n"
+    );
+
+    QVERIFY(SensitiveDataDetector::isSensitive(source));
+    const QStringList kinds = SensitiveDataDetector::kinds(source);
+    QVERIFY(kinds.contains(QStringLiteral("aws-key")));
+    QVERIFY(kinds.contains(QStringLiteral("github-token")));
+    QVERIFY(kinds.contains(QStringLiteral("slack-token")));
+    QVERIFY(kinds.contains(QStringLiteral("creditcard")));
+    QVERIFY(kinds.contains(QStringLiteral("api-key")));
+    QVERIFY(kinds.contains(QStringLiteral("credential")));
+
+    const auto result = SensitiveDataDetector::redact(source);
+    QVERIFY(!result.text.contains(QStringLiteral("AKIAIOSFODNN7EXAMPLE")));
+    QVERIFY(!result.text.contains(QStringLiteral("ghp_1234567890")));
+    QVERIFY(!result.text.contains(QStringLiteral("xoxb-1234567890")));
+    QVERIFY(!result.text.contains(QStringLiteral("4111 1111 1111 1111")));
+    QVERIFY(!result.text.contains(QStringLiteral("sk-1234567890")));
+    QVERIFY(!result.text.contains(QStringLiteral("superSecretPassword123")));
+
+    // Labels/keys should remain intact
+    QVERIFY(result.text.contains(QStringLiteral("AWS_KEY=")));
+    QVERIFY(result.text.contains(QStringLiteral("GH_TOKEN=")));
+    QVERIFY(result.text.contains(QStringLiteral("SLACK=")));
+    QVERIFY(result.text.contains(QStringLiteral("CARD=")));
+    QVERIFY(result.text.contains(QStringLiteral("OPENAI=")));
 }
 
 QTEST_GUILESS_MAIN(TestSensitive)
