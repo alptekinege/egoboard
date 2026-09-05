@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="data/egoboard.svg" width="128" alt="Egoboard icon">
+</p>
+
 # Egoboard
 
 A native clipboard history manager for **KDE Plasma**, built with **Qt 6 Widgets

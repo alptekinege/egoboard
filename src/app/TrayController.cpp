@@ -28,10 +28,13 @@ TrayController::TrayController(StorageManager *storage, QObject *parent)
     if (statusNotifierHostAvailable()) {
         m_sni = new KStatusNotifierItem(QStringLiteral("egoboard"), this);
         m_sni->setTitle(QStringLiteral("Egoboard"));
-        m_sni->setIconByName(QStringLiteral("edit-paste"));
+        const QIcon appIcon = QIcon::fromTheme(QStringLiteral("egoboard"),
+                                               QIcon(QStringLiteral(":/icons/egoboard.svg")));
+        m_sni->setIconByPixmap(appIcon);
         m_sni->setStatus(KStatusNotifierItem::Active);
-        m_sni->setToolTip(QStringLiteral("edit-paste"), QStringLiteral("Egoboard"),
+        m_sni->setToolTip(QStringLiteral("egoboard"), QStringLiteral("Egoboard"),
                           tr("Clipboard history"));
+        m_sni->setToolTipIconByPixmap(appIcon);
         m_sni->setStandardActionsEnabled(false);
         m_sni->setContextMenu(m_menu);
         connect(m_sni, &KStatusNotifierItem::activateRequested, this,
@@ -42,7 +45,9 @@ TrayController::TrayController(StorageManager *storage, QObject *parent)
         connect(m_sni, &KStatusNotifierItem::secondaryActivateRequested, this,
                 [this](const QPoint &) { emit quickPasteRequested(); });
     } else if (QSystemTrayIcon::isSystemTrayAvailable()) {
-        m_fallbackIcon = new QSystemTrayIcon(QIcon::fromTheme(QStringLiteral("edit-paste")), this);
+        m_fallbackIcon = new QSystemTrayIcon(QIcon::fromTheme(QStringLiteral("egoboard"),
+                                                             QIcon(QStringLiteral(":/icons/egoboard.svg"))),
+                                             this);
         m_fallbackIcon->setContextMenu(m_menu);
         m_fallbackIcon->show();
         connect(m_fallbackIcon, &QSystemTrayIcon::activated, this,

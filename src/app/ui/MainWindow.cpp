@@ -48,7 +48,8 @@ MainWindow::MainWindow(ApplicationContext &context, QWidget *parent)
     , m_ctx(context)
 {
     setWindowTitle(tr("Egoboard — Clipboard History"));
-    setWindowIcon(QIcon::fromTheme(QStringLiteral("edit-paste")));
+    setWindowIcon(QIcon::fromTheme(QStringLiteral("egoboard"),
+                                   QIcon(QStringLiteral(":/icons/egoboard.svg"))));
     setAttribute(Qt::WA_QuitOnClose, false); // closing the window keeps the daemon running
     buildUi();
     connectSignals();
