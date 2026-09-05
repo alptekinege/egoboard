@@ -32,9 +32,11 @@ signals:
     void redactedSensitive(const QString &kinds); // Redact mode: secrets replaced
     void suppressedOwnChange();
 
-private:
-    void onClipboardChanged(QClipboard::Mode mode);
+private slots:
     void processPending();
+    void onClipboardChanged(QClipboard::Mode mode);
+
+private:
     ClipboardRecord buildRecord(const QMimeData *mimeData) const;
 
     QClipboard *m_clipboard = nullptr;

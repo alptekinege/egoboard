@@ -19,6 +19,8 @@ private slots:
     void deleteGroupReparents();
     void signalsAndForeignKeys();
     void deepCyclePrevention();
+    void rejectsInvalidGroupOperations();
+    void membershipCascadesWithEntryAndGroupDeletion();
 
 private:
     QTemporaryDir m_dir;
@@ -149,6 +151,66 @@ void TestBookmarks::deepCyclePrevention()
     const auto moved = m_bookmarks->group(grandchild);
     QVERIFY(moved.has_value());
     QCOMPARE(moved->parentId, qint64(0));
+}
+
+void TestBookmarks::rejectsInvalidGroupOperations()
+{
+    QVERIFY(m_bookmarks->createGroup(QStringLiteral("Orphan"), 99999) == 0);
+    QVERIFY(!m_bookmarks->updateGroup(99999, QStringLiteral("Missing"), {}, {}));
+    QVERIFY(!m_bookmarks->deleteGroup(99999));
+    QVERIFY(!m_bookmarks->moveGroup(99999, 0));
+    QVERIFY(!m_bookmarks->moveGroup(99999, 1));
+    QVERIFY(!m_bookmarks->group(99999).has_value());
+    QVERIFY(!m_bookmarks->isDescendantOf(99999, 1));
+    QVERIFY(!m_bookmarks->isDescendantOf(1, 99999));
+
+    const qint64 group = m_bookmarks->createGroup(QStringLiteral("Valid"));
+    QVERIFY(group > 0);
+    QVERIFY(!m_bookmarks->assignEntry(99999, group));
+    QVERIFY(!m_bookmarks->assignEntry(99999, 99999));
+    QCOMPARE(m_bookmarks->entryIdsForGroup(99999), QList<qint64>{});
+    QCOMPARE(m_bookmarks->groupIdsForEntry(99999), QList<qint64>{});
+}
+
+void TestBookmarks::membershipCascadesWithEntryAndGroupDeletion()
+{
+    ClipboardRecord record;
+    record.hash = QByteArrayLiteral("cascade-entry");
+    record.textData = QStringLiteral("cascade");
+    record.preview = record.textData;
+    record.timestamp = 1;
+    const qint64 entryId = m_storage->insertOrUpdate(record);
+    const qint64 parent = m_bookmarks->createGroup(QStringLiteral("Parent"));
+    const qint64 child = m_bookmarks->createGroup(QStringLiteral("Child"), parent);
+    QVERIFY(m_bookmarks->assignEntry(entryId, parent));
+    QVERIFY(m_bookmarks->assignEntry(entryId, child));
+    QCOMPARE(m_bookmarks->groupIdsForEntry(entryId).size(), 2);
+
+    QVERIFY(m_storage->remove(entryId));
+    QCOMPARE(m_bookmarks->groupIdsForEntry(entryId), QList<qint64>{});
+    QCOMPARE(m_bookmarks->entryCount(parent), 0);
+    QCOMPARE(m_bookmarks->entryCount(child), 0);
+
+    const qint64 secondEntry = m_storage->insertOrUpdate(
+        [&] {
+            ClipboardRecord second;
+            second.hash = QByteArrayLiteral("cascade-entry-2");
+            second.textData = QStringLiteral("second");
+            second.preview = second.textData;
+            second.timestamp = 2;
+            return second;
+        }());
+    QVERIFY(m_bookmarks->assignEntry(secondEntry, child));
+    QVERIFY(m_bookmarks->deleteGroup(parent));
+    QVERIFY(!m_bookmarks->group(parent).has_value());
+    const auto survivingChild = m_bookmarks->group(child);
+    QVERIFY(survivingChild.has_value());
+    QCOMPARE(survivingChild->parentId, qint64(0));
+    QCOMPARE(m_bookmarks->groupIdsForEntry(secondEntry), QList<qint64>{child});
+
+    QVERIFY(m_bookmarks->deleteGroup(child));
+    QVERIFY(!m_bookmarks->group(child).has_value());
+    QCOMPARE(m_bookmarks->groupIdsForEntry(secondEntry), QList<qint64>{});
 }
 
 QTEST_GUILESS_MAIN(TestBookmarks)

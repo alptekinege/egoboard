@@ -1,4 +1,5 @@
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Test Sql)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Test Sql Gui)
+find_package(KF6Config 6.0 REQUIRED)
 
 # Unit tests run against the core library (egoboard_core: Qt Core + Sql only),
 # each on its own temporary database file.
@@ -11,8 +12,43 @@ function(egoboard_add_test name)
 endfunction()
 
 egoboard_add_test(tst_storage)
+egoboard_add_test(tst_schema)
+egoboard_add_test(tst_vacuum)
+# Auto-paste MIME reconstruction is headless-safe with the offscreen platform
+add_executable(tst_autopaster tst_autopaster.cpp ../src/app/AutoPaster.cpp ../src/app/ClipboardWatcher.cpp ../src/app/SettingsManager.cpp)
+target_include_directories(tst_autopaster PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(tst_autopaster PRIVATE egoboard::core Qt6::Gui Qt6::Widgets Qt6::Test KF6::ConfigCore KF6::Notifications)
+target_compile_options(tst_autopaster PRIVATE -Wall -Wextra)
+add_test(NAME tst_autopaster COMMAND tst_autopaster)
+
+find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets)
+add_executable(tst_ui tst_ui.cpp ../src/app/ThemeManager.cpp ../src/app/ui/CodePreviewHighlighter.cpp)
+target_include_directories(tst_ui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/app/ui ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(tst_ui PRIVATE Qt6::Widgets Qt6::Gui Qt6::Test)
+target_compile_options(tst_ui PRIVATE -Wall -Wextra)
+add_test(NAME tst_ui COMMAND tst_ui)
+
+# Clipboard classification and privacy-policy tests use the offscreen QClipboard
+add_executable(tst_clipboardwatcher tst_clipboardwatcher.cpp ../src/app/ClipboardWatcher.cpp ../src/app/SettingsManager.cpp)
+target_include_directories(tst_clipboardwatcher PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(tst_clipboardwatcher PRIVATE egoboard::core Qt6::Gui Qt6::Test KF6::ConfigCore)
+target_compile_options(tst_clipboardwatcher PRIVATE -Wall -Wextra)
+add_test(NAME tst_clipboardwatcher COMMAND tst_clipboardwatcher)
+
+# OCR boundary tests; recognition assertions remain environment-independent
+find_package(Qt6 6.8 REQUIRED COMPONENTS Concurrent)
+add_executable(tst_ocrworker tst_ocrworker.cpp ../src/app/OcrWorker.cpp)
+target_include_directories(tst_ocrworker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/core)
+target_link_libraries(tst_ocrworker PRIVATE egoboard::core Qt6::Core Qt6::Gui Qt6::Concurrent Qt6::Test)
+target_compile_options(tst_ocrworker PRIVATE -Wall -Wextra)
+add_test(NAME tst_ocrworker COMMAND tst_ocrworker)
+
 egoboard_add_test(tst_sensitive)
 egoboard_add_test(tst_expire)
+target_sources(tst_expire PRIVATE ../src/app/ExpireScheduler.cpp ../src/app/SettingsManager.cpp)
+target_include_directories(tst_expire PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(tst_expire PRIVATE KF6::ConfigCore)
+
 egoboard_add_test(tst_bookmarks)
 egoboard_add_test(tst_exportimport)
 egoboard_add_test(tst_transforms)
@@ -20,6 +56,33 @@ egoboard_add_test(tst_snippets)
 egoboard_add_test(tst_encryption)
 target_sources(tst_encryption PRIVATE ../src/app/EncryptionManager.cpp)
 target_include_directories(tst_encryption PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+egoboard_add_test(tst_searchengine)
+egoboard_add_test(tst_listmodel)
+
+add_executable(tst_grouptreemodel tst_grouptreemodel.cpp ../src/core/GroupTreeModel.cpp)
+target_include_directories(tst_grouptreemodel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(tst_grouptreemodel PRIVATE egoboard::core Qt6::Test Qt6::Gui)
+target_compile_options(tst_grouptreemodel PRIVATE -Wall -Wextra)
+add_test(NAME tst_grouptreemodel COMMAND tst_grouptreemodel)
+
+add_executable(tst_singleinstance tst_singleinstance.cpp ../src/app/SingleInstanceGuard.cpp)
+target_include_directories(tst_singleinstance PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(tst_singleinstance PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+target_compile_options(tst_singleinstance PRIVATE -Wall -Wextra)
+add_test(NAME tst_singleinstance COMMAND tst_singleinstance)
+
+add_executable(tst_settings tst_settings.cpp ../src/app/SettingsManager.cpp)
+target_include_directories(tst_settings PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(tst_settings PRIVATE egoboard::core Qt6::Test KF6::ConfigCore)
+target_compile_options(tst_settings PRIVATE -Wall -Wextra)
+add_test(NAME tst_settings COMMAND tst_settings)
+
+find_package(Qt6 6.8 REQUIRED COMPONENTS Qml)
+add_executable(tst_scripts tst_scripts.cpp ../src/app/ScriptActionManager.cpp)
+target_include_directories(tst_scripts PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(tst_scripts PRIVATE egoboard::core Qt6::Test Qt6::Qml)
+target_compile_options(tst_scripts PRIVATE -Wall -Wextra)
+add_test(NAME tst_scripts COMMAND tst_scripts)
 
 # Layer-shell helper: needs Gui + LayerShellHelper (app-level), but test is headless-safe (offscreen)
 find_package(Qt6 6.8 REQUIRED COMPONENTS Gui)

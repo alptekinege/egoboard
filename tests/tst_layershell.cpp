@@ -11,6 +11,7 @@ private slots:
     void availableFalseOnOffscreen();
     void diagnosticsContainsPlatform();
     void configureNoCrashOffscreen();
+    void diagnosticsRemainConsistent();
 };
 
 void TestLayerShell::platformNameNotEmpty()
@@ -68,6 +69,16 @@ void TestLayerShell::configureNoCrashOffscreen()
     LayerShellHelper::configureForQuickPaste(&win, nullptr, QSize(100, 100), QPoint(10, 10));
     if (QGuiApplication::primaryScreen())
         LayerShellHelper::configureForQuickPaste(&win, QGuiApplication::primaryScreen(), QSize(100, 100), QPoint(10, 10));
+}
+
+void TestLayerShell::diagnosticsRemainConsistent()
+{
+    const QString diagnostics = LayerShellHelper::diagnostics();
+    QVERIFY(!diagnostics.isEmpty());
+    QVERIFY(diagnostics.contains(QStringLiteral("Layer-shell"), Qt::CaseInsensitive));
+    QCOMPARE(LayerShellHelper::isWayland(), LayerShellHelper::platformName() == QStringLiteral("wayland"));
+    if (!LayerShellHelper::isWayland())
+        QVERIFY(!LayerShellHelper::isAvailable());
 }
 
 QTEST_MAIN(TestLayerShell)

@@ -14,6 +14,8 @@ private slots:
     void expandCaseInsensitiveAndWhitespace();
     void updateAndDelete();
     void expandSnippet();
+    void validatesWritesAndEmitsChanges();
+    void preservesUnknownPlaceholders();
 
 private:
     QTemporaryDir m_dir;
@@ -73,6 +75,48 @@ void TestSnippets::expandSnippet()
     const QString out = m_mgr->expandSnippet(id, QStringLiteral("hello"));
     QCOMPARE(out, QStringLiteral("[hello]"));
     QVERIFY(m_mgr->expandSnippet(99999, QStringLiteral("hi")).isEmpty());
+}
+
+void TestSnippets::validatesWritesAndEmitsChanges()
+{
+    QSignalSpy changedSpy(m_mgr, &SnippetManager::snippetsChanged);
+
+    QCOMPARE(m_mgr->createSnippet(QStringLiteral("   "), QStringLiteral("template")), qint64(0));
+    QCOMPARE(m_mgr->createSnippet(QStringLiteral("name"), QString()), qint64(0));
+    QCOMPARE(changedSpy.count(), 0);
+
+    const qint64 id = m_mgr->createSnippet(QStringLiteral("  trimmed name  "), QStringLiteral("template"),
+                                           QStringLiteral("  shortcut  "));
+    QVERIFY(id > 0);
+    QCOMPARE(changedSpy.count(), 1);
+    const auto created = m_mgr->snippet(id);
+    QVERIFY(created.has_value());
+    QCOMPARE(created->name, QStringLiteral("trimmed name"));
+    QCOMPARE(created->shortcut, QStringLiteral("shortcut"));
+
+    QVERIFY(m_mgr->updateSnippet(id, QStringLiteral("  updated  "), QStringLiteral("new template"),
+                                 QStringLiteral("  new  ")));
+    QCOMPARE(changedSpy.count(), 2);
+    const auto updated = m_mgr->snippet(id);
+    QVERIFY(updated.has_value());
+    QCOMPARE(updated->name, QStringLiteral("updated"));
+    QCOMPARE(updated->shortcut, QStringLiteral("new"));
+
+    QVERIFY(!m_mgr->updateSnippet(99999, QStringLiteral("missing"), QStringLiteral("template"), {}));
+    QVERIFY(!m_mgr->deleteSnippet(99999));
+    QCOMPARE(changedSpy.count(), 2);
+    QVERIFY(m_mgr->deleteSnippet(id));
+    QCOMPARE(changedSpy.count(), 3);
+}
+
+void TestSnippets::preservesUnknownPlaceholders()
+{
+    QCOMPARE(SnippetManager::expand(QStringLiteral("{{unknown}} / {{ clipboard }} / {{x-y}}"),
+                                    QStringLiteral("value")),
+             QStringLiteral("{{unknown}} / value / {{x-y}}"));
+    QCOMPARE(SnippetManager::expand(QString(), QStringLiteral("ignored")), QString());
+    QCOMPARE(SnippetManager::expand(QStringLiteral("literal text"), QStringLiteral("ignored")),
+             QStringLiteral("literal text"));
 }
 
 QTEST_GUILESS_MAIN(TestSnippets)

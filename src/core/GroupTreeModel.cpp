@@ -104,8 +104,11 @@ QModelIndex GroupTreeModel::parent(const QModelIndex &child) const
     std::function<QModelIndex(const Node *)> find = [&](const Node *candidate) -> QModelIndex {
         for (size_t i = 0; i < candidate->children.size(); ++i) {
             const Node *descendant = candidate->children.at(i).get();
-            if (descendant == childNode)
-                return createIndex(int(i), 0, const_cast<Node *>(candidate));
+            if (descendant == childNode) {
+                if (candidate == m_root.get())
+                    return {};
+                return indexForGroup(candidate->group.id);
+            }
             const QModelIndex deeper = find(descendant);
             if (deeper.isValid())
                 return deeper;

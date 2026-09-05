@@ -12,6 +12,8 @@ private slots:
     void diagnosticsContainsPlatform();
     void startStopNoCrashOffscreen();
     void suppressNoCrash();
+    void protocolStateIsSafeBeforeStart();
+    void repeatedLifecycleCallsRemainInactiveOffscreen();
 };
 
 void TestDataControl::platformNameNotEmpty()
@@ -76,6 +78,26 @@ void TestDataControl::suppressNoCrash()
     WlrDataControlHelper helper(nullptr, &dummy);
     helper.suppressOwnSets();
     // should not crash even without active manager
+    QVERIFY(!helper.isActive());
+}
+
+void TestDataControl::protocolStateIsSafeBeforeStart()
+{
+    WlrDataControlHelper helper(nullptr, nullptr);
+    QCOMPARE(helper.protocolVersion(), 0);
+    QVERIFY(!helper.isActive());
+    QVERIFY(!helper.diagnostics().isEmpty());
+}
+
+void TestDataControl::repeatedLifecycleCallsRemainInactiveOffscreen()
+{
+    WlrDataControlHelper helper(nullptr, nullptr);
+    helper.stop();
+    helper.stop();
+    helper.start();
+    helper.start();
+    helper.stop();
+    helper.stop();
     QVERIFY(!helper.isActive());
 }
 
