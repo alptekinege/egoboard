@@ -16,24 +16,7 @@ Clipboard history manager for KDE Plasma. Keeps everything you copy, lets you se
 - **Auto-cleanup** — rule-based expiry by age and type, plus disk quota.
 - **Export/Import** — backup and restore as JSON.
 
-## Build
-
-```bash
-sudo pacman -S --needed base-devel cmake ninja gcc \
-    qt6-base qt6-tools kf6-kconfig kf6-kglobalaccel kf6-knotifications \
-    kstatusnotifieritem kf6-kwindowsystem kf6-kxmlgui extra-cmake-modules \
-    wayland sqlite
-
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-ctest --test-dir build
-```
-
-For an AppImage:
-
-```bash
-./scripts/build-appimage.sh
-```
+## [Build](./docs/build.md)
 
 ## Run
 
