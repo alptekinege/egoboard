@@ -18,14 +18,6 @@ Clipboard history manager for KDE Plasma. Keeps everything you copy, lets you se
 
 ## [Build](./docs/build.md)
 
-## Run
-
-```bash
-./build/egoboard
-```
-
-The app lives in the system tray. Settings are in `~/.config/egoboardrc`, the database in `~/.local/share/egoboard/history.db`.
-
 ## License
 
 MIT.
