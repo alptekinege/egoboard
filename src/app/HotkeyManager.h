@@ -6,8 +6,8 @@ class QAction;
 
 // Registers the global shortcuts through KGlobalAccel (so they work system
 // wide, are configurable in Plasma's shortcut editor and survive on Wayland).
-//   toggle     - show/hide the history window   (default Meta+V)
-//   quickpaste - quick paste popup               (default Meta+Shift+V)
+//   toggle     - show/hide the history window   (default Meta+Shift+V)
+//   quickpaste - quick paste popup               (default Meta+V)
 //   deletelast - drop the newest capture          (default Meta+Shift+D)
 class HotkeyManager : public QObject {
     Q_OBJECT

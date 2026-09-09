@@ -7,12 +7,12 @@
 
 QList<QKeySequence> HotkeyManager::defaultToggleShortcut()
 {
-    return {QKeySequence(QStringLiteral("Meta+V"))};
+    return {QKeySequence(QStringLiteral("Meta+Shift+V"))};
 }
 
 QList<QKeySequence> HotkeyManager::defaultQuickPasteShortcut()
 {
-    return {QKeySequence(QStringLiteral("Meta+Shift+V"))};
+    return {QKeySequence(QStringLiteral("Meta+V"))};
 }
 
 QList<QKeySequence> HotkeyManager::defaultDeleteLastShortcut()

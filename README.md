@@ -11,7 +11,7 @@ Clipboard history manager for KDE Plasma. Keeps everything you copy, lets you se
 - **History** — stores text, HTML, images, and file copies in SQLite.
 - **Search & filter** — filter by type, date, and source app.
 - **Pins & groups** — pin favorites, organize them into nested groups.
-- **Shortcuts** — `Meta+V` toggles the window, `Meta+Shift+V` opens quick-paste.
+- **Shortcuts** — `Meta+V` opens quick-paste, `Meta+Shift+V` toggles the window.
 - **Privacy** — auto-detects credit cards, passwords, and API keys; flag, exclude, or redact them.
 - **Auto-cleanup** — rule-based expiry by age and type, plus disk quota.
 - **Export/Import** — backup and restore as JSON.

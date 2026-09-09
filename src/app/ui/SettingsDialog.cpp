@@ -350,7 +350,7 @@ QWidget *SettingsDialog::buildCapturePage()
     auto *countRow = new QHBoxLayout();
     m_quickPasteCount = new QSpinBox(limitsBox);
     m_quickPasteCount->setRange(1, 9);
-    m_quickPasteCount->setToolTip(tr("Number of entries shown in the Meta+Shift+V popup (1–9, mapped to number keys)."));
+    m_quickPasteCount->setToolTip(tr("Number of entries shown in the Meta+V popup (1–9, mapped to number keys)."));
     countRow->addWidget(m_quickPasteCount);
     countRow->addStretch(1);
     limitsForm->addRow(tr("Entries in quick paste menu:"), countRow);
@@ -1088,7 +1088,7 @@ QWidget *SettingsDialog::buildHotkeysPage()
     paletteKey->setStyleSheet(QStringLiteral("font-family: monospace; background: palette(midlight); padding: 2px 6px; border-radius: 4px;"));
     hotkeyForm->addRow(tr("Command palette (in-app):"), paletteKey);
 
-    auto *resetKeys = new QPushButton(tr("Reset to defaults (Meta+V / Meta+Shift+V / Meta+Shift+D)"), hotkeyBox);
+    auto *resetKeys = new QPushButton(tr("Reset to defaults (Meta+V quick paste / Meta+Shift+V window / Meta+Shift+D)"), hotkeyBox);
     connect(resetKeys, &QPushButton::clicked, this, [this, toggleKey, quickKey, deleteKey] {
         KGlobalAccel::self()->setShortcut(m_ctx.hotkeys()->toggleAction(),
                                           HotkeyManager::defaultToggleShortcut());
