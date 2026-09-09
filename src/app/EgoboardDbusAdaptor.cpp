@@ -2,6 +2,7 @@
 
 #include "IClipboardStorage.h"
 #include "FilterSpec.h"
+#include "KWinCursorTracker.h"
 
 #include <QDBusConnection>
 #include <QDBusMessage>
@@ -45,4 +46,15 @@ bool EgoboardDbusAdaptor::Paste(qint64 id)
 {
     emit pasteRequested(id);
     return true;
+}
+
+bool EgoboardDbusAdaptor::ShowQuickPaste()
+{
+    emit showQuickPasteRequested();
+    return true;
+}
+
+void EgoboardDbusAdaptor::ReportCursorPos(int x, int y)
+{
+    KWinCursorTracker::reportGlobalPos(x, y);
 }

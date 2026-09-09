@@ -106,6 +106,8 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
     m_dbus = new EgoboardDbusAdaptor(m_storage, this);
     connect(m_dbus, &EgoboardDbusAdaptor::pasteRequested, this,
             [this](qint64 entryId) { pasteEntry(entryId); });
+    connect(m_dbus, &EgoboardDbusAdaptor::showQuickPasteRequested, this,
+            &ApplicationContext::showQuickPaste);
 
     if (QGuiApplication::platformName() == QLatin1String("wayland"))
         m_tracker = std::make_unique<WaylandActiveWindowTracker>();
