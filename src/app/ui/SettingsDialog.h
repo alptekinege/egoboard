@@ -16,9 +16,10 @@ class QRadioButton;
 class QSpinBox;
 class QTextBrowser;
 
-// Detailed settings dialog — 9 tabs: General / Capture / Privacy / History /
-// Search & Preview / Automation / Shortcuts / Storage / Diagnostics. Every knob
-// is exposed with live diagnostics, all local, no network.
+// Detailed settings dialog — 9 pages in a vertical icon+label sidebar: General /
+// Capture / Privacy / History / Search & Preview / Automation / Shortcuts /
+// Storage / Diagnostics. Every knob is exposed with live diagnostics, all
+// local, no network.
 class SettingsDialog : public QDialog {
     Q_OBJECT
 public:

@@ -49,7 +49,7 @@
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
-#include <QTabWidget>
+#include <QStackedWidget>
 #include <QTextBrowser>
 #include <QTimer>
 #include <QUrl>
@@ -125,20 +125,50 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
     resize(800, 640);
 
     auto *layout = new QVBoxLayout(this);
-    auto *tabs = new QTabWidget(this);
-    // Vertical tab column on the west side (pages read much better as a list).
-    tabs->setTabPosition(QTabWidget::West);
-    tabs->setDocumentMode(true);
-    tabs->addTab(buildGeneralPage(), QIcon::fromTheme(QStringLiteral("configure")), tr("General"));
-    tabs->addTab(buildCapturePage(), QIcon::fromTheme(QStringLiteral("edit-copy")), tr("Capture"));
-    tabs->addTab(buildPrivacyPage(), QIcon::fromTheme(QStringLiteral("security-medium")), tr("Privacy"));
-    tabs->addTab(buildHistoryPage(), QIcon::fromTheme(QStringLiteral("document-open-recent")), tr("History"));
-    tabs->addTab(buildSearchPreviewPage(), QIcon::fromTheme(QStringLiteral("system-search")), tr("Search & Preview"));
-    tabs->addTab(buildAutomationPage(), QIcon::fromTheme(QStringLiteral("applications-engineering")), tr("Automation"));
-    tabs->addTab(buildHotkeysPage(), QIcon::fromTheme(QStringLiteral("preferences-desktop-keyboard")), tr("Shortcuts"));
-    tabs->addTab(buildStoragePage(), QIcon::fromTheme(QStringLiteral("drive-harddisk")), tr("Storage"));
-    tabs->addTab(buildPlatformDiagnosticsPage(), QIcon::fromTheme(QStringLiteral("utilities-system-monitor")), tr("Diagnostics"));
-    layout->addWidget(tabs);
+
+    // Sidebar + page stack: icon-on-top, label-below items stacked vertically
+    // (settings sidebar style) instead of a rotated west tab column.
+    auto *content = new QHBoxLayout();
+    content->setContentsMargins(0, 0, 0, 0);
+    auto *sidebar = new QListWidget(this);
+    sidebar->setViewMode(QListView::IconMode);
+    sidebar->setFlow(QListView::TopToBottom);
+    sidebar->setMovement(QListView::Static);
+    sidebar->setWrapping(false);
+    sidebar->setResizeMode(QListView::Adjust);
+    sidebar->setUniformItemSizes(true);
+    sidebar->setIconSize(QSize(28, 28));
+    sidebar->setGridSize(QSize(146, 64));
+    sidebar->setWordWrap(true);
+    sidebar->setFixedWidth(148);
+    sidebar->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    sidebar->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    sidebar->setStyleSheet(QStringLiteral(
+        "QListWidget { background: transparent; border: none; }"
+        "QListWidget::item { padding: 4px 2px; border-radius: 6px; }"
+        "QListWidget::item:selected { background: palette(highlight); color: palette(highlighted-text); }"));
+
+    auto *stack = new QStackedWidget(this);
+    const auto addPage = [&sidebar, &stack](const QString &iconName, const QString &label,
+                                            QWidget *page) {
+        new QListWidgetItem(QIcon::fromTheme(iconName), label, sidebar);
+        stack->addWidget(page);
+    };
+    addPage(QStringLiteral("configure"), tr("General"), buildGeneralPage());
+    addPage(QStringLiteral("edit-copy"), tr("Capture"), buildCapturePage());
+    addPage(QStringLiteral("security-medium"), tr("Privacy"), buildPrivacyPage());
+    addPage(QStringLiteral("document-open-recent"), tr("History"), buildHistoryPage());
+    addPage(QStringLiteral("system-search"), tr("Search & Preview"), buildSearchPreviewPage());
+    addPage(QStringLiteral("applications-engineering"), tr("Automation"), buildAutomationPage());
+    addPage(QStringLiteral("preferences-desktop-keyboard"), tr("Shortcuts"), buildHotkeysPage());
+    addPage(QStringLiteral("drive-harddisk"), tr("Storage"), buildStoragePage());
+    addPage(QStringLiteral("utilities-system-monitor"), tr("Diagnostics"), buildPlatformDiagnosticsPage());
+    connect(sidebar, &QListWidget::currentRowChanged, stack, &QStackedWidget::setCurrentIndex);
+    sidebar->setCurrentRow(0);
+
+    content->addWidget(sidebar);
+    content->addWidget(stack, 1);
+    layout->addLayout(content, 1);
 
     auto *buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Apply | QDialogButtonBox::Cancel, this);
