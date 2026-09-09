@@ -103,6 +103,7 @@ void ClipboardListModel::fetchMore(const QModelIndex &parent)
         cursor.valid = true;
         cursor.timestampMs = m_rows.last().timestamp;
         cursor.id = m_rows.last().id;
+        cursor.useCount = m_rows.last().useCount; // MostUsed sort mode
     }
     bool hasMore = false;
     const auto page = m_storage->fetchPage(m_filter, cursor, kPageSize, &hasMore);

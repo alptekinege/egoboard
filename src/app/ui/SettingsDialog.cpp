@@ -232,9 +232,13 @@ QWidget *SettingsDialog::buildGeneralPage()
     m_hideOnFocusOut = new QCheckBox(tr("Hide the window when it loses focus (popup-like)"), startupBox);
     m_hideOnFocusOut->setToolTip(tr("When active, the window hides as soon as it loses focus — keeps the desktop tidy."));
     m_autostart = new QCheckBox(tr("Start Egoboard automatically on login (~/.config/autostart)"), startupBox);
+    m_rememberGeometry = new QCheckBox(tr("Remember window size, position and splitter"), startupBox);
+    m_restoreFilter = new QCheckBox(tr("Restore the last filter on start"), startupBox);
     startupLayout->addWidget(m_startVisible);
     startupLayout->addWidget(m_hideOnFocusOut);
     startupLayout->addWidget(m_autostart);
+    startupLayout->addWidget(m_rememberGeometry);
+    startupLayout->addWidget(m_restoreFilter);
     startupLayout->addWidget(makeHint(tr("The window is never truly quit — closing hides to tray. Use tray → Quit to exit. Autostart writes <code>~/.config/autostart/org.egoboard.Egoboard.desktop</code> per XDG spec — works on Plasma X11 and Wayland."), startupBox));
     layout->addWidget(startupBox);
 
@@ -266,6 +270,12 @@ QWidget *SettingsDialog::buildGeneralPage()
     m_densityCombo->addItem(tr("Spacious"), QStringLiteral("spacious"));
     m_densityCombo->setToolTip(tr("Vertical breathing room of the history list rows."));
     appearanceForm->addRow(tr("List density:"), m_densityCombo);
+    m_timestampCombo = new QComboBox(appearanceBox);
+    m_timestampCombo->addItem(tr("Relative (2 h ago)"), QStringLiteral("relative"));
+    m_timestampCombo->addItem(tr("Absolute (2026-09-09 14:30)"), QStringLiteral("absolute"));
+    appearanceForm->addRow(tr("Timestamps:"), m_timestampCombo);
+    m_clock24h = new QCheckBox(tr("Use 24-hour clock in timestamps"), appearanceBox);
+    appearanceLayout->addWidget(m_clock24h);
     appearanceLayout->addLayout(appearanceForm);
     m_toolbarIconOnly = new QCheckBox(tr("Show toolbar buttons as icons only (compact)"), appearanceBox);
     m_toolbarIconOnly->setToolTip(tr("Toolbar buttons appear as logos only — hover for the label. Text+icon otherwise. Takes effect immediately, also while the window is open."));
@@ -1472,6 +1482,14 @@ void SettingsDialog::load()
     if (m_closeAfterPaste) m_closeAfterPaste->setChecked(m_ctx.settings()->closeAfterPaste());
     if (m_bumpOnPaste) m_bumpOnPaste->setChecked(m_ctx.settings()->bumpOnPaste());
     if (m_pasteAsPlainText) m_pasteAsPlainText->setChecked(m_ctx.settings()->pasteAsPlainText());
+    if (m_rememberGeometry)
+        m_rememberGeometry->setChecked(m_ctx.settings()->rememberWindowGeometry());
+    if (m_restoreFilter) m_restoreFilter->setChecked(m_ctx.settings()->restoreLastFilter());
+    if (m_timestampCombo) {
+        const int idx = m_timestampCombo->findData(m_ctx.settings()->timestampStyle());
+        if (idx >= 0) m_timestampCombo->setCurrentIndex(idx);
+    }
+    if (m_clock24h) m_clock24h->setChecked(m_ctx.settings()->clock24h());
     if (m_themeCombo) {
         const int idx = m_themeCombo->findData(m_ctx.settings()->theme());
         if (idx >= 0) m_themeCombo->setCurrentIndex(idx);
@@ -1537,6 +1555,13 @@ void SettingsDialog::save()
     if (m_closeAfterPaste) m_ctx.settings()->setCloseAfterPaste(m_closeAfterPaste->isChecked());
     if (m_bumpOnPaste) m_ctx.settings()->setBumpOnPaste(m_bumpOnPaste->isChecked());
     if (m_pasteAsPlainText) m_ctx.settings()->setPasteAsPlainText(m_pasteAsPlainText->isChecked());
+    if (m_rememberGeometry)
+        m_ctx.settings()->setRememberWindowGeometry(m_rememberGeometry->isChecked());
+    if (m_restoreFilter)
+        m_ctx.settings()->setRestoreLastFilter(m_restoreFilter->isChecked());
+    if (m_timestampCombo)
+        m_ctx.settings()->setTimestampStyle(m_timestampCombo->currentData().toString());
+    if (m_clock24h) m_ctx.settings()->setClock24h(m_clock24h->isChecked());
     if (m_themeCombo)
         m_ctx.settings()->setTheme(m_themeCombo->currentData().toString());
     if (m_toolbarIconOnly)

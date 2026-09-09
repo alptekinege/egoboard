@@ -165,13 +165,59 @@ QVector<ClipboardRecord> StorageManager::fetchPage(const FilterSpec &filter, con
         where << QStringLiteral("pinned = 1");
     if (filter.sensitiveOnly)
         where << QStringLiteral("sensitive = 1");
+    // Entry must carry EVERY tag in the filter (AND semantics via subqueries).
+    for (const QString &tag : filter.tags) {
+        const QString placeholder = addBind(tag);
+        where << QStringLiteral(
+            "id IN (SELECT et.entry_id FROM entry_tags et"
+            " JOIN tags t ON t.id = et.tag_id WHERE t.name = %1 COLLATE NOCASE)")
+                 .arg(placeholder);
+    }
     if (cursor.valid) {
-        const QString tsPlaceholder = addBind(cursor.timestampMs);
-        const QString idPlaceholder = addBind(cursor.id);
-        where << QStringLiteral("(timestamp_ms < %1 OR (timestamp_ms = %1 AND id < %2))")
-                     .arg(tsPlaceholder, idPlaceholder);
+        // Keyset pagination condition follows the active sort order so pages
+        // stay stable whatever the mode.
+        switch (filter.sortMode) {
+        case FilterSpec::SortMode::Oldest: {
+            const QString tsPlaceholder = addBind(cursor.timestampMs);
+            const QString idPlaceholder = addBind(cursor.id);
+            where << QStringLiteral("(timestamp_ms > %1 OR (timestamp_ms = %1 AND id > %2))")
+                         .arg(tsPlaceholder, idPlaceholder);
+            break;
+        }
+        case FilterSpec::SortMode::MostUsed: {
+            const QString ucPlaceholder = addBind(cursor.useCount);
+            const QString tsPlaceholder = addBind(cursor.timestampMs);
+            const QString idPlaceholder = addBind(cursor.id);
+            where << QStringLiteral(
+                             "(use_count < %1 OR (use_count = %1 AND"
+                             " (timestamp_ms < %2 OR (timestamp_ms = %2 AND id < %3))))")
+                             .arg(ucPlaceholder, tsPlaceholder, idPlaceholder);
+            break;
+        }
+        case FilterSpec::SortMode::Newest:
+        default: {
+            const QString tsPlaceholder = addBind(cursor.timestampMs);
+            const QString idPlaceholder = addBind(cursor.id);
+            where << QStringLiteral("(timestamp_ms < %1 OR (timestamp_ms = %1 AND id < %2))")
+                         .arg(tsPlaceholder, idPlaceholder);
+            break;
+        }
+        }
     }
 
+    QString orderBy;
+    switch (filter.sortMode) {
+    case FilterSpec::SortMode::Oldest:
+        orderBy = QStringLiteral(" ORDER BY timestamp_ms ASC, id ASC LIMIT :lim");
+        break;
+    case FilterSpec::SortMode::MostUsed:
+        orderBy = QStringLiteral(" ORDER BY use_count DESC, timestamp_ms DESC, id DESC LIMIT :lim");
+        break;
+    case FilterSpec::SortMode::Newest:
+    default:
+        orderBy = QStringLiteral(" ORDER BY timestamp_ms DESC, id DESC LIMIT :lim");
+        break;
+    }
     QString sql = QStringLiteral(
         "SELECT id, timestamp_ms, content_type, content_hash, preview, size_bytes, pinned,"
         " sensitive, use_count, source_app, source_window,"
@@ -179,7 +225,7 @@ QVector<ClipboardRecord> StorageManager::fetchPage(const FilterSpec &filter, con
         " FROM entries");
     if (!where.isEmpty())
         sql += QStringLiteral(" WHERE ") + where.join(QStringLiteral(" AND "));
-    sql += QStringLiteral(" ORDER BY timestamp_ms DESC, id DESC LIMIT :lim");
+    sql += orderBy;
 
     QSqlQuery query(m_db);
     query.prepare(sql);
@@ -375,6 +421,135 @@ bool StorageManager::touchEntry(qint64 id)
     }
     emit entryTouched(id);
     return true;
+}
+
+QStringList StorageManager::allTags() const
+{
+    QStringList tags;
+    if (!m_db.isOpen())
+        return tags;
+    QSqlQuery query(m_db);
+    if (!query.exec(QStringLiteral("SELECT name FROM tags ORDER BY name COLLATE NOCASE")))
+        return tags;
+    while (query.next())
+        tags.append(query.value(0).toString());
+    return tags;
+}
+
+QStringList StorageManager::tagsForEntry(qint64 entryId) const
+{
+    QStringList tags;
+    if (!m_db.isOpen() || entryId <= 0)
+        return tags;
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral(
+        "SELECT t.name FROM tags t JOIN entry_tags et ON et.tag_id = t.id"
+        " WHERE et.entry_id = :id ORDER BY t.name COLLATE NOCASE"));
+    query.bindValue(QStringLiteral(":id"), entryId);
+    if (!query.exec())
+        return tags;
+    while (query.next())
+        tags.append(query.value(0).toString());
+    return tags;
+}
+
+bool StorageManager::addTag(qint64 entryId, const QString &tag)
+{
+    if (!m_db.isOpen() || entryId <= 0 || tag.trimmed().isEmpty())
+        return false;
+    const QString name = tag.trimmed();
+
+    if (!m_db.transaction())
+        return false;
+    QSqlQuery insertTag(m_db);
+    insertTag.prepare(QStringLiteral("INSERT OR IGNORE INTO tags (name) VALUES (:name)"));
+    insertTag.bindValue(QStringLiteral(":name"), name);
+    if (!insertTag.exec()) {
+        qWarning("egoboard: addTag failed: %s", qPrintable(insertTag.lastError().text()));
+        m_db.rollback();
+        return false;
+    }
+    QSqlQuery link(m_db);
+    link.prepare(QStringLiteral(
+        "INSERT OR IGNORE INTO entry_tags (entry_id, tag_id)"
+        " VALUES (:id, (SELECT id FROM tags WHERE name = :name COLLATE NOCASE))"));
+    link.bindValue(QStringLiteral(":id"), entryId);
+    link.bindValue(QStringLiteral(":name"), name);
+    if (!link.exec() || !m_db.commit()) {
+        qWarning("egoboard: addTag link failed: %s", qPrintable(link.lastError().text()));
+        m_db.rollback();
+        return false;
+    }
+    return true;
+}
+
+bool StorageManager::removeTag(qint64 entryId, const QString &tag)
+{
+    if (!m_db.isOpen() || entryId <= 0 || tag.trimmed().isEmpty())
+        return false;
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral(
+        "DELETE FROM entry_tags WHERE entry_id = :id"
+        " AND tag_id = (SELECT id FROM tags WHERE name = :name COLLATE NOCASE)"));
+    query.bindValue(QStringLiteral(":id"), entryId);
+    query.bindValue(QStringLiteral(":name"), tag.trimmed());
+    if (!query.exec()) {
+        qWarning("egoboard: removeTag failed: %s", qPrintable(query.lastError().text()));
+        return false;
+    }
+    if (query.numRowsAffected() <= 0)
+        return false; // the entry did not carry the tag
+    // Tags nobody uses anymore disappear from the list.
+    QSqlQuery prune(m_db);
+    prune.exec(QStringLiteral(
+        "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM entry_tags)"));
+    return true;
+}
+
+QList<SavedSearch> StorageManager::savedSearches() const
+{
+    QList<SavedSearch> searches;
+    if (!m_db.isOpen())
+        return searches;
+    QSqlQuery query(m_db);
+    if (!query.exec(QStringLiteral("SELECT id, name, filter FROM saved_searches ORDER BY name COLLATE NOCASE")))
+        return searches;
+    while (query.next()) {
+        SavedSearch search;
+        search.id = query.value(0).toLongLong();
+        search.name = query.value(1).toString();
+        search.filter = FilterSpec::fromJsonString(query.value(2).toString());
+        searches.append(search);
+    }
+    return searches;
+}
+
+qint64 StorageManager::addSavedSearch(const QString &name, const FilterSpec &filter)
+{
+    if (!m_db.isOpen() || name.trimmed().isEmpty())
+        return 0;
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral(
+        "INSERT OR REPLACE INTO saved_searches (name, filter) VALUES (:name, :filter)"));
+    query.bindValue(QStringLiteral(":name"), name.trimmed());
+    query.bindValue(QStringLiteral(":filter"), filter.toJsonString());
+    if (!query.exec()) {
+        qWarning("egoboard: addSavedSearch failed: %s", qPrintable(query.lastError().text()));
+        return 0;
+    }
+    // INSERT OR REPLACE keeps the row id when the name already existed.
+    const qint64 id = query.lastInsertId().toLongLong();
+    return id > 0 ? id : 0;
+}
+
+bool StorageManager::removeSavedSearch(qint64 id)
+{
+    if (!m_db.isOpen() || id <= 0)
+        return false;
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral("DELETE FROM saved_searches WHERE id = :id"));
+    query.bindValue(QStringLiteral(":id"), id);
+    return query.exec() && query.numRowsAffected() > 0;
 }
 
 QStringList StorageManager::sourceApps() const

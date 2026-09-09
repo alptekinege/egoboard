@@ -206,6 +206,21 @@ bool ensure(QSqlDatabase &db)
             " template TEXT NOT NULL,"
             " shortcut TEXT,"
             " created_ms INTEGER NOT NULL)"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS tags ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " name TEXT NOT NULL UNIQUE COLLATE NOCASE)"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS entry_tags ("
+            " entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,"
+            " tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,"
+            " PRIMARY KEY(entry_id, tag_id))"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_entry_tags_tag ON entry_tags(tag_id)"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS saved_searches ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " name TEXT NOT NULL UNIQUE,"
+            " filter TEXT NOT NULL)"),
     };
 
     for (const QString &statement : statements) {

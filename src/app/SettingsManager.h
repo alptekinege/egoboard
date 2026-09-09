@@ -147,6 +147,28 @@ public:
     QString listDensity() const;
     void setListDensity(const QString &density);
 
+    // History list sort order: 0 = newest, 1 = oldest, 2 = most used
+    int sortMode() const; // 0..2, invalid values normalize to 0
+    void setSortMode(int mode);
+
+    // Timestamp rendering in the list: "relative" | "absolute"
+    QString timestampStyle() const;
+    void setTimestampStyle(const QString &style);
+    bool clock24h() const; // 24-hour clock in timestamps (default on)
+    void setClock24h(bool enable);
+
+    // Window geometry / session state
+    bool rememberWindowGeometry() const; // size, position, splitter (default on)
+    void setRememberWindowGeometry(bool remember);
+    bool restoreLastFilter() const; // re-apply the last filter on start (default off)
+    void setRestoreLastFilter(bool restore);
+    QByteArray windowGeometry() const;
+    void setWindowGeometry(const QByteArray &geometry);
+    QByteArray splitterState() const;
+    void setSplitterState(const QByteArray &state);
+    QString lastFilter() const; // serialized FilterSpec JSON
+    void setLastFilter(const QString &filterJson);
+
     bool encryptionEnabled() const;
     void setEncryptionEnabled(bool enabled);
 

@@ -13,8 +13,10 @@ class PreviewPane;
 class QComboBox;
 class QLineEdit;
 class QListView;
+class QSplitter;
 class QTimer;
 class QToolBar;
+class QToolButton;
 class CommandPalette;
 class TimelineStrip;
 
@@ -29,10 +31,13 @@ public:
     void applyCurrentFilter();
     void pasteEntry(qint64 entryId);
     void refreshAppFilter();
+    void refreshTagFilter();
+    void applySavedSearch(const FilterSpec &filter);
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
     void changeEvent(QEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
 
 private:
     void buildUi();
@@ -45,6 +50,7 @@ private:
     void deleteFiltered(); // bulk delete of everything matching the current filter
     void togglePinSelected();
     void showContextMenu(const QPoint &pos);
+    void buildSavedSearchesMenu();
     void openSettings();
     void clearHistory();
     void updateActionStates();
@@ -63,6 +69,10 @@ private:
     QComboBox *m_typeCombo = nullptr;
     QComboBox *m_dateCombo = nullptr;
     QComboBox *m_appCombo = nullptr;
+    QComboBox *m_tagCombo = nullptr;
+    QComboBox *m_sortCombo = nullptr;
+    QSplitter *m_splitter = nullptr;
+    QToolButton *m_savedSearchesButton = nullptr;
     QTimer *m_searchDebounce = nullptr;
 
     // toolbar / context actions

@@ -555,6 +555,101 @@ void SettingsManager::setListDensity(const QString &density)
     save();
 }
 
+int SettingsManager::sortMode() const
+{
+    const int v = m_config->group(kGroupUi).readEntry("SortMode", 0);
+    return (v >= 0 && v <= 2) ? v : 0;
+}
+
+void SettingsManager::setSortMode(int mode)
+{
+    m_config->group(kGroupUi).writeEntry("SortMode", (mode >= 0 && mode <= 2) ? mode : 0);
+    save();
+}
+
+QString SettingsManager::timestampStyle() const
+{
+    const QString v = m_config->group(kGroupUi).readEntry("TimestampStyle", QStringLiteral("relative"));
+    if (v == QLatin1String("absolute"))
+        return v;
+    return QStringLiteral("relative");
+}
+
+void SettingsManager::setTimestampStyle(const QString &style)
+{
+    QString v = style;
+    if (v != QLatin1String("absolute"))
+        v = QStringLiteral("relative");
+    m_config->group(kGroupUi).writeEntry("TimestampStyle", v);
+    save();
+}
+
+bool SettingsManager::clock24h() const
+{
+    return m_config->group(kGroupUi).readEntry("Clock24h", true);
+}
+
+void SettingsManager::setClock24h(bool enable)
+{
+    m_config->group(kGroupUi).writeEntry("Clock24h", enable);
+    save();
+}
+
+bool SettingsManager::rememberWindowGeometry() const
+{
+    return m_config->group(kGroupUi).readEntry("RememberWindowGeometry", true);
+}
+
+void SettingsManager::setRememberWindowGeometry(bool remember)
+{
+    m_config->group(kGroupUi).writeEntry("RememberWindowGeometry", remember);
+    save();
+}
+
+bool SettingsManager::restoreLastFilter() const
+{
+    return m_config->group(kGroupUi).readEntry("RestoreLastFilter", false);
+}
+
+void SettingsManager::setRestoreLastFilter(bool restore)
+{
+    m_config->group(kGroupUi).writeEntry("RestoreLastFilter", restore);
+    save();
+}
+
+QByteArray SettingsManager::windowGeometry() const
+{
+    return m_config->group(kGroupUi).readEntry("WindowGeometry", QByteArray());
+}
+
+void SettingsManager::setWindowGeometry(const QByteArray &geometry)
+{
+    m_config->group(kGroupUi).writeEntry("WindowGeometry", geometry);
+    save();
+}
+
+QByteArray SettingsManager::splitterState() const
+{
+    return m_config->group(kGroupUi).readEntry("SplitterState", QByteArray());
+}
+
+void SettingsManager::setSplitterState(const QByteArray &state)
+{
+    m_config->group(kGroupUi).writeEntry("SplitterState", state);
+    save();
+}
+
+QString SettingsManager::lastFilter() const
+{
+    return m_config->group(kGroupUi).readEntry("LastFilter", QString());
+}
+
+void SettingsManager::setLastFilter(const QString &filterJson)
+{
+    m_config->group(kGroupUi).writeEntry("LastFilter", filterJson);
+    save();
+}
+
 bool SettingsManager::encryptionEnabled() const
 {
     return m_config->group(kGroupHistory).readEntry("EncryptionEnabled", false);

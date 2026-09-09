@@ -28,6 +28,8 @@
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QIcon>
+#include <QInputDialog>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -39,6 +41,7 @@
 #include <QTimer>
 #include <QShortcut>
 #include <QToolBar>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 using DateRange = ExportImportDialogs::DateRange;
@@ -66,6 +69,21 @@ MainWindow::MainWindow(ApplicationContext &context, QWidget *parent)
     buildUi();
     connectSignals();
     applyCurrentFilter();
+
+    // Session state (both optional): geometry/splitter and the last filter.
+    if (m_ctx.settings()->rememberWindowGeometry()) {
+        const QByteArray geometry = m_ctx.settings()->windowGeometry();
+        if (!geometry.isEmpty())
+            restoreGeometry(geometry);
+        const QByteArray splitter = m_ctx.settings()->splitterState();
+        if (!splitter.isEmpty() && m_splitter)
+            m_splitter->restoreState(splitter);
+    }
+    if (m_ctx.settings()->restoreLastFilter()) {
+        const FilterSpec saved = FilterSpec::fromJsonString(m_ctx.settings()->lastFilter());
+        if (!saved.isTrivial())
+            applySavedSearch(saved);
+    }
 }
 
 void MainWindow::buildUi()
@@ -105,6 +123,35 @@ void MainWindow::buildUi()
     refreshAppFilter();
     filterRow->addWidget(m_appCombo, 1);
 
+    m_tagCombo = new QComboBox(central);
+    m_tagCombo->setToolTip(tr("Filter by tag — an entry matches when it carries the selected tag."));
+    refreshTagFilter();
+    filterRow->addWidget(m_tagCombo);
+
+    m_sortCombo = new QComboBox(central);
+    m_sortCombo->addItem(tr("Newest first"), int(FilterSpec::SortMode::Newest));
+    m_sortCombo->addItem(tr("Oldest first"), int(FilterSpec::SortMode::Oldest));
+    m_sortCombo->addItem(tr("Most used"), int(FilterSpec::SortMode::MostUsed));
+    m_sortCombo->setToolTip(tr("Order of the history list. Most used ranks entries by their use count."));
+    {
+        const int sortIndex = m_sortCombo->findData(m_ctx.settings()->sortMode());
+        if (sortIndex >= 0)
+            m_sortCombo->setCurrentIndex(sortIndex);
+    }
+    filterRow->addWidget(m_sortCombo);
+
+    // Saved searches ("smart folders"): apply or store the current filter.
+    m_savedSearchesButton = new QToolButton(central);
+    m_savedSearchesButton->setText(tr("Searches"));
+    m_savedSearchesButton->setIcon(QIcon::fromTheme(QStringLiteral("folder-saved-search")));
+    m_savedSearchesButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_savedSearchesButton->setPopupMode(QToolButton::InstantPopup);
+    m_savedSearchesButton->setToolTip(tr("Saved searches — apply one, or save the current filter combination."));
+    QMenu *searchesMenu = new QMenu(m_savedSearchesButton);
+    connect(searchesMenu, &QMenu::aboutToShow, this, &MainWindow::buildSavedSearchesMenu);
+    m_savedSearchesButton->setMenu(searchesMenu);
+    filterRow->addWidget(m_savedSearchesButton);
+
     layout->addLayout(filterRow);
 
     // Timeline strip: 14-day histogram, click to filter by day
@@ -116,7 +163,7 @@ void MainWindow::buildUi()
     auto *splitter = new QSplitter(Qt::Horizontal, central);
 
     m_model = new ClipboardListModel(m_ctx.storage(), this);
-    m_delegate = new EntryDelegate(m_ctx.bookmarks(), this);
+    m_delegate = new EntryDelegate(m_ctx.bookmarks(), m_ctx.settings(), this);
     m_delegate->setRowPadding(densityPadding(m_ctx.settings()->listDensity()));
 
     m_list = new QListView(splitter);
@@ -140,6 +187,7 @@ void MainWindow::buildUi()
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
     splitter->setSizes({420, 260});
+    m_splitter = splitter;
     layout->addWidget(splitter, 1);
 
     central->setLayout(layout);
@@ -308,6 +356,12 @@ void MainWindow::connectSignals()
         }
     });
     connect(m_appCombo, &QComboBox::currentIndexChanged, this, &MainWindow::applyCurrentFilter);
+    connect(m_tagCombo, &QComboBox::currentIndexChanged, this, &MainWindow::applyCurrentFilter);
+    connect(m_sortCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (index >= 0)
+            m_ctx.settings()->setSortMode(m_sortCombo->itemData(index).toInt());
+        applyCurrentFilter();
+    });
 
     auto selectionModel = m_list->selectionModel();
     connect(selectionModel, &QItemSelectionModel::selectionChanged, this,
@@ -319,6 +373,7 @@ void MainWindow::connectSignals()
             [this] { refreshAppFilter(); });
     connect(m_ctx.storage(), &StorageManager::storageReset, this, [this] {
         refreshAppFilter();
+        refreshTagFilter();
         m_preview->showEmpty();
     });
     // Live appearance changes (theme is applied globally in ApplicationContext;
@@ -350,6 +405,117 @@ void MainWindow::refreshAppFilter()
     m_appCombo->blockSignals(false);
 }
 
+void MainWindow::refreshTagFilter()
+{
+    const QString current = m_tagCombo->currentData().toString();
+    m_tagCombo->blockSignals(true);
+    m_tagCombo->clear();
+    m_tagCombo->addItem(tr("All tags"), QString());
+    const QStringList tags = m_ctx.storage()->allTags();
+    for (const QString &tag : tags)
+        m_tagCombo->addItem(tag, tag);
+    m_tagCombo->setEnabled(tags.size() > 0);
+    const int index = m_tagCombo->findData(current);
+    if (index >= 0)
+        m_tagCombo->setCurrentIndex(index);
+    m_tagCombo->blockSignals(false);
+}
+
+void MainWindow::applySavedSearch(const FilterSpec &filter)
+{
+    // Mirror the saved filter onto the widgets so the UI stays the source of
+    // truth; anything not representable in the presets lands in "Custom range…".
+    m_search->setText(filter.searchText);
+    const int typeIndex = m_typeCombo->findData(filter.contentType);
+    m_typeCombo->setCurrentIndex(typeIndex >= 0 ? typeIndex : 0);
+    const int appIndex = m_appCombo->findData(filter.sourceApp);
+    m_appCombo->setCurrentIndex(appIndex >= 0 ? appIndex : 0);
+    const QString tag = filter.tags.isEmpty() ? QString() : filter.tags.first();
+    const int tagIndex = m_tagCombo->findData(tag);
+    m_tagCombo->setCurrentIndex(tagIndex >= 0 ? tagIndex : 0);
+    const int sortIndex = m_sortCombo->findData(int(filter.sortMode));
+    m_sortCombo->setCurrentIndex(sortIndex >= 0 ? sortIndex : 0);
+    m_groupFilter = filter.groupId.value_or(0);
+    if (m_pinnedOnlyAction)
+        m_pinnedOnlyAction->setChecked(filter.pinnedOnly);
+    if (m_sensitiveAction)
+        m_sensitiveAction->setChecked(filter.sensitiveOnly);
+    if (filter.fromMs > 0 || filter.toMs > 0) {
+        m_lastRange = DateRange{true, filter.fromMs, filter.toMs};
+        const int customIndex = m_dateCombo->findData(99);
+        if (customIndex >= 0)
+            m_dateCombo->setCurrentIndex(customIndex);
+    } else {
+        m_lastRange = DateRange{};
+        m_dateCombo->setCurrentIndex(0);
+    }
+    applyCurrentFilter();
+}
+
+void MainWindow::buildSavedSearchesMenu()
+{
+    QMenu *menu = m_savedSearchesButton->menu();
+    if (!menu)
+        return;
+    menu->clear();
+
+    QAction *saveCurrent = menu->addAction(QIcon::fromTheme(QStringLiteral("document-save")),
+                                           tr("Save current filter…"));
+    connect(saveCurrent, &QAction::triggered, this, [this] {
+        const FilterSpec current = m_model->filter();
+        bool ok = false;
+        const QString name = QInputDialog::getText(this, tr("Save search"),
+                                                   tr("Name for this search:"),
+                                                   QLineEdit::Normal,
+                                                   current.searchText.isEmpty()
+                                                       ? QString()
+                                                       : current.searchText,
+                                                   &ok);
+        if (!ok || name.trimmed().isEmpty())
+            return;
+        if (m_ctx.storage()->addSavedSearch(name, current) == 0)
+            QMessageBox::warning(this, tr("Save search"), tr("Could not save the search."));
+    });
+    menu->addSeparator();
+
+    const auto searches = m_ctx.storage()->savedSearches();
+    if (searches.isEmpty()) {
+        QAction *empty = menu->addAction(tr("(no saved searches yet)"));
+        empty->setEnabled(false);
+        return;
+    }
+    for (const SavedSearch &search : searches) {
+        QAction *apply = menu->addAction(QIcon::fromTheme(QStringLiteral("folder-saved-search")),
+                                         search.name);
+        connect(apply, &QAction::triggered, this,
+                [this, filter = search.filter] { applySavedSearch(filter); });
+    }
+    menu->addSeparator();
+    QAction *remove = menu->addAction(QIcon::fromTheme(QStringLiteral("list-remove")),
+                                      tr("Delete saved search…"));
+    remove->setEnabled(true);
+    connect(remove, &QAction::triggered, this, [this] {
+        const auto searches = m_ctx.storage()->savedSearches();
+        if (searches.isEmpty())
+            return;
+        QStringList names;
+        for (const SavedSearch &search : searches)
+            names << search.name;
+        bool ok = false;
+        const QString chosen = QInputDialog::getItem(this, tr("Delete saved search"),
+                                                     tr("Search to delete:"), names, 0, false,
+                                                     &ok);
+        if (!ok)
+            return;
+        for (const SavedSearch &search : searches) {
+            if (search.name == chosen) {
+                m_ctx.storage()->removeSavedSearch(search.id);
+                return;
+            }
+        }
+    });
+}
+
 void MainWindow::applyCurrentFilter()
 {
     FilterSpec filter;
@@ -361,6 +527,11 @@ void MainWindow::applyCurrentFilter()
         filter.sensitiveOnly = true;
     if (m_pinnedOnlyAction && m_pinnedOnlyAction->isChecked())
         filter.pinnedOnly = true;
+    const QString tagFilter = m_tagCombo ? m_tagCombo->currentData().toString() : QString();
+    if (!tagFilter.isEmpty())
+        filter.tags << tagFilter;
+    if (m_sortCombo)
+        filter.sortMode = static_cast<FilterSpec::SortMode>(m_sortCombo->currentData().toInt());
 
     const int datePreset = m_dateCombo->currentData().toInt();
     const QDateTime now = QDateTime::currentDateTime();
@@ -524,6 +695,43 @@ void MainWindow::showContextMenu(const QPoint &pos)
             addVariant(tr("Image → PNG file"), ApplicationContext::PasteVariant::ImageAsPngFile,
                        isImage);
         }
+    }
+
+    // Tags submenu: check the tags the entry carries; toggling adds/removes.
+    {
+        const qint64 entryId = index.data(ClipboardListModel::IdRole).toLongLong();
+        const QStringList entryTags = m_ctx.storage()->tagsForEntry(entryId);
+        const QStringList availableTags = m_ctx.storage()->allTags();
+        QMenu *tagsMenu = menu.addMenu(tr("Tags"));
+        for (const QString &tag : availableTags) {
+            QAction *a = tagsMenu->addAction(tag);
+            a->setCheckable(true);
+            a->setChecked(entryTags.contains(tag));
+            connect(a, &QAction::toggled, this, [this, entryId, tag](bool checked) {
+                if (checked)
+                    m_ctx.storage()->addTag(entryId, tag);
+                else
+                    m_ctx.storage()->removeTag(entryId, tag);
+                refreshTagFilter();
+                // Re-run the filter only when the list is tag-filtered, so
+                // casual tagging never jumps the scroll position.
+                if (!m_tagCombo->currentData().toString().isEmpty())
+                    applyCurrentFilter();
+            });
+        }
+        tagsMenu->addSeparator();
+        QAction *newTag = tagsMenu->addAction(QIcon::fromTheme(QStringLiteral("list-add")),
+                                              tr("New tag…"));
+        connect(newTag, &QAction::triggered, this, [this, entryId] {
+            bool ok = false;
+            const QString tag = QInputDialog::getText(this, tr("New tag"), tr("Tag name:"),
+                                                      QLineEdit::Normal, {}, &ok);
+            if (!ok || tag.trimmed().isEmpty())
+                return;
+            m_ctx.storage()->addTag(entryId, tag);
+            refreshTagFilter();
+            applyCurrentFilter();
+        });
     }
 
     const bool pinned = index.data(ClipboardListModel::PinnedRole).toBool();
@@ -823,4 +1031,17 @@ void MainWindow::changeEvent(QEvent *event)
             && QApplication::activePopupWidget() == nullptr)
             hide();
     }
+}
+
+void MainWindow::hideEvent(QHideEvent *event)
+{
+    QMainWindow::hideEvent(event);
+    // Persist the session state while hidden: the next start restores it.
+    if (m_ctx.settings()->rememberWindowGeometry()) {
+        m_ctx.settings()->setWindowGeometry(saveGeometry());
+        if (m_splitter)
+            m_ctx.settings()->setSplitterState(m_splitter->saveState());
+    }
+    if (m_ctx.settings()->restoreLastFilter() && m_model)
+        m_ctx.settings()->setLastFilter(m_model->filter().toJsonString());
 }

@@ -67,6 +67,10 @@ private:
     QCheckBox *m_closeAfterPaste = nullptr;
     QCheckBox *m_bumpOnPaste = nullptr;
     QCheckBox *m_pasteAsPlainText = nullptr;
+    QCheckBox *m_rememberGeometry = nullptr;
+    QCheckBox *m_restoreFilter = nullptr;
+    QComboBox *m_timestampCombo = nullptr;
+    QCheckBox *m_clock24h = nullptr;
 
     // Capture
     QCheckBox *m_primarySelection = nullptr;

@@ -32,6 +32,15 @@ public:
     bool setPinned(qint64 id, bool pinned) override;
     bool setOcrText(qint64 id, const QString &ocrText) override;
     bool touchEntry(qint64 id) override;
+
+    QStringList allTags() const override;
+    QStringList tagsForEntry(qint64 entryId) const override;
+    bool addTag(qint64 entryId, const QString &tag) override;
+    bool removeTag(qint64 entryId, const QString &tag) override;
+
+    QList<SavedSearch> savedSearches() const override;
+    qint64 addSavedSearch(const QString &name, const FilterSpec &filter) override;
+    bool removeSavedSearch(qint64 id) override;
     QStringList sourceApps() const override;
     StorageStats stats() const override;
     int enforceDiskCap(qint64 maxBytes) override;

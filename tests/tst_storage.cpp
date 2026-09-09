@@ -21,6 +21,9 @@ private slots:
     void diskCap();
     void maxEntriesCap();
     void touchEntryBump();
+    void tagLifecycleAndFilter();
+    void savedSearchesRoundtrip();
+    void sortModes();
     void emitsHistorySignals();
     void modelRefreshesOnHistoryChanges();
     void binaryPayloadAndMetadata();
@@ -255,6 +258,158 @@ void TestStorage::touchEntryBump()
     QCOMPARE(touchedSpy.count(), 1);
     QVERIFY(!m_storage->touchEntry(0));
     QCOMPARE(touchedSpy.count(), 1);
+}
+
+void TestStorage::tagLifecycleAndFilter()
+{
+    const qint64 e1 = m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("tg1"), QStringLiteral("one"), 1000));
+    const qint64 e2 = m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("tg2"), QStringLiteral("two"), 2000));
+    const qint64 e3 = m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("tg3"), QStringLiteral("three"), 3000));
+    QVERIFY(e1 != 0 && e2 != 0 && e3 != 0);
+
+    QVERIFY(m_storage->addTag(e1, QStringLiteral("work")));
+    QVERIFY(m_storage->addTag(e2, QStringLiteral("work")));
+    QVERIFY(m_storage->addTag(e2, QStringLiteral("urgent")));
+
+    QCOMPARE(m_storage->tagsForEntry(e1), QStringList{QStringLiteral("work")});
+    QCOMPARE(m_storage->tagsForEntry(e2),
+             (QStringList{QStringLiteral("urgent"), QStringLiteral("work")}));
+    QCOMPARE(m_storage->tagsForEntry(e3), QStringList());
+
+    // Tag names are case-insensitive and unique.
+    QVERIFY(m_storage->addTag(e1, QStringLiteral("WORK")));
+    QCOMPARE(m_storage->allTags(),
+             (QStringList{QStringLiteral("urgent"), QStringLiteral("work")}));
+    QCOMPARE(m_storage->tagsForEntry(e1).size(), 1);
+
+    // Tag filters use ALL semantics: an entry must carry every listed tag.
+    FilterSpec filter;
+    filter.tags = {QStringLiteral("work")};
+    QCOMPARE(m_storage->fetchPage(filter, PageCursor{}, 10).size(), 2);
+    filter.tags = {QStringLiteral("work"), QStringLiteral("urgent")};
+    QCOMPARE(m_storage->fetchPage(filter, PageCursor{}, 10).size(), 1);
+    QCOMPARE(m_storage->fetchPage(filter, PageCursor{}, 10).first().id, e2);
+    filter.tags = {QStringLiteral("missing")};
+    QVERIFY(m_storage->fetchPage(filter, PageCursor{}, 10).isEmpty());
+
+    // Removing the last use of a tag deletes the tag itself.
+    QVERIFY(m_storage->removeTag(e2, QStringLiteral("urgent")));
+    QCOMPARE(m_storage->allTags(), QStringList{QStringLiteral("work")});
+
+    // Unknown entry ids fail cleanly.
+    QVERIFY(!m_storage->addTag(999999, QStringLiteral("work")));
+    QVERIFY(!m_storage->removeTag(999999, QStringLiteral("work")));
+
+    // Deleting an entry cascades its tag links.
+    QVERIFY(m_storage->remove(e1));
+    QCOMPARE(m_storage->tagsForEntry(e1), QStringList());
+}
+
+void TestStorage::savedSearchesRoundtrip()
+{
+    QVERIFY(m_storage->savedSearches().isEmpty());
+
+    FilterSpec filter;
+    filter.searchText = QStringLiteral("hello");
+    filter.contentType = int(ContentType::Text);
+    filter.fromMs = 1000;
+    filter.toMs = 2000;
+    filter.sourceApp = QStringLiteral("kate");
+    filter.pinnedOnly = true;
+    filter.groupId = qint64(7);
+    filter.tags = {QStringLiteral("work")};
+    filter.sortMode = FilterSpec::SortMode::MostUsed;
+
+    const qint64 id = m_storage->addSavedSearch(QStringLiteral("My search"), filter);
+    QVERIFY(id != 0);
+
+    const auto searches = m_storage->savedSearches();
+    QCOMPARE(searches.size(), 1);
+    QCOMPARE(searches.first().id, id);
+    QCOMPARE(searches.first().name, QStringLiteral("My search"));
+    const FilterSpec loaded = searches.first().filter;
+    QCOMPARE(loaded.searchText, filter.searchText);
+    QCOMPARE(loaded.contentType, filter.contentType);
+    QCOMPARE(loaded.fromMs, filter.fromMs);
+    QCOMPARE(loaded.toMs, filter.toMs);
+    QCOMPARE(loaded.sourceApp, filter.sourceApp);
+    QCOMPARE(loaded.pinnedOnly, filter.pinnedOnly);
+    QVERIFY(loaded.groupId.has_value());
+    QCOMPARE(loaded.groupId.value(), qint64(7));
+    QCOMPARE(loaded.tags, filter.tags);
+    QCOMPARE(loaded.sortMode, FilterSpec::SortMode::MostUsed);
+
+    // Re-saving under the same name replaces the row (upsert, new row id).
+    FilterSpec updated;
+    updated.searchText = QStringLiteral("bye");
+    const qint64 replacedId = m_storage->addSavedSearch(QStringLiteral("My search"), updated);
+    QVERIFY(replacedId != 0);
+    QCOMPARE(m_storage->savedSearches().size(), 1);
+    QCOMPARE(m_storage->savedSearches().first().filter.searchText, QStringLiteral("bye"));
+
+    QVERIFY(m_storage->removeSavedSearch(replacedId));
+    QVERIFY(m_storage->savedSearches().isEmpty());
+    QVERIFY(!m_storage->removeSavedSearch(replacedId)); // already gone
+
+    // Empty names are rejected.
+    QCOMPARE(m_storage->addSavedSearch(QStringLiteral("   "), filter), qint64(0));
+}
+
+void TestStorage::sortModes()
+{
+    const qint64 a = m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("s1"), QStringLiteral("a"), 1000));
+    const qint64 b = m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("s2"), QStringLiteral("b"), 2000));
+    const qint64 c = m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("s3"), QStringLiteral("c"), 3000));
+    QVERIFY(a != 0 && b != 0 && c != 0);
+
+    // Newest (default): 3000, 2000, 1000.
+    auto page = m_storage->fetchPage(FilterSpec{}, PageCursor{}, 10);
+    QCOMPARE(page.size(), 3);
+    QCOMPARE(page.at(0).timestamp, qint64(3000));
+    QCOMPARE(page.at(2).timestamp, qint64(1000));
+
+    // Oldest: reversed, and the keyset cursor continues after the last row.
+    FilterSpec oldest;
+    oldest.sortMode = FilterSpec::SortMode::Oldest;
+    page = m_storage->fetchPage(oldest, PageCursor{}, 2);
+    QCOMPARE(page.size(), 2);
+    QCOMPARE(page.at(0).timestamp, qint64(1000));
+    QCOMPARE(page.at(1).timestamp, qint64(2000));
+    PageCursor cursor;
+    cursor.valid = true;
+    cursor.timestampMs = page.last().timestamp;
+    cursor.id = page.last().id;
+    page = m_storage->fetchPage(oldest, cursor, 2);
+    QCOMPARE(page.size(), 1);
+    QCOMPARE(page.at(0).timestamp, qint64(3000));
+
+    // Most used: after touching `c` twice it leads; ties fall back to newest.
+    QVERIFY(m_storage->touchEntry(c));
+    QTest::qWait(2); // timestamp resolution is milliseconds
+    QVERIFY(m_storage->touchEntry(c));
+    FilterSpec mostUsed;
+    mostUsed.sortMode = FilterSpec::SortMode::MostUsed;
+    page = m_storage->fetchPage(mostUsed, PageCursor{}, 10);
+    QCOMPARE(page.size(), 3);
+    QCOMPARE(page.at(0).id, c);
+    QCOMPARE(page.at(1).timestamp, qint64(2000));
+    QCOMPARE(page.at(2).timestamp, qint64(1000));
+
+    // Most-used keyset cursor: continue past the touched entry.
+    cursor.valid = true;
+    cursor.useCount = 2;
+    cursor.timestampMs = page.at(0).timestamp;
+    cursor.id = page.at(0).id;
+    page = m_storage->fetchPage(mostUsed, cursor, 10);
+    QCOMPARE(page.size(), 2);
+    QCOMPARE(page.at(0).timestamp, qint64(2000));
+    QCOMPARE(page.at(1).timestamp, qint64(1000));
 }
 
 void TestStorage::emitsHistorySignals()

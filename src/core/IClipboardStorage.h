@@ -17,15 +17,23 @@ struct StorageStats {
 };
 
 // Keyset cursor for infinite scroll: identifies the last row of the previous
-// page (ORDER BY timestamp_ms DESC, id DESC).
+// page. Timestamp/id drive Newest and Oldest; useCount is only used by the
+// MostUsed sort mode (the other modes ignore it).
 struct PageCursor {
     bool valid = false;
     qint64 timestampMs = 0;
     qint64 id = 0;
+    int useCount = 0;
 };
 
 // Storage seam: everything that reads/writes history goes through this
 // interface so unit tests can substitute an in-memory implementation.
+struct SavedSearch {
+    qint64 id = 0;
+    QString name;
+    FilterSpec filter;
+};
+
 class IClipboardStorage : public QObject {
     Q_OBJECT
 public:
@@ -51,6 +59,20 @@ public:
     // Bumps an entry to the top of the history: timestamp = now, use_count += 1.
     // Emits entryTouched(id) on success; returns false for unknown ids.
     virtual bool touchEntry(qint64 id) = 0;
+
+    // Tags: user labels for entries. addTag creates the tag on first use
+    // (names are case-insensitive and unique); both return false on failure.
+    virtual QStringList allTags() const = 0;
+    virtual QStringList tagsForEntry(qint64 entryId) const = 0;
+    virtual bool addTag(qint64 entryId, const QString &tag) = 0;
+    virtual bool removeTag(qint64 entryId, const QString &tag) = 0;
+
+    // Saved searches ("smart folders"): named FilterSpec snapshots.
+    // addSavedSearch replaces an existing search with the same name and
+    // returns its row id (0 on failure).
+    virtual QList<SavedSearch> savedSearches() const = 0;
+    virtual qint64 addSavedSearch(const QString &name, const FilterSpec &filter) = 0;
+    virtual bool removeSavedSearch(qint64 id) = 0;
 
     virtual QStringList sourceApps() const = 0;
     virtual StorageStats stats() const = 0;

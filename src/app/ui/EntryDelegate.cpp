@@ -2,6 +2,7 @@
 
 #include "BookmarkManager.h"
 #include "ClipboardListModel.h"
+#include "../SettingsManager.h"
 
 #include <QApplication>
 #include <QDateTime>
@@ -38,10 +39,13 @@ QString humanSize(qint64 bytes)
     return EntryDelegate::tr("%1 MB").arg(bytes / (1024.0 * 1024.0), 0, 'f', 1);
 }
 
-QString relativeTime(qint64 timestampMs)
+QString relativeTime(qint64 timestampMs, bool absolute, bool ampm)
 {
     const QDateTime timestamp = QDateTime::fromMSecsSinceEpoch(timestampMs);
     const QDateTime now = QDateTime::currentDateTime();
+    const QString timeFormat = ampm ? QStringLiteral("h:mm AP") : QStringLiteral("HH:mm");
+    if (absolute)
+        return timestamp.toString(QStringLiteral("yyyy-MM-dd ") + timeFormat);
     const qint64 seconds = timestamp.secsTo(now);
     if (seconds < 0)
         return EntryDelegate::tr("in the future");
@@ -49,22 +53,33 @@ QString relativeTime(qint64 timestampMs)
         return EntryDelegate::tr("just now");
     if (seconds < 90 * 60)
         return EntryDelegate::tr("%1 min ago").arg(qRound(seconds / 60.0));
-    if (timestamp.date() == now.date())
-        return timestamp.time().toString(QStringLiteral("HH:mm"));
-    if (timestamp.date().addDays(1) == now.date())
-        return EntryDelegate::tr("Yesterday %1")
-            .arg(timestamp.time().toString(QStringLiteral("HH:mm")));
+    if (seconds < 24 * 3600)
+        return EntryDelegate::tr("%1 h ago").arg(qRound(seconds / 3600.0));
     if (seconds < 7 * 24 * 3600)
-        return timestamp.toString(QStringLiteral("ddd HH:mm"));
-    return timestamp.toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+        return EntryDelegate::tr("%1 d ago").arg(qRound(seconds / 86400.0));
+    return timestamp.toString(QStringLiteral("yyyy-MM-dd ") + timeFormat);
 }
 
 } // namespace
 
-EntryDelegate::EntryDelegate(BookmarkManager *bookmarks, QObject *parent)
+EntryDelegate::EntryDelegate(BookmarkManager *bookmarks, SettingsManager *settings,
+                             QObject *parent)
     : QStyledItemDelegate(parent)
     , m_bookmarks(bookmarks)
+    , m_settings(settings)
 {
+    refreshTimeFormats();
+    if (settings)
+        connect(settings, &SettingsManager::changed, this,
+                &EntryDelegate::refreshTimeFormats);
+}
+
+void EntryDelegate::refreshTimeFormats()
+{
+    // Cached once per settings change instead of per painted row.
+    m_absoluteTimestamps = m_settings && m_settings->timestampStyle() == QLatin1String("absolute");
+    m_ampmClock = m_settings && !m_settings->clock24h();
+    m_groupColorCache.clear();
 }
 
 void EntryDelegate::clearGroupCache()
@@ -162,7 +177,8 @@ void EntryDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
     painter->setFont(originalFont);
     painter->setPen(metaPen);
     QStringList metaParts;
-    metaParts << relativeTime(index.data(ClipboardListModel::TimestampRole).toLongLong());
+    metaParts << relativeTime(index.data(ClipboardListModel::TimestampRole).toLongLong(),
+                              m_absoluteTimestamps, m_ampmClock);
     const QString app = index.data(ClipboardListModel::SourceAppRole).toString();
     if (!app.isEmpty())
         metaParts << app;

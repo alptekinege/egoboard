@@ -15,6 +15,7 @@ private slots:
     void mutateGeneralSettingsAndSignal();
     void captureTypesAndRetention();
     void pasteBehaviorAndDensity();
+    void sortTimestampsAndGeometry();
     void sensitiveModeAndRedactKinds();
     void expireRulesPersistence();
     void ignoredSourceAppsWildcardMatching();
@@ -138,6 +139,42 @@ void TestSettings::pasteBehaviorAndDensity()
     settings.setListDensity(QStringLiteral("spacious"));
     QCOMPARE(settings.listDensity(), QStringLiteral("spacious"));
     QCOMPARE(changedSpy.count(), 6);
+}
+
+void TestSettings::sortTimestampsAndGeometry()
+{
+    SettingsManager settings;
+    QSignalSpy changedSpy(&settings, &SettingsManager::changed);
+
+    // Sort mode is clamped into 0..2, invalid values normalize to 0.
+    settings.setSortMode(2);
+    QCOMPARE(settings.sortMode(), 2);
+    settings.setSortMode(-3);
+    QCOMPARE(settings.sortMode(), 0);
+    settings.setSortMode(9);
+    QCOMPARE(settings.sortMode(), 0);
+    settings.setSortMode(1);
+    QCOMPARE(settings.sortMode(), 1);
+    QCOMPARE(changedSpy.count(), 4);
+
+    // Timestamp style normalizes like the density strings; clock defaults on.
+    settings.setTimestampStyle(QStringLiteral("bogus"));
+    QCOMPARE(settings.timestampStyle(), QStringLiteral("relative"));
+    settings.setTimestampStyle(QStringLiteral("absolute"));
+    QCOMPARE(settings.timestampStyle(), QStringLiteral("absolute"));
+    QCOMPARE(settings.clock24h(), true);
+    settings.setClock24h(false);
+    QCOMPARE(settings.clock24h(), false);
+
+    // Geometry blobs and the serialized last filter round-trip verbatim.
+    const QByteArray geometry = QByteArrayLiteral("geometry-blob");
+    const QByteArray splitter = QByteArrayLiteral("splitter-blob");
+    settings.setWindowGeometry(geometry);
+    settings.setSplitterState(splitter);
+    settings.setLastFilter(QStringLiteral("{\"searchText\":\"hi\"}"));
+    QCOMPARE(settings.windowGeometry(), geometry);
+    QCOMPARE(settings.splitterState(), splitter);
+    QCOMPARE(settings.lastFilter(), QStringLiteral("{\"searchText\":\"hi\"}"));
 }
 
 void TestSettings::sensitiveModeAndRedactKinds()
@@ -297,6 +334,11 @@ void TestSettings::persistsAcrossInstances()
         settings.setBumpOnPaste(false);
         settings.setPasteAsPlainText(true);
         settings.setListDensity(QStringLiteral("compact"));
+        settings.setSortMode(1);
+        settings.setTimestampStyle(QStringLiteral("absolute"));
+        settings.setClock24h(false);
+        settings.setRememberWindowGeometry(false);
+        settings.setRestoreLastFilter(true);
     }
 
     SettingsManager loaded;
@@ -313,6 +355,11 @@ void TestSettings::persistsAcrossInstances()
     QCOMPARE(loaded.bumpOnPaste(), false);
     QCOMPARE(loaded.pasteAsPlainText(), true);
     QCOMPARE(loaded.listDensity(), QStringLiteral("compact"));
+    QCOMPARE(loaded.sortMode(), 1);
+    QCOMPARE(loaded.timestampStyle(), QStringLiteral("absolute"));
+    QCOMPARE(loaded.clock24h(), false);
+    QCOMPARE(loaded.rememberWindowGeometry(), false);
+    QCOMPARE(loaded.restoreLastFilter(), true);
 }
 
 QTEST_GUILESS_MAIN(TestSettings)
