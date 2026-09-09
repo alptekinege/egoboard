@@ -22,6 +22,7 @@ public:
 signals:
     void pasteRequested(qint64 id);
     void showQuickPasteRequested();
+    void cursorPosReported(int x, int y); // rounded, from KWin scripting (Wayland)
 
 public slots:
     // Returns previews (joined as "id<TAB>preview" strings) for quick scripting.
@@ -30,6 +31,7 @@ public slots:
     // Opens the quick-paste popup at the cursor (automation / debugging).
     bool ShowQuickPaste();
     // KWin scripting reports the global cursor position here (Wayland).
+    // The script rounds the coordinates so they arrive as D-Bus integers.
     void ReportCursorPos(int x, int y);
     int Ping(int v) { return v; }
 

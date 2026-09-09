@@ -1,6 +1,8 @@
 #pragma once
 
+#include <QObject>
 #include <QPoint>
+#include <QTimer>
 
 #include <functional>
 
@@ -26,12 +28,12 @@ public:
 private:
     explicit KWinCursorTracker(QObject *parent);
     static KWinCursorTracker *self();
-    bool ensureScriptLoaded();
-    bool runScript();
+    bool loadAndRunScript(const QString &pluginName);
+    void unloadScript(const QString &pluginName);
 
     std::function<void(const QPoint &)> m_callback;
     QTimer *m_timeoutTimer = nullptr;
-    QString m_scriptPath;
-    int m_scriptId = -1;
+    QString m_activeScriptName;
+    int m_loadCounter = 0;
     bool m_kwinUnavailable = false; // org.kde.KWin missing: stop asking
 };

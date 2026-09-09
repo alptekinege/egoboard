@@ -7,6 +7,7 @@
 #include "ExpireScheduler.h"
 #include "ExportImportManager.h"
 #include "HotkeyManager.h"
+#include "KWinCursorTracker.h"
 #include "LayerShellHelper.h"
 #include "WlrDataControlHelper.h"
 #include "ScriptActionManager.h"
@@ -108,6 +109,8 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
             [this](qint64 entryId) { pasteEntry(entryId); });
     connect(m_dbus, &EgoboardDbusAdaptor::showQuickPasteRequested, this,
             &ApplicationContext::showQuickPaste);
+    connect(m_dbus, &EgoboardDbusAdaptor::cursorPosReported, this,
+            [](int x, int y) { KWinCursorTracker::reportGlobalPos(x, y); });
 
     if (QGuiApplication::platformName() == QLatin1String("wayland"))
         m_tracker = std::make_unique<WaylandActiveWindowTracker>();

@@ -2,23 +2,25 @@
 
 #include "LayerShellHelper.h"
 
-#include <QDBus>
+#include <QCoreApplication>
+#include <QCursor>
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QFile>
-#include <QFileInfo>
 #include <QGuiApplication>
 #include <QStandardPaths>
 #include <QTimer>
 
 namespace {
 // Reports the global cursor position back to egoboard. Runs inside KWin.
+// Math.round keeps the arguments integral — KWin marshals integral JS numbers
+// as D-Bus int32 (fractional ones would arrive as double and miss the slot).
 constexpr auto kCursorScript = R"(
 var p = workspace.cursorPos;
 callDBus("org.egoboard.Egoboard", "/org/egoboard/Egoboard",
-         "org.egoboard.Egoboard", "ReportCursorPos", p.x, p.y);
+         "org.egoboard.Egoboard", "ReportCursorPos", Math.round(p.x), Math.round(p.y));
 )";
-constexpr auto kPluginName = "egoboard-cursor";
+constexpr auto kScriptPath = "/egoboard-cursor.js";
 } // namespace
 
 KWinCursorTracker::KWinCursorTracker(QObject *parent)
@@ -29,8 +31,10 @@ KWinCursorTracker::KWinCursorTracker(QObject *parent)
     connect(m_timeoutTimer, &QTimer::timeout, this, [this] {
         if (!m_callback)
             return;
+        const QString pluginName = m_activeScriptName;
         const auto callback = std::move(m_callback);
         m_callback = nullptr;
+        unloadScript(pluginName);
         callback(QCursor::pos()); // KWin did not answer in time — best effort
     });
 }
@@ -41,43 +45,38 @@ KWinCursorTracker *KWinCursorTracker::self()
     return instance;
 }
 
-bool KWinCursorTracker::ensureScriptLoaded()
+bool KWinCursorTracker::loadAndRunScript(const QString &pluginName)
 {
-    if (m_kwinUnavailable)
-        return false;
-    if (m_scriptId >= 0)
-        return true;
-
-    m_scriptPath = QStandardPaths::writableLocation(QStandardPaths::TempLocation)
-        + QStringLiteral("/egoboard-cursor.js");
-    if (!QFileInfo::exists(m_scriptPath)) {
-        QFile script(m_scriptPath);
-        if (!script.open(QIODevice::WriteOnly | QIODevice::Truncate))
-            return false;
-        script.write(kCursorScript);
-    }
-
-    QDBusMessage call = QDBusMessage::createMethodCall(
+    // Reusing a plugin name collides with KWin's still-pending unload of the
+    // previous one, so every query gets a fresh name.
+    QDBusMessage load = QDBusMessage::createMethodCall(
         QStringLiteral("org.kde.KWin"), QStringLiteral("/Scripting"),
         QStringLiteral("org.kde.kwin.Scripting"), QStringLiteral("loadScript"));
-    call.setArguments({m_scriptPath, QStringLiteral(kPluginName)});
-    QDBusMessage reply = QDBusConnection::sessionBus().call(call, QDBus::Block, 1000);
-    if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty()) {
-        m_kwinUnavailable = true; // not KWin, or the scripting API is locked down
+    load.setArguments({QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+                           + QString::fromLatin1(kScriptPath),
+                       pluginName});
+    QDBusMessage loadReply = QDBusConnection::sessionBus().call(load, QDBus::Block, 1000);
+    if (loadReply.type() != QDBusMessage::ReplyMessage || loadReply.arguments().isEmpty())
         return false;
-    }
-    m_scriptId = reply.arguments().first().toInt();
-    return m_scriptId > 0;
+    const int scriptId = loadReply.arguments().first().toInt();
+    if (scriptId <= 0)
+        return false;
+
+    QDBusMessage run = QDBusMessage::createMethodCall(
+        QStringLiteral("org.kde.KWin"), QStringLiteral("/Scripting/Script%1").arg(scriptId),
+        QStringLiteral("org.kde.kwin.Script"), QStringLiteral("run"));
+    QDBusMessage runReply = QDBusConnection::sessionBus().call(run, QDBus::Block, 1000);
+    return runReply.type() == QDBusMessage::ReplyMessage;
 }
 
-bool KWinCursorTracker::runScript()
+void KWinCursorTracker::unloadScript(const QString &pluginName)
 {
-    QDBusMessage call = QDBusMessage::createMethodCall(
-        QStringLiteral("org.kde.KWin"),
-        QStringLiteral("/Scripting/Script%1").arg(m_scriptId),
-        QStringLiteral("org.kde.kwin.Script"), QStringLiteral("run"));
-    QDBusMessage reply = QDBusConnection::sessionBus().call(call, QDBus::Block, 1000);
-    return reply.type() == QDBusMessage::ReplyMessage;
+    // Fire-and-forget: KWin drops the script from its session.
+    QDBusMessage unload = QDBusMessage::createMethodCall(
+        QStringLiteral("org.kde.KWin"), QStringLiteral("/Scripting"),
+        QStringLiteral("org.kde.kwin.Scripting"), QStringLiteral("unloadScript"));
+    unload.setArguments({pluginName});
+    QDBusConnection::sessionBus().call(unload, QDBus::NoBlock);
 }
 
 void KWinCursorTracker::queryGlobal(const std::function<void(const QPoint &)> &callback,
@@ -90,11 +89,36 @@ void KWinCursorTracker::queryGlobal(const std::function<void(const QPoint &)> &c
         callback(QCursor::pos());
         return;
     }
-    if (!tracker->ensureScriptLoaded() || !tracker->runScript()) {
+
+    QFile script(QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+                 + QString::fromLatin1(kScriptPath));
+    if (!script.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        tracker->m_kwinUnavailable = true;
+        callback(QCursor::pos());
+        return;
+    }
+    script.write(kCursorScript);
+
+    // A unique plugin name per query: KWin's unload of a previous script is
+    // asynchronous, so reusing a name can silently run a stale instance.
+    const QString pluginName =
+        QStringLiteral("egoboard-cursor-%1-%2")
+            .arg(QCoreApplication::applicationPid())
+            .arg(++tracker->m_loadCounter);
+
+    bool started = false;
+    for (int attempt = 0; attempt < 3 && !started; ++attempt) {
+        started = tracker->loadAndRunScript(pluginName + (attempt > 0
+                                                               ? QStringLiteral("-%1").arg(attempt)
+                                                               : QString()));
+    }
+    if (!started) {
+        tracker->m_kwinUnavailable = true; // not KWin, or the scripting API is locked down
         callback(QCursor::pos());
         return;
     }
 
+    tracker->m_activeScriptName = pluginName;
     tracker->m_callback = callback;
     tracker->m_timeoutTimer->start(timeoutMs);
 }
@@ -104,8 +128,10 @@ void KWinCursorTracker::reportGlobalPos(int x, int y)
     KWinCursorTracker *tracker = self();
     if (!tracker->m_callback)
         return;
+    const QString pluginName = tracker->m_activeScriptName;
     const auto callback = std::move(tracker->m_callback);
     tracker->m_callback = nullptr;
     tracker->m_timeoutTimer->stop();
+    tracker->unloadScript(pluginName);
     callback(QPoint(x, y));
 }
