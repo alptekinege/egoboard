@@ -64,6 +64,35 @@ QString humanSize(qint64 bytes)
     return SettingsDialog::tr("%1 MB").arg(bytes / (1024.0 * 1024.0), 0, 'f', 1);
 }
 
+// Muted explanation line under a setting — the shared look for every hint.
+QLabel *makeHint(const QString &html, QWidget *parent)
+{
+    auto *label = new QLabel(parent);
+    label->setTextFormat(Qt::RichText);
+    label->setWordWrap(true);
+    label->setText(html);
+    label->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+    return label;
+}
+
+// Bordered status readout (platform diagnostics, test results).
+QLabel *makeStatusPanel(const QString &html, QWidget *parent)
+{
+    auto *label = makeHint(html, parent);
+    label->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px; border: 1px solid palette(mid); border-radius: 6px; padding: 6px;"));
+    return label;
+}
+
+// Every page scrolls the same way, whatever its content height.
+QWidget *makeScrollable(QWidget *page)
+{
+    auto *scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    scroll->setWidget(page);
+    scroll->setFrameShape(QFrame::NoFrame);
+    return scroll;
+}
+
 QString tesseractVersion()
 {
     QProcess p;
@@ -97,18 +126,18 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
 
     auto *layout = new QVBoxLayout(this);
     auto *tabs = new QTabWidget(this);
-    // Vertical tab column on the west side (9 tabs read much better as a list).
+    // Vertical tab column on the west side (pages read much better as a list).
     tabs->setTabPosition(QTabWidget::West);
     tabs->setDocumentMode(true);
-    tabs->addTab(buildBehaviourPage(), QIcon::fromTheme(QStringLiteral("configure")), tr("Behaviour"));
-    tabs->addTab(buildAppearancePage(), QIcon::fromTheme(QStringLiteral("preferences-desktop-theme")), tr("Appearance"));
-    tabs->addTab(buildPlatformPage(), QIcon::fromTheme(QStringLiteral("computer")), tr("Platform"));
-    tabs->addTab(buildHistoryPage(), QIcon::fromTheme(QStringLiteral("security-medium")), tr("History & Privacy"));
+    tabs->addTab(buildGeneralPage(), QIcon::fromTheme(QStringLiteral("configure")), tr("General"));
+    tabs->addTab(buildCapturePage(), QIcon::fromTheme(QStringLiteral("edit-copy")), tr("Capture"));
+    tabs->addTab(buildPrivacyPage(), QIcon::fromTheme(QStringLiteral("security-medium")), tr("Privacy"));
+    tabs->addTab(buildHistoryPage(), QIcon::fromTheme(QStringLiteral("document-open-recent")), tr("History"));
     tabs->addTab(buildSearchPreviewPage(), QIcon::fromTheme(QStringLiteral("system-search")), tr("Search & Preview"));
     tabs->addTab(buildAutomationPage(), QIcon::fromTheme(QStringLiteral("applications-engineering")), tr("Automation"));
-    tabs->addTab(buildHotkeysPage(), QIcon::fromTheme(QStringLiteral("preferences-desktop-keyboard")), tr("Hotkeys"));
+    tabs->addTab(buildHotkeysPage(), QIcon::fromTheme(QStringLiteral("preferences-desktop-keyboard")), tr("Shortcuts"));
     tabs->addTab(buildStoragePage(), QIcon::fromTheme(QStringLiteral("drive-harddisk")), tr("Storage"));
-    tabs->addTab(buildDiagnosticsPage(), QIcon::fromTheme(QStringLiteral("help-about")), tr("Diagnostics"));
+    tabs->addTab(buildPlatformDiagnosticsPage(), QIcon::fromTheme(QStringLiteral("utilities-system-monitor")), tr("Diagnostics"));
     layout->addWidget(tabs);
 
     auto *buttons = new QDialogButtonBox(
@@ -161,8 +190,8 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
     });
 }
 
-// --- Behaviour (startup, window, capture basics, tray) ----------------------
-QWidget *SettingsDialog::buildBehaviourPage()
+// --- General (startup, tray, appearance) -------------------------------------
+QWidget *SettingsDialog::buildGeneralPage()
 {
     auto *page = new QWidget(this);
     auto *layout = new QVBoxLayout(page);
@@ -172,39 +201,16 @@ QWidget *SettingsDialog::buildBehaviourPage()
     m_startVisible = new QCheckBox(tr("Show the history window on start"), startupBox);
     m_hideOnFocusOut = new QCheckBox(tr("Hide the window when it loses focus (popup-like)"), startupBox);
     m_hideOnFocusOut->setToolTip(tr("When active, the window hides as soon as it loses focus — keeps the desktop tidy."));
+    m_autostart = new QCheckBox(tr("Start Egoboard automatically on login (~/.config/autostart)"), startupBox);
     startupLayout->addWidget(m_startVisible);
     startupLayout->addWidget(m_hideOnFocusOut);
-    auto *startupHint = new QLabel(tr("The window is never truly quit — closing hides to tray. Use tray → Quit to exit."), startupBox);
-    startupHint->setWordWrap(true);
-    startupHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    startupLayout->addWidget(startupHint);
+    startupLayout->addWidget(m_autostart);
+    startupLayout->addWidget(makeHint(tr("The window is never truly quit — closing hides to tray. Use tray → Quit to exit. Autostart writes <code>~/.config/autostart/org.egoboard.Egoboard.desktop</code> per XDG spec — works on Plasma X11 and Wayland."), startupBox));
     layout->addWidget(startupBox);
-
-    auto *captureBox = new QGroupBox(tr("Capture"), page);
-    auto *captureLayout = new QVBoxLayout(captureBox);
-    m_primarySelection = new QCheckBox(tr("Also monitor the primary selection (middle-click paste)"), captureBox);
-    m_primarySelection->setToolTip(tr("X11 only — tracks the selection buffer separately from Ctrl+C. On Wayland it also enables data-control primary selection."));
-    captureLayout->addWidget(m_primarySelection);
-    auto *countRow = new QHBoxLayout();
-    m_quickPasteCount = new QSpinBox(captureBox);
-    m_quickPasteCount->setRange(1, 9);
-    m_quickPasteCount->setToolTip(tr("Number of entries shown in the Meta+Shift+V popup (1–9, mapped to number keys)."));
-    countRow->addWidget(new QLabel(tr("Entries in quick paste menu:"), captureBox));
-    countRow->addWidget(m_quickPasteCount);
-    countRow->addStretch(1);
-    captureLayout->addLayout(countRow);
-    // live preview for quick paste
-    auto *countHint = new QLabel(tr("Quick paste shows the most recent entries; Filter still applies (pinned, group)."), captureBox);
-    countHint->setWordWrap(true);
-    countHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    captureLayout->addWidget(countHint);
-    connect(m_quickPasteCount, QOverload<int>::of(&QSpinBox::valueChanged), this, [countHint,this](int v){
-        countHint->setText(tr("Quick paste will show <b>%1</b> entries — press 1…%1 to paste, Enter for selected.").arg(v));
-    });
-    layout->addWidget(captureBox);
 
     auto *trayBox = new QGroupBox(tr("Tray & notifications"), page);
     auto *trayLayout = new QFormLayout(trayBox);
+    trayLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     m_trayMode = new QComboBox(trayBox);
     m_trayMode->addItem(tr("Auto (show when history not empty)"), QStringLiteral("auto"));
     m_trayMode->addItem(tr("Always show"), QStringLiteral("always"));
@@ -212,145 +218,160 @@ QWidget *SettingsDialog::buildBehaviourPage()
     trayLayout->addRow(tr("Tray icon:"), m_trayMode);
     m_notifications = new QCheckBox(tr("Show notification when sensitive content is skipped"), trayBox);
     trayLayout->addRow(QString(), m_notifications);
-    auto *trayHint = new QLabel(tr("Tray uses <code>KStatusNotifierItem</code> (Plasma). Hidden still keeps the app running — show via hotkey."), trayBox);
-    trayHint->setWordWrap(true);
-    trayHint->setTextFormat(Qt::RichText);
-    trayHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    trayLayout->addRow(QString(), trayHint);
+    trayLayout->addRow(QString(), makeHint(tr("Tray uses <code>KStatusNotifierItem</code> (Plasma). Hidden still keeps the app running — show via hotkey."), trayBox));
     layout->addWidget(trayBox);
 
-    auto *autostartBox = new QGroupBox(tr("Session"), page);
-    auto *autostartLayout = new QVBoxLayout(autostartBox);
-    m_autostart = new QCheckBox(tr("Start Egoboard automatically on login (~/.config/autostart)"), autostartBox);
-    autostartLayout->addWidget(m_autostart);
-    auto *autostartHint = new QLabel(tr("Writes <code>~/.config/autostart/org.egoboard.Egoboard.desktop</code> per XDG spec — works on Plasma X11 and Wayland."), autostartBox);
-    autostartHint->setWordWrap(true);
-    autostartHint->setTextFormat(Qt::RichText);
-    autostartHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    autostartLayout->addWidget(autostartHint);
-    layout->addWidget(autostartBox);
-
-    layout->addStretch(1);
-    return page;
-}
-
-QWidget *SettingsDialog::buildAppearancePage()
-{
-    auto *page = new QWidget(this);
-    auto *layout = new QVBoxLayout(page);
-
-    auto *themeBox = new QGroupBox(tr("Theme"), page);
-    auto *themeLayout = new QVBoxLayout(themeBox);
-    m_themeCombo = new QComboBox(themeBox);
+    auto *appearanceBox = new QGroupBox(tr("Appearance"), page);
+    auto *appearanceLayout = new QVBoxLayout(appearanceBox);
+    auto *appearanceForm = new QFormLayout();
+    appearanceForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    m_themeCombo = new QComboBox(appearanceBox);
     m_themeCombo->addItem(tr("System (follow desktop)"), QStringLiteral("system"));
     m_themeCombo->addItem(tr("Light"), QStringLiteral("light"));
     m_themeCombo->addItem(tr("Dark"), QStringLiteral("dark"));
-    auto *themeForm = new QFormLayout();
-    themeForm->addRow(tr("Color theme:"), m_themeCombo);
-    themeLayout->addLayout(themeForm);
-    auto *themeHint = new QLabel(tr("Light and Dark apply a palette on top of the current style; System restores the desktop theme. Applies immediately to the whole app and is remembered across restarts."), themeBox);
-    themeHint->setWordWrap(true);
-    themeHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    themeLayout->addWidget(themeHint);
-    layout->addWidget(themeBox);
-
-    auto *toolbarBox = new QGroupBox(tr("Main window toolbar"), page);
-    auto *toolbarLayout = new QVBoxLayout(toolbarBox);
-    m_toolbarIconOnly = new QCheckBox(tr("Show buttons as icons only (compact)"), toolbarBox);
-    m_toolbarIconOnly->setToolTip(tr("Toolbar buttons appear as logos only — hover for the label. Text+icon otherwise."));
-    toolbarLayout->addWidget(m_toolbarIconOnly);
-    auto *toolbarHint = new QLabel(tr("Takes effect immediately, also while the window is open. Every button keeps its tooltip and shortcut."), toolbarBox);
-    toolbarHint->setWordWrap(true);
-    toolbarHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    toolbarLayout->addWidget(toolbarHint);
-    layout->addWidget(toolbarBox);
+    appearanceForm->addRow(tr("Color theme:"), m_themeCombo);
+    appearanceLayout->addLayout(appearanceForm);
+    m_toolbarIconOnly = new QCheckBox(tr("Show toolbar buttons as icons only (compact)"), appearanceBox);
+    m_toolbarIconOnly->setToolTip(tr("Toolbar buttons appear as logos only — hover for the label. Text+icon otherwise. Takes effect immediately, also while the window is open."));
+    appearanceLayout->addWidget(m_toolbarIconOnly);
+    appearanceLayout->addWidget(makeHint(tr("Light and Dark apply a palette on top of the current style; System restores the desktop theme. Applies immediately to the whole app and is remembered across restarts."), appearanceBox));
+    layout->addWidget(appearanceBox);
 
     layout->addStretch(1);
-    return page;
+    return makeScrollable(page);
 }
 
-QWidget *SettingsDialog::buildPlatformPage()
+// --- Capture (what gets recorded, limits, per-app rules) ---------------------
+QWidget *SettingsDialog::buildCapturePage()
 {
     auto *page = new QWidget(this);
     auto *layout = new QVBoxLayout(page);
 
-    auto *platBox = new QGroupBox(tr("Platform integration"), page);
-    auto *platLayout = new QVBoxLayout(platBox);
-    m_platformStatus = new QLabel(LayerShellHelper::diagnostics(), platBox);
-    m_platformStatus->setWordWrap(true);
-    m_platformStatus->setTextFormat(Qt::RichText);
-    m_platformStatus->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px; border: 1px solid palette(mid); border-radius: 6px; padding: 6px;"));
-    platLayout->addWidget(new QLabel(tr("<b>Layer-shell (quick-paste overlay)</b>"), platBox));
-    platLayout->addWidget(m_platformStatus);
+    auto *recordBox = new QGroupBox(tr("What to record"), page);
+    auto *recordLayout = new QVBoxLayout(recordBox);
+    m_primarySelection = new QCheckBox(tr("Also monitor the primary selection (middle-click paste)"), recordBox);
+    m_primarySelection->setToolTip(tr("X11 only — tracks the selection buffer separately from Ctrl+C. On Wayland it also enables data-control primary selection."));
+    recordLayout->addWidget(m_primarySelection);
+    // Order matters: load()/save() map these four by index to
+    // Text / RichText / Image / Files capture switches.
+    const QStringList typeLabels = {
+        tr("Plain text"),
+        tr("Rich text (HTML)"),
+        tr("Images"),
+        tr("File copies"),
+    };
+    for (const QString &label : typeLabels) {
+        auto *box = new QCheckBox(label, recordBox);
+        recordLayout->addWidget(box);
+        m_captureTypeBoxes.append(box);
+    }
+    recordLayout->addWidget(makeHint(tr("Unticked types are skipped at capture time — they never reach the database. Existing entries are kept."), recordBox));
+    layout->addWidget(recordBox);
 
-    m_dataControlStatus = new QLabel(platBox);
-    m_dataControlStatus->setWordWrap(true);
-    m_dataControlStatus->setTextFormat(Qt::RichText);
-    m_dataControlStatus->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px; border: 1px solid palette(mid); border-radius: 6px; padding: 6px;"));
-    if (m_ctx.dataControl())
-        m_dataControlStatus->setText(m_ctx.dataControl()->diagnostics());
-    else
-        m_dataControlStatus->setText(WlrDataControlHelper::isWayland() ? QStringLiteral("wlr-data-control: <b>inactive</b> (no helper)") : QStringLiteral("wlr-data-control: <b>n/a</b>"));
-    platLayout->addWidget(new QLabel(tr("<b>wlr-data-control (privileged clipboard observe)</b>"), platBox));
-    platLayout->addWidget(m_dataControlStatus);
-
-    m_platformDetails = new QLabel(platBox);
-    m_platformDetails->setWordWrap(true);
-    m_platformDetails->setTextFormat(Qt::RichText);
-    m_platformDetails->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    // details filled in refreshDiagnostics
-    platLayout->addWidget(m_platformDetails);
-
-    m_qpaInfo = new QLabel(platBox);
-    m_qpaInfo->setWordWrap(true);
-    m_qpaInfo->setTextFormat(Qt::RichText);
-    m_qpaInfo->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px; border: 1px dashed palette(mid); border-radius: 6px; padding: 6px;"));
-    m_qpaInfo->setText(tr("QPA platform: <b>%1</b> · Qt %2 · KF6 %3").arg(QGuiApplication::platformName().toHtmlEscaped(), QString::fromUtf8(qVersion()), QStringLiteral("6.0+")));
-    platLayout->addWidget(m_qpaInfo);
-
-    auto *hint = new QLabel(tr("Tips: On Wayland, layer-shell gives the quick-paste popup an exclusive keyboard grab even without focus. wlr-data-control is privileged — if KWin does not expose <code>zwlr_data_control_manager_v1</code> or denies permission, Egoboard falls back to <code>QClipboard</code> polling (focus-based). Set <code>WAYLAND_DEBUG=1</code> to see protocol traffic."), platBox);
-    hint->setWordWrap(true);
-    hint->setTextFormat(Qt::RichText);
-    hint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    platLayout->addWidget(hint);
-    layout->addWidget(platBox);
-    layout->addStretch(1);
-    return page;
-}
-
-QWidget *SettingsDialog::buildHistoryPage()
-{
-    auto *historyPage = new QWidget(this);
-    auto *historyLayout = new QVBoxLayout(historyPage);
-
-    auto *captureBox = new QGroupBox(tr("Capture"), historyPage);
-    auto *captureForm = new QFormLayout(captureBox);
-    captureForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-    m_debounce = new QSpinBox(captureBox);
+    auto *limitsBox = new QGroupBox(tr("Limits"), page);
+    auto *limitsForm = new QFormLayout(limitsBox);
+    limitsForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    m_debounce = new QSpinBox(limitsBox);
     m_debounce->setRange(50, 5000);
     m_debounce->setSingleStep(50);
     m_debounce->setSuffix(tr(" ms"));
-    captureForm->addRow(tr("Debounce interval:"), m_debounce);
-    auto *debounceHint = new QLabel(tr("Coalesces rapid clipboard updates (apps that set several MIME types). Lower is more responsive, higher avoids duplicates. Wave: 50 ms≈instant, 250 ms≈balanced, 1000 ms≈conservative."), captureBox);
-    debounceHint->setWordWrap(true);
-    debounceHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    captureForm->addRow(QString(), debounceHint);
-
-    m_maxItemMb = new QSpinBox(captureBox);
+    limitsForm->addRow(tr("Debounce interval:"), m_debounce);
+    limitsForm->addRow(QString(), makeHint(tr("Coalesces rapid clipboard updates (apps that set several MIME types). Lower is more responsive, higher avoids duplicates. Wave: 50 ms≈instant, 250 ms≈balanced, 1000 ms≈conservative."), limitsBox));
+    m_maxItemMb = new QSpinBox(limitsBox);
     m_maxItemMb->setRange(0, 512);
     m_maxItemMb->setSpecialValueText(tr("No limit"));
     m_maxItemMb->setSuffix(tr(" MB"));
-    captureForm->addRow(tr("Max size per text entry:"), m_maxItemMb);
-    m_maxImageMb = new QSpinBox(captureBox);
+    limitsForm->addRow(tr("Max size per text entry:"), m_maxItemMb);
+    m_maxImageMb = new QSpinBox(limitsBox);
     m_maxImageMb->setRange(0, 512);
     m_maxImageMb->setSpecialValueText(tr("No limit (use text cap)"));
     m_maxImageMb->setSuffix(tr(" MB"));
-    captureForm->addRow(tr("Max size per image:"), m_maxImageMb);
-    auto *maxHint = new QLabel(tr("Oversized images are not stored (placeholder only); oversized text is truncated with … . Default 5 MB text / 8 MB image — keeps DB fast. 0 = no limit (not recommended)."), captureBox);
-    maxHint->setWordWrap(true);
-    maxHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    captureForm->addRow(QString(), maxHint);
-    historyLayout->addWidget(captureBox);
+    limitsForm->addRow(tr("Max size per image:"), m_maxImageMb);
+    limitsForm->addRow(QString(), makeHint(tr("Oversized images are not stored (placeholder only); oversized text is truncated with … . Default 5 MB text / 8 MB image — keeps DB fast. 0 = no limit (not recommended)."), limitsBox));
+    auto *countRow = new QHBoxLayout();
+    m_quickPasteCount = new QSpinBox(limitsBox);
+    m_quickPasteCount->setRange(1, 9);
+    m_quickPasteCount->setToolTip(tr("Number of entries shown in the Meta+Shift+V popup (1–9, mapped to number keys)."));
+    countRow->addWidget(m_quickPasteCount);
+    countRow->addStretch(1);
+    limitsForm->addRow(tr("Entries in quick paste menu:"), countRow);
+    auto *countHint = makeHint(QString(), limitsBox);
+    limitsForm->addRow(QString(), countHint);
+    connect(m_quickPasteCount, QOverload<int>::of(&QSpinBox::valueChanged), this, [countHint,this](int v){
+        countHint->setText(tr("Quick paste will show <b>%1</b> entries — press 1…%1 to paste, Enter for selected. The popup shows the most recent entries; Filter still applies (pinned, group).").arg(v));
+    });
+    layout->addWidget(limitsBox);
+
+    auto *appsBox = new QGroupBox(tr("Ignored apps"), page);
+    auto *appsLayout = new QVBoxLayout(appsBox);
+    auto *ignoredLabel = new QLabel(tr("Ignore clipboard from these apps (one per line, <b>*</b> wildcard supported):"), appsBox);
+    ignoredLabel->setWordWrap(true);
+    ignoredLabel->setTextFormat(Qt::RichText);
+    appsLayout->addWidget(ignoredLabel);
+    m_ignoredApps = new QPlainTextEdit(appsBox);
+    m_ignoredApps->setPlaceholderText(tr("e.g.\norg.keepassxc.KeePassXC\n1Password\nfirefox*\ncom.github.*\norg.mozilla.firefox"));
+    m_ignoredApps->setMaximumHeight(96);
+    appsLayout->addWidget(m_ignoredApps);
+    appsLayout->addWidget(makeHint(tr("Source app comes from the window tracker — <b>X11:</b> process name via <code>_NET_WM_PID</code>, <b>Wayland:</b> <code>app_id</code> (e.g. <code>org.kde.kate</code>). Leave empty to capture everything. Password managers should be ignored. Tester below checks <code>isSourceIgnored</code> live."), appsBox));
+
+    // Suggestions row: shows apps seen in history
+    auto *suggestRow = new QHBoxLayout();
+    m_appSuggestions = new QListWidget(appsBox);
+    m_appSuggestions->setMaximumHeight(64);
+    m_appSuggestions->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_appSuggestions->setToolTip(tr("Apps seen in your history — double-click to add to ignore list"));
+    suggestRow->addWidget(m_appSuggestions, 1);
+    m_addIgnoreBtn = new QPushButton(tr("Add → Ignore"), appsBox);
+    m_addIgnoreBtn->setToolTip(tr("Add selected app to ignore list"));
+    suggestRow->addWidget(m_addIgnoreBtn);
+    appsLayout->addLayout(suggestRow);
+    connect(m_appSuggestions, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *it){
+        if (!it || !m_ignoredApps) return;
+        const QString app = it->text();
+        QString cur = m_ignoredApps->toPlainText().trimmed();
+        if (!cur.isEmpty() && !cur.endsWith(QLatin1Char('\n'))) cur += QLatin1Char('\n');
+        if (!cur.contains(app)) {
+            cur += app;
+            m_ignoredApps->setPlainText(cur);
+        }
+    });
+    connect(m_addIgnoreBtn, &QPushButton::clicked, this, [this]{
+        auto *cur = m_appSuggestions->currentItem();
+        if (cur) emit m_appSuggestions->itemDoubleClicked(cur);
+    });
+    // live tester
+    auto *testerRow = new QHBoxLayout();
+    auto *testerEdit = new QLineEdit(appsBox);
+    testerEdit->setPlaceholderText(tr("Test app id, e.g. org.keepassxc.KeePassXC"));
+    auto *testerResult = new QLabel(appsBox);
+    testerRow->addWidget(testerEdit, 1);
+    testerRow->addWidget(testerResult);
+    appsLayout->addLayout(testerRow);
+    connect(testerEdit, &QLineEdit::textChanged, this, [this, testerResult, testerEdit](const QString &t){
+        const bool ignored = m_ctx.settings()->isSourceIgnored(t);
+        // also test against current edit buffer without saving
+        QStringList cur = m_ignoredApps->toPlainText().split(QRegularExpression(QStringLiteral("[\n,]+")), Qt::SkipEmptyParts);
+        bool live = false;
+        for (const QString &pat : cur) {
+            if (pat.compare(t, Qt::CaseInsensitive)==0) live=true;
+            if (pat.contains(QLatin1Char('*'))) {
+                QRegularExpression re(QRegularExpression::wildcardToRegularExpression(pat), QRegularExpression::CaseInsensitiveOption);
+                if (re.match(t).hasMatch()) live=true;
+            }
+        }
+        testerResult->setText(t.isEmpty()?QString(): (live||ignored ? tr("<b>ignored</b> — will skip") : tr("captured")));
+    });
+
+    layout->addWidget(appsBox);
+    layout->addStretch(1);
+    return makeScrollable(page);
+}
+
+// --- Privacy (sensitive data, encryption) ------------------------------------
+QWidget *SettingsDialog::buildPrivacyPage()
+{
+    auto *historyPage = new QWidget(this);
+    auto *historyLayout = new QVBoxLayout(historyPage);
 
     auto *privacyBox = new QGroupBox(tr("Sensitive data"), historyPage);
     auto *privacyLayout = new QVBoxLayout(privacyBox);
@@ -432,6 +453,77 @@ QWidget *SettingsDialog::buildHistoryPage()
     privacyLayout->addLayout(customRow);
     historyLayout->addWidget(privacyBox);
 
+    auto *encryptBox = new QGroupBox(tr("Encryption at rest (SQLCipher, opt-in)"), historyPage);
+    auto *encryptLayout = new QVBoxLayout(encryptBox);
+    m_encryptionEnabled = new QCheckBox(tr("Encrypt database at rest (key in KWallet)"), encryptBox);
+    m_encryptionEnabled->setToolTip(tr("When enabled the DB file is encrypted with SQLCipher; key held in KWallet folder egoboard / entry dbKey. Requires build -DEGOBOARD_USE_SQLCIPHER=ON."));
+    encryptLayout->addWidget(m_encryptionEnabled);
+    m_encryptionStatus = makeStatusPanel(QString(), encryptBox);
+    encryptLayout->addWidget(m_encryptionStatus);
+    auto *encRow = new QHBoxLayout();
+    m_encryptionSetupBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("security-medium")), tr("Generate / store key"), encryptBox);
+    m_encryptionRemoveBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-delete")), tr("Remove key"), encryptBox);
+    encRow->addWidget(m_encryptionSetupBtn);
+    encRow->addWidget(m_encryptionRemoveBtn);
+    encRow->addStretch(1);
+    encryptLayout->addLayout(encRow);
+    encryptLayout->addWidget(makeHint(tr("Key loss = data loss. The app never writes the key to egoboardrc. Build without SQLCipher keeps history as before."), encryptBox));
+    connect(m_encryptionSetupBtn, &QPushButton::clicked, this, [this]{
+        EncryptionManager enc;
+        const QString key = EncryptionManager::generateKey();
+        const auto st = enc.writeKey(key);
+        if (st == EncryptionManager::Status::Ok)
+            QMessageBox::information(this, tr("Encryption"), tr("New key stored in KWallet (folder egoboard / dbKey). Enable the checkbox and restart to encrypt on next open."));
+        else
+            QMessageBox::warning(this, tr("Encryption"), tr("Could not store key: %1").arg(enc.walletStatusText()));
+        refreshDiagnostics();
+    });
+    connect(m_encryptionRemoveBtn, &QPushButton::clicked, this, [this]{
+        if (QMessageBox::question(this, tr("Encryption"), tr("Remove the KWallet key? You must also uncheck encryption and re-open the DB.")) != QMessageBox::Yes) return;
+        EncryptionManager enc;
+        enc.removeKey();
+        refreshDiagnostics();
+    });
+    historyLayout->addWidget(encryptBox);
+
+    historyLayout->addStretch(1);
+    return makeScrollable(historyPage);
+}
+
+// --- History (retention limits, auto-expire rules) ----------------------------
+QWidget *SettingsDialog::buildHistoryPage()
+{
+    auto *historyPage = new QWidget(this);
+    auto *historyLayout = new QVBoxLayout(historyPage);
+
+    auto *limitsBox = new QGroupBox(tr("Retention limits"), historyPage);
+    auto *limitsForm = new QFormLayout(limitsBox);
+    limitsForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    m_maxEntries = new QSpinBox(limitsBox);
+    m_maxEntries->setRange(0, 1000000);
+    m_maxEntries->setSingleStep(100);
+    m_maxEntries->setSpecialValueText(tr("Unlimited"));
+    m_maxEntries->setSuffix(tr(" entries"));
+    limitsForm->addRow(tr("Keep at most:"), m_maxEntries);
+    m_diskCapMb = new QSpinBox(limitsBox);
+    m_diskCapMb->setRange(0, 1024 * 64);
+    m_diskCapMb->setSpecialValueText(tr("Unlimited"));
+    m_diskCapMb->setSuffix(tr(" MB"));
+    limitsForm->addRow(tr("Total history size cap:"), m_diskCapMb);
+    auto *capHint = makeHint(QString(), limitsBox);
+    limitsForm->addRow(QString(), capHint);
+    connect(m_diskCapMb, QOverload<int>::of(&QSpinBox::valueChanged), this, [this, capHint](int v){
+        if (v==0) capHint->setText(tr("No cap — history grows forever (until disk full)."));
+        else {
+            qint64 cap = qint64(v)*1024*1024;
+            qint64 size = m_ctx.storage()->databaseFileSize();
+            if (size > cap) capHint->setText(tr("<b>Would prune ~%1</b> — DB %2 > cap %3. Oldest non-pinned entries will be removed on next check.").arg(humanSize(size-cap), humanSize(size), humanSize(cap)));
+            else capHint->setText(tr("Cap %1 — DB %2 within cap, no pruning now.").arg(humanSize(cap), humanSize(size)));
+        }
+    });
+    limitsForm->addRow(QString(), makeHint(tr("When a limit is set, the oldest non-pinned entries are removed to stay below it — pinned entries are never pruned. Checks run every 25 captures and daily for VACUUM. History is unlimited by default — the virtualized list handles 50k+ entries smoothly."), limitsBox));
+    historyLayout->addWidget(limitsBox);
+
     auto *expireBox = new QGroupBox(tr("Auto-expire rules"), historyPage);
     auto *expireLayout = new QVBoxLayout(expireBox);
     auto *expireHint = new QLabel(tr("Delete old entries that match all criteria — e.g. \"unpinned Terminal copies after 24h\". Runs on startup and every 15 minutes while egoboard is running."), expireBox);
@@ -485,135 +577,8 @@ QWidget *SettingsDialog::buildHistoryPage()
     });
     historyLayout->addWidget(expireBox);
 
-    auto *rulesBox = new QGroupBox(tr("Per-app rules"), historyPage);
-    auto *rulesLayout = new QVBoxLayout(rulesBox);
-    auto *ignoredLabel = new QLabel(tr("Ignore clipboard from these apps (one per line, <b>*</b> wildcard supported):"), rulesBox);
-    ignoredLabel->setWordWrap(true);
-    rulesLayout->addWidget(ignoredLabel);
-    m_ignoredApps = new QPlainTextEdit(rulesBox);
-    m_ignoredApps->setPlaceholderText(tr("e.g.\norg.keepassxc.KeePassXC\n1Password\nfirefox*\ncom.github.*\norg.mozilla.firefox"));
-    m_ignoredApps->setMaximumHeight(96);
-    rulesLayout->addWidget(m_ignoredApps);
-    auto *ignoredHint = new QLabel(tr("Source app comes from the window tracker — <b>X11:</b> process name via <code>_NET_WM_PID</code>, <b>Wayland:</b> <code>app_id</code> (e.g. <code>org.kde.kate</code>). Leave empty to capture everything. Password managers should be ignored. Tester below checks <code>isSourceIgnored</code> live."), rulesBox);
-    ignoredHint->setWordWrap(true);
-    ignoredHint->setTextFormat(Qt::RichText);
-    ignoredHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    rulesLayout->addWidget(ignoredHint);
-
-    // Suggestions row: shows apps seen in history
-    auto *suggestRow = new QHBoxLayout();
-    m_appSuggestions = new QListWidget(rulesBox);
-    m_appSuggestions->setMaximumHeight(64);
-    m_appSuggestions->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_appSuggestions->setToolTip(tr("Apps seen in your history — double-click to add to ignore list"));
-    suggestRow->addWidget(m_appSuggestions, 1);
-    m_addIgnoreBtn = new QPushButton(tr("Add → Ignore"), rulesBox);
-    m_addIgnoreBtn->setToolTip(tr("Add selected app to ignore list"));
-    suggestRow->addWidget(m_addIgnoreBtn);
-    rulesLayout->addLayout(suggestRow);
-    connect(m_appSuggestions, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *it){
-        if (!it || !m_ignoredApps) return;
-        const QString app = it->text();
-        QString cur = m_ignoredApps->toPlainText().trimmed();
-        if (!cur.isEmpty() && !cur.endsWith(QLatin1Char('\n'))) cur += QLatin1Char('\n');
-        if (!cur.contains(app)) {
-            cur += app;
-            m_ignoredApps->setPlainText(cur);
-        }
-    });
-    connect(m_addIgnoreBtn, &QPushButton::clicked, this, [this]{
-        auto *cur = m_appSuggestions->currentItem();
-        if (cur) emit m_appSuggestions->itemDoubleClicked(cur);
-    });
-    // live tester
-    auto *testerRow = new QHBoxLayout();
-    auto *testerEdit = new QLineEdit(rulesBox);
-    testerEdit->setPlaceholderText(tr("Test app id, e.g. org.keepassxc.KeePassXC"));
-    auto *testerResult = new QLabel(rulesBox);
-    testerRow->addWidget(testerEdit, 1);
-    testerRow->addWidget(testerResult);
-    rulesLayout->addLayout(testerRow);
-    connect(testerEdit, &QLineEdit::textChanged, this, [this, testerResult, testerEdit](const QString &t){
-        const bool ignored = m_ctx.settings()->isSourceIgnored(t);
-        // also test against current edit buffer without saving
-        QStringList cur = m_ignoredApps->toPlainText().split(QRegularExpression(QStringLiteral("[\n,]+")), Qt::SkipEmptyParts);
-        bool live = false;
-        for (const QString &pat : cur) {
-            if (pat.compare(t, Qt::CaseInsensitive)==0) live=true;
-            if (pat.contains(QLatin1Char('*'))) {
-                QRegularExpression re(QRegularExpression::wildcardToRegularExpression(pat), QRegularExpression::CaseInsensitiveOption);
-                if (re.match(t).hasMatch()) live=true;
-            }
-        }
-        testerResult->setText(t.isEmpty()?QString(): (live||ignored ? tr("<b>ignored</b> — will skip") : tr("captured")));
-    });
-
-    // OCR controls
-    m_ocrEnabled = new QCheckBox(tr("Enable OCR for images (local tesseract, searchable)"), rulesBox);
-    m_ocrEnabled->setToolTip(tr("When enabled, copied images are OCR'd in the background and become searchable via FTS. Requires tesseract — no network ever."));
-    rulesLayout->addWidget(m_ocrEnabled);
-    auto *ocrForm = new QFormLayout();
-    m_ocrLang = new QComboBox(rulesBox);
-    m_ocrLang->setEditable(true);
-    m_ocrLang->addItems({QStringLiteral("eng"), QStringLiteral("eng+deu"), QStringLiteral("deu"), QStringLiteral("fra"), QStringLiteral("spa"), QStringLiteral("jpn"), QStringLiteral("chi_sim")});
-    m_ocrLang->setToolTip(tr("tesseract -l value, e.g. eng or eng+deu. Requires matching tessdata."));
-    ocrForm->addRow(tr("OCR language:"), m_ocrLang);
-    m_ocrMaxChars = new QSpinBox(rulesBox);
-    m_ocrMaxChars->setRange(512, 65536);
-    m_ocrMaxChars->setSingleStep(512);
-    ocrForm->addRow(tr("Max OCR chars per image:"), m_ocrMaxChars);
-    rulesLayout->addLayout(ocrForm);
-    auto *ocrHint = new QLabel(tr("Images with text (screenshots, slides) become searchable. OCR runs at most once per image on a thread pool, capped above. In preview you’ll see <i>🔍 OCR:</i> under images."), rulesBox);
-    ocrHint->setWordWrap(true);
-    ocrHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    rulesLayout->addWidget(ocrHint);
-
-    auto *encryptBox = new QGroupBox(tr("Encryption at rest (SQLCipher, opt-in)"), rulesBox);
-    auto *encryptLayout = new QVBoxLayout(encryptBox);
-    m_encryptionEnabled = new QCheckBox(tr("Encrypt database at rest (key in KWallet)"), encryptBox);
-    m_encryptionEnabled->setToolTip(tr("When enabled the DB file is encrypted with SQLCipher; key held in KWallet folder egoboard / entry dbKey. Requires build -DEGOBOARD_USE_SQLCIPHER=ON."));
-    encryptLayout->addWidget(m_encryptionEnabled);
-    m_encryptionStatus = new QLabel(encryptBox);
-    m_encryptionStatus->setWordWrap(true);
-    m_encryptionStatus->setTextFormat(Qt::RichText);
-    m_encryptionStatus->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px; border: 1px solid palette(mid); border-radius: 6px; padding: 6px;"));
-    encryptLayout->addWidget(m_encryptionStatus);
-    auto *encRow = new QHBoxLayout();
-    m_encryptionSetupBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("security-medium")), tr("Generate / store key"), encryptBox);
-    m_encryptionRemoveBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-delete")), tr("Remove key"), encryptBox);
-    encRow->addWidget(m_encryptionSetupBtn);
-    encRow->addWidget(m_encryptionRemoveBtn);
-    encRow->addStretch(1);
-    encryptLayout->addLayout(encRow);
-    auto *encHint = new QLabel(tr("Key loss = data loss. The app never writes the key to egoboardrc. Build without SQLCipher keeps history as before."), encryptBox);
-    encHint->setWordWrap(true);
-    encHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    encryptLayout->addWidget(encHint);
-    rulesLayout->addWidget(encryptBox);
-    connect(m_encryptionSetupBtn, &QPushButton::clicked, this, [this]{
-        EncryptionManager enc;
-        const QString key = EncryptionManager::generateKey();
-        const auto st = enc.writeKey(key);
-        if (st == EncryptionManager::Status::Ok)
-            QMessageBox::information(this, tr("Encryption"), tr("New key stored in KWallet (folder egoboard / dbKey). Enable the checkbox and restart to encrypt on next open."));
-        else
-            QMessageBox::warning(this, tr("Encryption"), tr("Could not store key: %1").arg(enc.walletStatusText()));
-        refreshDiagnostics();
-    });
-    connect(m_encryptionRemoveBtn, &QPushButton::clicked, this, [this]{
-        if (QMessageBox::question(this, tr("Encryption"), tr("Remove the KWallet key? You must also uncheck encryption and re-open the DB.")) != QMessageBox::Yes) return;
-        EncryptionManager enc;
-        enc.removeKey();
-        refreshDiagnostics();
-    });
-
-    historyLayout->addWidget(rulesBox);
     historyLayout->addStretch(1);
-    auto *histScroll = new QScrollArea(this);
-    histScroll->setWidgetResizable(true);
-    histScroll->setWidget(historyPage);
-    histScroll->setFrameShape(QFrame::NoFrame);
-    return histScroll;
+    return makeScrollable(historyPage);
 }
 
 QWidget *SettingsDialog::buildSearchPreviewPage()
@@ -683,39 +648,41 @@ QWidget *SettingsDialog::buildSearchPreviewPage()
     m_previewCode = new QCheckBox(tr("Syntax highlight code (JSON/XML/generic)"), previewBox);
     m_previewLinks = new QCheckBox(tr("Linkify URLs (🔗 clickable)"), previewBox);
     m_previewColors = new QCheckBox(tr("Show color swatches for #RRGGBB (🎨)"), previewBox);
+    m_timelineEnabled = new QCheckBox(tr("Show timeline strip (14-day histogram above the list)"), previewBox);
+    m_timelineEnabled->setToolTip(tr("Thin histogram above the list — click a bar to filter that day. Hiding it leaves more room for the list."));
     previewLayout->addWidget(m_previewCode);
     previewLayout->addWidget(m_previewLinks);
     previewLayout->addWidget(m_previewColors);
+    previewLayout->addWidget(m_timelineEnabled);
     m_previewSample = new QLabel(previewBox);
     m_previewSample->setTextFormat(Qt::RichText);
     m_previewSample->setWordWrap(true);
     m_previewSample->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px; border: 1px solid palette(mid); border-radius: 6px; padding: 6px;"));
     m_previewSample->setText(tr("Sample: <code>{\"a\": 1}</code> → highlighted keys, <a href=\"https://example.com\">https://example.com</a> → 🔗, <span style=\"background:#ff0000; padding:0 6px; border-radius:3px;\">#ff0000</span> → 🎨. Toggle above to disable."));
     previewLayout->addWidget(m_previewSample);
-    auto *previewHint = new QLabel(tr("All detectors are local regex. Disabling restores raw text preview and speeds up rendering for huge entries."), previewBox);
-    previewHint->setWordWrap(true);
-    previewHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    previewLayout->addWidget(previewHint);
+    previewLayout->addWidget(makeHint(tr("All detectors are local regex. Disabling restores raw text preview and speeds up rendering for huge entries."), previewBox));
     layout->addWidget(previewBox);
 
-    auto *timelineBox = new QGroupBox(tr("Timeline strip"), page);
-    auto *timelineLayout = new QVBoxLayout(timelineBox);
-    auto *timelineLabel = new QLabel(tr("Thin histogram above the list — 14 bars for the last 14 days, height ∝ entry count for the current filter. Click a bar to filter that day, click outside to clear. Today is highlighted with the accent color. The strip ignores the date filter itself so its shape stays stable."), timelineBox);
-    timelineLabel->setWordWrap(true);
-    timelineLabel->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    timelineLayout->addWidget(timelineLabel);
-    layout->addWidget(timelineBox);
-
-    auto *ocrBox = new QGroupBox(tr("OCR"), page);
+    auto *ocrBox = new QGroupBox(tr("OCR — image text recognition (local tesseract)"), page);
     auto *ocrLayout = new QVBoxLayout(ocrBox);
-    m_ocrStatus = new QLabel(tr("Checking tesseract…"), ocrBox);
-    m_ocrStatus->setWordWrap(true);
-    m_ocrStatus->setTextFormat(Qt::RichText);
+    m_ocrEnabled = new QCheckBox(tr("Enable OCR for images (searchable)"), ocrBox);
+    m_ocrEnabled->setToolTip(tr("When enabled, copied images are OCR'd in the background and become searchable via FTS. Requires tesseract — no network ever."));
+    ocrLayout->addWidget(m_ocrEnabled);
+    auto *ocrForm = new QFormLayout();
+    ocrForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    m_ocrLang = new QComboBox(ocrBox);
+    m_ocrLang->setEditable(true);
+    m_ocrLang->addItems({QStringLiteral("eng"), QStringLiteral("eng+deu"), QStringLiteral("deu"), QStringLiteral("fra"), QStringLiteral("spa"), QStringLiteral("jpn"), QStringLiteral("chi_sim")});
+    m_ocrLang->setToolTip(tr("tesseract -l value, e.g. eng or eng+deu. Requires matching tessdata."));
+    ocrForm->addRow(tr("OCR language:"), m_ocrLang);
+    m_ocrMaxChars = new QSpinBox(ocrBox);
+    m_ocrMaxChars->setRange(512, 65536);
+    m_ocrMaxChars->setSingleStep(512);
+    ocrForm->addRow(tr("Max OCR chars per image:"), m_ocrMaxChars);
+    ocrLayout->addLayout(ocrForm);
+    m_ocrStatus = makeStatusPanel(tr("Checking tesseract…"), ocrBox);
     ocrLayout->addWidget(m_ocrStatus);
-    auto *ocrHint = new QLabel(tr("Local OCR via <code>tesseract</code> (<code>--psm 6 --oem 1 -l eng</code>). No image leaves the machine. Recognized text is stored in <code>entries.ocr_text</code>, FTS-indexed, and shown in preview as <i>🔍 OCR:</i>. Slow devices can disable it in History & Privacy."), ocrBox);
-    ocrHint->setWordWrap(true);
-    ocrHint->setTextFormat(Qt::RichText);
-    ocrHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+    auto *ocrHint = makeHint(tr("Images with text (screenshots, slides) become searchable. OCR runs at most once per image on a thread pool, capped above. In preview you’ll see <i>🔍 OCR:</i> under images. Recognized text is stored in <code>entries.ocr_text</code>, FTS-indexed."), ocrBox);
     ocrLayout->addWidget(ocrHint);
     m_testOcrBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("image-x-generic")), tr("Test OCR with sample image"), ocrBox);
     ocrLayout->addWidget(m_testOcrBtn);
@@ -739,15 +706,15 @@ QWidget *SettingsDialog::buildSearchPreviewPage()
     layout->addWidget(ocrBox);
 
     layout->addStretch(1);
-    return page;
+    return makeScrollable(page);
 }
 
 QWidget *SettingsDialog::buildStoragePage()
 {
-    m_storagePage = new QWidget(this);
-    auto *layout = new QVBoxLayout(m_storagePage);
+    auto *page = new QWidget(this);
+    auto *layout = new QVBoxLayout(page);
 
-    auto *dbInfoBox = new QGroupBox(tr("Database"), m_storagePage);
+    auto *dbInfoBox = new QGroupBox(tr("Database"), page);
     auto *dbLayout = new QVBoxLayout(dbInfoBox);
     const QString path = m_ctx.storage()->databasePath();
     auto *pathLabel = new QLabel(tr("File: <code>%1</code> — click to open folder").arg(path.toHtmlEscaped()), dbInfoBox);
@@ -764,11 +731,7 @@ QWidget *SettingsDialog::buildStoragePage()
     dbLayout->addWidget(sizeLabel);
     // size updated in refreshDiagnostics
     sizeLabel->setObjectName(QStringLiteral("dbSizeLabel"));
-    auto *ftsDetail = new QLabel(tr("FTS and OCR are local — no cloud. The database lives under <code>~/.local/share/egoboard/</code> (WAL mode, foreign keys on)."), dbInfoBox);
-    ftsDetail->setWordWrap(true);
-    ftsDetail->setTextFormat(Qt::RichText);
-    ftsDetail->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    dbLayout->addWidget(ftsDetail);
+    dbLayout->addWidget(makeHint(tr("FTS and OCR are local — no cloud. The database lives under <code>~/.local/share/egoboard/</code> (WAL mode, foreign keys on)."), dbInfoBox));
     // pragma badges
     auto *pragmaLabel = new QLabel(dbInfoBox);
     pragmaLabel->setTextFormat(Qt::RichText);
@@ -778,34 +741,7 @@ QWidget *SettingsDialog::buildStoragePage()
     dbLayout->addWidget(pragmaLabel);
     layout->addWidget(dbInfoBox);
 
-    auto *limitsBox = new QGroupBox(tr("Limits"), m_storagePage);
-    auto *limitsForm = new QFormLayout(limitsBox);
-    m_diskCapMb = new QSpinBox(limitsBox);
-    m_diskCapMb->setRange(0, 1024 * 64);
-    m_diskCapMb->setSpecialValueText(tr("Unlimited"));
-    m_diskCapMb->setSuffix(tr(" MB"));
-    limitsForm->addRow(tr("Total history size cap:"), m_diskCapMb);
-    auto *capHint = new QLabel(tr("When a cap is set, the oldest non-pinned entries are removed to stay below it. Checks run every 25 captures and daily for VACUUM. History is unlimited by default — the virtualized list handles 50k+ entries smoothly. Preview below shows what would be pruned."), limitsBox);
-    capHint->setWordWrap(true);
-    capHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    limitsForm->addRow(QString(), capHint);
-    auto *capPreview = new QLabel(limitsBox);
-    capPreview->setTextFormat(Qt::RichText);
-    capPreview->setWordWrap(true);
-    capPreview->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px; border: 1px dashed palette(mid); border-radius: 6px; padding: 4px;"));
-    limitsForm->addRow(QString(), capPreview);
-    connect(m_diskCapMb, QOverload<int>::of(&QSpinBox::valueChanged), this, [this, capPreview](int v){
-        if (v==0) capPreview->setText(tr("No cap — history grows forever (until disk full)."));
-        else {
-            qint64 cap = qint64(v)*1024*1024;
-            qint64 size = m_ctx.storage()->databaseFileSize();
-            if (size > cap) capPreview->setText(tr("<b>Would prune ~%1</b> — DB %2 > cap %3. Oldest non-pinned entries will be removed on next check.").arg(humanSize(size-cap), humanSize(size), humanSize(cap)));
-            else capPreview->setText(tr("Cap %1 — DB %2 within cap, no pruning now.").arg(humanSize(cap), humanSize(size)));
-        }
-    });
-    layout->addWidget(limitsBox);
-
-    auto *maintenanceBox = new QGroupBox(tr("Maintenance"), m_storagePage);
+    auto *maintenanceBox = new QGroupBox(tr("Maintenance"), page);
     auto *maintenanceLayout = new QVBoxLayout(maintenanceBox);
     auto *row = new QHBoxLayout();
     auto *vacuumButton = new QPushButton(QIcon::fromTheme(QStringLiteral("view-refresh")), tr("Compact database now (VACUUM)"), maintenanceBox);
@@ -840,10 +776,7 @@ QWidget *SettingsDialog::buildStoragePage()
     row->addWidget(clearHistoryBtn);
     row->addStretch(1);
     maintenanceLayout->addLayout(row);
-    auto *maintHint = new QLabel(tr("Egoboard also compacts automatically once a day when the database grows past 50 MB. The VACUUM runs on a dedicated thread with its own connection so the UI stays responsive."), maintenanceBox);
-    maintHint->setWordWrap(true);
-    maintHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    maintenanceLayout->addWidget(maintHint);
+    maintenanceLayout->addWidget(makeHint(tr("Egoboard also compacts automatically once a day when the database grows past 50 MB. The VACUUM runs on a dedicated thread with its own connection so the UI stays responsive."), maintenanceBox));
     // export/import — full flows moved here from the main-window toolbar
     auto *ioRow = new QHBoxLayout();
     auto *exportBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-save")), tr("Export JSON…"), maintenanceBox);
@@ -898,7 +831,7 @@ QWidget *SettingsDialog::buildStoragePage()
     });
     layout->addWidget(maintenanceBox);
     layout->addStretch(1);
-    return m_storagePage;
+    return makeScrollable(page);
 }
 
 QWidget *SettingsDialog::buildAutomationPage()
@@ -1105,28 +1038,50 @@ QWidget *SettingsDialog::buildHotkeysPage()
     return hotkeyPage;
 }
 
-QWidget *SettingsDialog::buildDiagnosticsPage()
+// --- Platform & diagnostics (read-only status + bug report helper) -----------
+QWidget *SettingsDialog::buildPlatformDiagnosticsPage()
 {
     auto *page = new QWidget(this);
     auto *layout = new QVBoxLayout(page);
-    auto *hint = new QLabel(tr("Copy-paste this for bug reports — no sensitive content, just local config & counts. All data stays on disk."), page);
-    hint->setWordWrap(true);
-    hint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    layout->addWidget(hint);
-    m_diagBrowser = new QTextBrowser(page);
+
+    auto *platBox = new QGroupBox(tr("Platform integration"), page);
+    auto *platLayout = new QVBoxLayout(platBox);
+    m_platformStatus = makeStatusPanel(LayerShellHelper::diagnostics(), platBox);
+    platLayout->addWidget(new QLabel(tr("<b>Layer-shell (quick-paste overlay)</b>"), platBox));
+    platLayout->addWidget(m_platformStatus);
+
+    m_dataControlStatus = makeStatusPanel(QString(), platBox);
+    if (m_ctx.dataControl())
+        m_dataControlStatus->setText(m_ctx.dataControl()->diagnostics());
+    else
+        m_dataControlStatus->setText(WlrDataControlHelper::isWayland() ? QStringLiteral("wlr-data-control: <b>inactive</b> (no helper)") : QStringLiteral("wlr-data-control: <b>n/a</b>"));
+    platLayout->addWidget(new QLabel(tr("<b>wlr-data-control (privileged clipboard observe)</b>"), platBox));
+    platLayout->addWidget(m_dataControlStatus);
+
+    m_platformDetails = makeHint(QString(), platBox);
+    // details filled in refreshDiagnostics
+    platLayout->addWidget(m_platformDetails);
+    platLayout->addWidget(makeHint(tr("Tips: On Wayland, layer-shell gives the quick-paste popup an exclusive keyboard grab even without focus. wlr-data-control is privileged — if KWin does not expose <code>zwlr_data_control_manager_v1</code> or denies permission, Egoboard falls back to <code>QClipboard</code> polling (focus-based). Set <code>WAYLAND_DEBUG=1</code> to see protocol traffic."), platBox));
+    layout->addWidget(platBox);
+
+    auto *diagBox = new QGroupBox(tr("Diagnostics report"), page);
+    auto *diagLayout = new QVBoxLayout(diagBox);
+    diagLayout->addWidget(makeHint(tr("Copy-paste this for bug reports — no sensitive content, just local config & counts. All data stays on disk."), diagBox));
+    m_diagBrowser = new QTextBrowser(diagBox);
     m_diagBrowser->setReadOnly(true);
     m_diagBrowser->setOpenExternalLinks(false);
     m_diagBrowser->setStyleSheet(QStringLiteral("font-family: monospace; font-size: 11px;"));
-    layout->addWidget(m_diagBrowser, 1);
+    diagLayout->addWidget(m_diagBrowser, 1);
     auto *row = new QHBoxLayout();
-    auto *copyBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-copy")), tr("Copy to clipboard"), page);
-    auto *refreshBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("view-refresh")), tr("Refresh"), page);
+    auto *copyBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-copy")), tr("Copy to clipboard"), diagBox);
+    auto *refreshBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("view-refresh")), tr("Refresh"), diagBox);
     row->addWidget(copyBtn);
     row->addWidget(refreshBtn);
     row->addStretch(1);
-    layout->addLayout(row);
+    diagLayout->addLayout(row);
     connect(copyBtn, &QPushButton::clicked, this, [this]{ if(m_diagBrowser) QGuiApplication::clipboard()->setText(m_diagBrowser->toPlainText()); });
     connect(refreshBtn, &QPushButton::clicked, this, &SettingsDialog::refreshDiagnostics);
+    layout->addWidget(diagBox);
     return page;
 }
 
@@ -1240,9 +1195,6 @@ void SettingsDialog::refreshDiagnostics()
             });
         }
     }
-    if (m_paletteInfo) {
-        m_paletteInfo->setText(tr("Press <b>Ctrl+K</b> inside the history window to open the palette — fast, FTS-backed search with typo-tolerant re-ranking. <b>⏎</b> paste, <b>Esc</b> close. Try <code>&gt;transform</code> and <code>&gt;snippet</code> for Phase 3 actions."));
-    }
     if (m_transformStatus) {
         const int count = TransformEngine::allDescriptors().size();
         const int hidden = m_ctx.settings()->hiddenTransforms().size();
@@ -1336,7 +1288,13 @@ void SettingsDialog::refreshDiagnostics()
         diag += QStringLiteral("Preview: codeHighlight=%1 linkify=%2 colorSwatches=%3\n").arg(m_ctx.settings()->previewCodeHighlight() ? QStringLiteral("on") : QStringLiteral("off")).arg(m_ctx.settings()->previewLinkify() ? QStringLiteral("on") : QStringLiteral("off")).arg(m_ctx.settings()->previewColorSwatches() ? QStringLiteral("on") : QStringLiteral("off"));
         diag += QStringLiteral("Platform: %1\n").arg(LayerShellHelper::diagnostics().remove(QRegularExpression(QStringLiteral("<[^>]*>"))));
         diag += QStringLiteral("DataControl: %1\n").arg(m_ctx.dataControl() ? m_ctx.dataControl()->diagnostics().remove(QRegularExpression(QStringLiteral("<[^>]*>"))) : QStringLiteral("n/a"));
-        diag += QStringLiteral("Settings: debounce=%1 quickPaste=%2 maxItem=%3 maxImage=%4 diskCap=%5\n").arg(m_ctx.settings()->debounceMs()).arg(m_ctx.settings()->quickPasteCount()).arg(m_ctx.settings()->maxItemBytes()).arg(m_ctx.settings()->maxImageBytes()).arg(m_ctx.settings()->diskCapBytes());
+        diag += QStringLiteral("Settings: debounce=%1 quickPaste=%2 maxItem=%3 maxImage=%4 diskCap=%5 maxEntries=%6\n")
+                    .arg(m_ctx.settings()->debounceMs()).arg(m_ctx.settings()->quickPasteCount()).arg(m_ctx.settings()->maxItemBytes()).arg(m_ctx.settings()->maxImageBytes()).arg(m_ctx.settings()->diskCapBytes()).arg(m_ctx.settings()->maxEntries());
+        diag += QStringLiteral("Capture: text=%1 rich=%2 image=%3 files=%4\n")
+                    .arg(m_ctx.settings()->captureText() ? QStringLiteral("on") : QStringLiteral("off"),
+                         m_ctx.settings()->captureRichText() ? QStringLiteral("on") : QStringLiteral("off"),
+                         m_ctx.settings()->captureImages() ? QStringLiteral("on") : QStringLiteral("off"),
+                         m_ctx.settings()->captureFiles() ? QStringLiteral("on") : QStringLiteral("off"));
         diag += QStringLiteral("(versions: fetching tesseract/KWin async…)\n");
         m_diagBrowser->setPlainText(diag);
         // async patch versions
@@ -1383,6 +1341,15 @@ void SettingsDialog::load()
     m_primarySelection->setChecked(m_ctx.settings()->monitorPrimarySelection());
     m_quickPasteCount->setValue(m_ctx.settings()->quickPasteCount());
     m_autostart->setChecked(m_ctx.settings()->autostartEnabled());
+    // Same order as buildCapturePage(): Text / RichText / Image / Files.
+    const bool captureTypes[] = {
+        m_ctx.settings()->captureText(),
+        m_ctx.settings()->captureRichText(),
+        m_ctx.settings()->captureImages(),
+        m_ctx.settings()->captureFiles(),
+    };
+    for (int i = 0; i < m_captureTypeBoxes.size() && i < 4; ++i)
+        m_captureTypeBoxes[i]->setChecked(captureTypes[i]);
     if (m_trayMode) {
         const QString m = m_ctx.settings()->trayMode();
         int idx = m_trayMode->findData(m);
@@ -1397,6 +1364,7 @@ void SettingsDialog::load()
     };
     m_maxItemMb->setValue(mbCeil(m_ctx.settings()->maxItemBytes()));
     if (m_maxImageMb) m_maxImageMb->setValue(mbCeil(m_ctx.settings()->maxImageBytes()));
+    if (m_maxEntries) m_maxEntries->setValue(m_ctx.settings()->maxEntries());
     switch (m_ctx.settings()->sensitiveMode()) {
     case SettingsManager::SensitiveMode::Off:
         m_sensitiveOff->setChecked(true);
@@ -1434,6 +1402,7 @@ void SettingsDialog::load()
     if (m_previewCode) m_previewCode->setChecked(m_ctx.settings()->previewCodeHighlight());
     if (m_previewLinks) m_previewLinks->setChecked(m_ctx.settings()->previewLinkify());
     if (m_previewColors) m_previewColors->setChecked(m_ctx.settings()->previewColorSwatches());
+    if (m_timelineEnabled) m_timelineEnabled->setChecked(m_ctx.settings()->timelineEnabled());
     if (m_themeCombo) {
         const int idx = m_themeCombo->findData(m_ctx.settings()->theme());
         if (idx >= 0) m_themeCombo->setCurrentIndex(idx);
@@ -1449,12 +1418,20 @@ void SettingsDialog::save()
     m_ctx.settings()->setMonitorPrimarySelection(m_primarySelection->isChecked());
     m_ctx.settings()->setQuickPasteCount(m_quickPasteCount->value());
     m_ctx.settings()->setAutostartEnabled(m_autostart->isChecked());
+    // Same order as buildCapturePage(): Text / RichText / Image / Files.
+    if (m_captureTypeBoxes.size() == 4) {
+        m_ctx.settings()->setCaptureText(m_captureTypeBoxes[0]->isChecked());
+        m_ctx.settings()->setCaptureRichText(m_captureTypeBoxes[1]->isChecked());
+        m_ctx.settings()->setCaptureImages(m_captureTypeBoxes[2]->isChecked());
+        m_ctx.settings()->setCaptureFiles(m_captureTypeBoxes[3]->isChecked());
+    }
     if (m_trayMode) m_ctx.settings()->setTrayMode(m_trayMode->currentData().toString());
     if (m_notifications) m_ctx.settings()->setNotificationsEnabled(m_notifications->isChecked());
 
     m_ctx.settings()->setDebounceMs(m_debounce->value());
     m_ctx.settings()->setMaxItemBytes(qint64(m_maxItemMb->value()) * 1024 * 1024);
     if (m_maxImageMb) m_ctx.settings()->setMaxImageBytes(qint64(m_maxImageMb->value()) * 1024 * 1024);
+    if (m_maxEntries) m_ctx.settings()->setMaxEntries(m_maxEntries->value());
     if (m_sensitiveOff->isChecked())
         m_ctx.settings()->setSensitiveMode(SettingsManager::SensitiveMode::Off);
     else if (m_sensitiveMark->isChecked())
@@ -1485,6 +1462,7 @@ void SettingsDialog::save()
     if (m_previewCode) m_ctx.settings()->setPreviewCodeHighlight(m_previewCode->isChecked());
     if (m_previewLinks) m_ctx.settings()->setPreviewLinkify(m_previewLinks->isChecked());
     if (m_previewColors) m_ctx.settings()->setPreviewColorSwatches(m_previewColors->isChecked());
+    if (m_timelineEnabled) m_ctx.settings()->setTimelineEnabled(m_timelineEnabled->isChecked());
     if (m_themeCombo)
         m_ctx.settings()->setTheme(m_themeCombo->currentData().toString());
     if (m_toolbarIconOnly)

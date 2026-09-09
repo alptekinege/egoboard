@@ -97,6 +97,7 @@ void MainWindow::buildUi()
 
     // Timeline strip: 14-day histogram, click to filter by day
     m_timeline = new TimelineStrip(m_ctx.storage(), central);
+    m_timeline->setVisible(m_ctx.settings()->timelineEnabled());
     layout->addWidget(m_timeline);
 
     // --- list + preview -----------------------------------------------------
@@ -298,8 +299,10 @@ void MainWindow::connectSignals()
         m_preview->showEmpty();
     });
     // Live appearance changes (theme is applied globally in ApplicationContext;
-    // here we restyle the toolbar button mode).
+    // here we restyle the toolbar button mode and the timeline visibility).
     connect(m_ctx.settings(), &SettingsManager::changed, this, [this] {
+        if (m_timeline)
+            m_timeline->setVisible(m_ctx.settings()->timelineEnabled());
         if (!m_toolbar) return;
         m_toolbar->setToolButtonStyle(m_ctx.settings()->toolbarIconOnly()
                                           ? Qt::ToolButtonIconOnly

@@ -19,6 +19,7 @@ private slots:
     void filters();
     void pinnedAndRemove();
     void diskCap();
+    void maxEntriesCap();
     void emitsHistorySignals();
     void modelRefreshesOnHistoryChanges();
     void binaryPayloadAndMetadata();
@@ -197,6 +198,34 @@ void TestStorage::diskCap()
     m_storage->enforceDiskCap(55);
     QVERIFY(m_storage->stats().totalBytes <= 55);
     QVERIFY(m_storage->stats().entryCount > 0);
+}
+
+void TestStorage::maxEntriesCap()
+{
+    for (int i = 0; i < 10; ++i)
+        m_storage->insertOrUpdate(
+            makeRecord(QByteArrayLiteral("m") + QByteArray::number(i),
+                       QStringLiteral("entry"), 1000 + i));
+    QCOMPARE(m_storage->stats().entryCount, qint64(10));
+
+    // Keep only the 3 newest; oldest non-pinned rows go first.
+    QCOMPARE(m_storage->enforceMaxEntries(3), 7);
+    QCOMPARE(m_storage->stats().entryCount, qint64(3));
+
+    // Pinned entries survive even when the cap is already full.
+    const qint64 pinnedId =
+        m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("p"), QStringLiteral("pinned"), 100));
+    QVERIFY(m_storage->setPinned(pinnedId, true));
+    QCOMPARE(m_storage->stats().entryCount, qint64(4));
+    QCOMPARE(m_storage->stats().pinnedCount, qint64(1));
+    QCOMPARE(m_storage->enforceMaxEntries(3), 1); // drop oldest unpinned
+    QCOMPARE(m_storage->stats().entryCount, qint64(3));
+    QCOMPARE(m_storage->stats().pinnedCount, qint64(1));
+
+    // Unlimited / invalid caps are no-ops.
+    QCOMPARE(m_storage->enforceMaxEntries(0), 0);
+    QCOMPARE(m_storage->enforceMaxEntries(-5), 0);
+    QCOMPARE(m_storage->stats().entryCount, qint64(3));
 }
 
 void TestStorage::emitsHistorySignals()

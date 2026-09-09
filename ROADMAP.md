@@ -94,7 +94,7 @@ export const meta = { label: "Pretty JSON", match: /^\s*\{/ };
 
 > **Status:** Track E delivered — redaction, auto-expire rules, audit view and SQLCipher opt-in (KWallet-held key, `-DEGOBOARD_USE_SQLCIPHER`) shipped.
 
-* **Redaction mode** ✅ — `SensitiveMode::Redact` stores detected secrets as `••••` (the original never touches disk), with per-kind toggles (cards / tokens / private keys / custom patterns) in Settings → History & Privacy.
+* **Redaction mode** ✅ — `SensitiveMode::Redact` stores detected secrets as `••••` (the original never touches disk), with per-kind toggles (cards / tokens / private keys / custom patterns) in Settings → Privacy.
 * **Encrypted at rest** ✅ (opt-in): SQLCipher build flag (`-DEGOBOARD_USE_SQLCIPHER`, `EGOBOARD_HAVE_SQLCIPHER`) for the DB file; key held in KWallet (`egoboard/dbKey`); `History/EncryptionEnabled` flag; graceful fallback when not built.
 * **Auto-expire rules** ✅ — rule engine (`ExpireRule` + `ExpireScheduler`): age × content type × source-app wildcard, keep-pinned toggle, JSON-style rules in KConfig, applied at startup and every 15 minutes.
 * **Audit view** ✅ — "Audit" toolbar toggle filters `sensitive = 1` (stats-driven count), plus bulk "Delete listed" with confirmation.

@@ -53,6 +53,8 @@ public:
     virtual StorageStats stats() const = 0;
     // Deletes oldest non-pinned entries until total size <= maxBytes.
     virtual int enforceDiskCap(qint64 maxBytes) = 0;
+    // Deletes oldest non-pinned entries until the entry count <= maxEntries.
+    virtual int enforceMaxEntries(qint64 maxEntries) = 0;
 
 signals:
     void entryAdded(qint64 id);

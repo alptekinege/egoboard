@@ -62,6 +62,20 @@ bool isFilePathList(const QString &text, QStringList *pathsOut)
     return true;
 }
 
+// Capture-type filter: false when the user opted out of recording this type.
+bool captureTypeEnabled(const SettingsManager *settings, ContentType type)
+{
+    if (!settings)
+        return true;
+    switch (type) {
+    case ContentType::Text: return settings->captureText();
+    case ContentType::RichText: return settings->captureRichText();
+    case ContentType::Image: return settings->captureImages();
+    case ContentType::Files: return settings->captureFiles();
+    }
+    return true;
+}
+
 bool isSensitiveWithCustom(const QString &text, SettingsManager *settings)
 {
     if (SensitiveDataDetector::isSensitive(text)) return true;
@@ -220,6 +234,9 @@ void ClipboardWatcher::processPending()
     ClipboardRecord record = buildRecord(mimeData);
     if (record.hash.isEmpty())
         return; // nothing we care about (e.g. unknown formats)
+
+    if (!captureTypeEnabled(m_settings, record.type))
+        return; // capture-type filter: this content type is not recorded
 
     record.timestamp = QDateTime::currentMSecsSinceEpoch();
     if (m_activeWindow) {

@@ -13,6 +13,7 @@ private slots:
     void initTestCase();
     void defaultValues();
     void mutateGeneralSettingsAndSignal();
+    void captureTypesAndRetention();
     void sensitiveModeAndRedactKinds();
     void expireRulesPersistence();
     void ignoredSourceAppsWildcardMatching();
@@ -42,8 +43,14 @@ void TestSettings::defaultValues()
     QCOMPARE(settings.maxItemBytes(), qint64(5 * 1024 * 1024));
     QCOMPARE(settings.maxImageBytes(), settings.maxItemBytes());
     QCOMPARE(settings.diskCapBytes(), qint64(0));
+    QCOMPARE(settings.maxEntries(), 0);
     QCOMPARE(settings.theme(), QStringLiteral("system"));
     QCOMPARE(settings.toolbarIconOnly(), false);
+    QCOMPARE(settings.timelineEnabled(), true);
+    QCOMPARE(settings.captureText(), true);
+    QCOMPARE(settings.captureRichText(), true);
+    QCOMPARE(settings.captureImages(), true);
+    QCOMPARE(settings.captureFiles(), true);
 }
 
 void TestSettings::mutateGeneralSettingsAndSignal()
@@ -72,6 +79,37 @@ void TestSettings::mutateGeneralSettingsAndSignal()
 
     settings.setToolbarIconOnly(true);
     QCOMPARE(settings.toolbarIconOnly(), true);
+}
+
+void TestSettings::captureTypesAndRetention()
+{
+    SettingsManager settings;
+    QSignalSpy changedSpy(&settings, &SettingsManager::changed);
+
+    // All four capture types can be switched off independently.
+    settings.setCaptureText(false);
+    settings.setCaptureRichText(false);
+    settings.setCaptureImages(false);
+    settings.setCaptureFiles(false);
+    QCOMPARE(settings.captureText(), false);
+    QCOMPARE(settings.captureRichText(), false);
+    QCOMPARE(settings.captureImages(), false);
+    QCOMPARE(settings.captureFiles(), false);
+    QCOMPARE(changedSpy.count(), 4);
+
+    settings.setCaptureText(true);
+    QCOMPARE(settings.captureText(), true);
+    QCOMPARE(changedSpy.count(), 5);
+
+    // Negative entry caps collapse to "unlimited".
+    settings.setMaxEntries(-10);
+    QCOMPARE(settings.maxEntries(), 0);
+    settings.setMaxEntries(5000);
+    QCOMPARE(settings.maxEntries(), 5000);
+    QCOMPARE(changedSpy.count(), 7);
+
+    settings.setTimelineEnabled(false);
+    QCOMPARE(settings.timelineEnabled(), false);
 }
 
 void TestSettings::sensitiveModeAndRedactKinds()
@@ -224,6 +262,9 @@ void TestSettings::persistsAcrossInstances()
         settings.setNotificationsEnabled(false);
         settings.setDisabledScripts({QStringLiteral("script-a")});
         settings.setHiddenTransforms({QStringLiteral("json-pretty")});
+        settings.setCaptureImages(false);
+        settings.setMaxEntries(1000);
+        settings.setTimelineEnabled(false);
     }
 
     SettingsManager loaded;
@@ -232,6 +273,10 @@ void TestSettings::persistsAcrossInstances()
     QCOMPARE(loaded.notificationsEnabled(), false);
     QVERIFY(loaded.isScriptDisabled(QStringLiteral("script-a")));
     QVERIFY(loaded.isTransformHidden(QStringLiteral("JSON-PRETTY")));
+    QCOMPARE(loaded.captureImages(), false);
+    QCOMPARE(loaded.captureText(), true);
+    QCOMPARE(loaded.maxEntries(), 1000);
+    QCOMPARE(loaded.timelineEnabled(), false);
 }
 
 QTEST_GUILESS_MAIN(TestSettings)

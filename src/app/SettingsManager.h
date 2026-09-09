@@ -29,6 +29,16 @@ public:
     SettingsManager(SettingsManager&&) = delete;
     SettingsManager& operator=(SettingsManager&&) = delete;
 
+    // Capture: which content types are recorded (all on by default)
+    bool captureText() const;
+    void setCaptureText(bool enabled);
+    bool captureRichText() const;
+    void setCaptureRichText(bool enabled);
+    bool captureImages() const;
+    void setCaptureImages(bool enabled);
+    bool captureFiles() const;
+    void setCaptureFiles(bool enabled);
+
     // General
     bool startVisible() const;
     void setStartVisible(bool visible);
@@ -69,6 +79,11 @@ public:
 
     qint64 diskCapBytes() const; // 0 = unlimited history
     void setDiskCapBytes(qint64 bytes);
+
+    // Entry-count retention cap (0 = unlimited). Oldest non-pinned entries
+    // are removed when the history grows past it.
+    int maxEntries() const;
+    void setMaxEntries(int maxEntries);
 
     QStringList ignoredSourceApps() const;
     void setIgnoredSourceApps(const QStringList &apps);
@@ -115,6 +130,10 @@ public:
     void setTheme(const QString &theme);
     bool toolbarIconOnly() const; // main-window toolbar buttons show icons only
     void setToolbarIconOnly(bool iconOnly);
+
+    // Timeline strip (14-day histogram) above the history list
+    bool timelineEnabled() const;
+    void setTimelineEnabled(bool enabled);
 
     bool encryptionEnabled() const;
     void setEncryptionEnabled(bool enabled);

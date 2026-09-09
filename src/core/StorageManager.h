@@ -34,6 +34,7 @@ public:
     QStringList sourceApps() const override;
     StorageStats stats() const override;
     int enforceDiskCap(qint64 maxBytes) override;
+    int enforceMaxEntries(qint64 maxEntries) override;
 
     // Rule-based expiry: deletes entries older than olderThanMs, optionally
     // restricted to a content type and a source-app wildcard ("firefox*").
