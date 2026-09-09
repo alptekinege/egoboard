@@ -10,6 +10,7 @@
 #include <QRegularExpression>
 #include <QStandardPaths>
 namespace {
+const QString kGroupCapture = QStringLiteral("Capture");
 const QString kGroupGeneral = QStringLiteral("General");
 const QString kGroupHistory = QStringLiteral("History");
 const QString kGroupPreview = QStringLiteral("Preview");
@@ -38,6 +39,58 @@ SettingsManager::~SettingsManager()
 {
     m_config->sync();
     delete m_config;
+}
+
+namespace {
+// The four capture-type switches live in group Capture and default to true.
+bool readCaptureType(const KConfig *config, const char *key)
+{
+    return config->group(kGroupCapture).readEntry(key, true);
+}
+} // namespace
+
+bool SettingsManager::captureText() const
+{
+    return readCaptureType(m_config, "CaptureText");
+}
+
+void SettingsManager::setCaptureText(bool enabled)
+{
+    m_config->group(kGroupCapture).writeEntry("CaptureText", enabled);
+    save();
+}
+
+bool SettingsManager::captureRichText() const
+{
+    return readCaptureType(m_config, "CaptureRichText");
+}
+
+void SettingsManager::setCaptureRichText(bool enabled)
+{
+    m_config->group(kGroupCapture).writeEntry("CaptureRichText", enabled);
+    save();
+}
+
+bool SettingsManager::captureImages() const
+{
+    return readCaptureType(m_config, "CaptureImages");
+}
+
+void SettingsManager::setCaptureImages(bool enabled)
+{
+    m_config->group(kGroupCapture).writeEntry("CaptureImages", enabled);
+    save();
+}
+
+bool SettingsManager::captureFiles() const
+{
+    return readCaptureType(m_config, "CaptureFiles");
+}
+
+void SettingsManager::setCaptureFiles(bool enabled)
+{
+    m_config->group(kGroupCapture).writeEntry("CaptureFiles", enabled);
+    save();
 }
 
 bool SettingsManager::startVisible() const
@@ -215,6 +268,17 @@ qint64 SettingsManager::diskCapBytes() const
 void SettingsManager::setDiskCapBytes(qint64 bytes)
 {
     m_config->group(kGroupHistory).writeEntry<qint64>("DiskCapBytes", qMax<qint64>(0, bytes));
+    save();
+}
+
+int SettingsManager::maxEntries() const
+{
+    return qMax(0, m_config->group(kGroupHistory).readEntry("MaxEntries", 0));
+}
+
+void SettingsManager::setMaxEntries(int maxEntries)
+{
+    m_config->group(kGroupHistory).writeEntry("MaxEntries", qMax(0, maxEntries));
     save();
 }
 
@@ -427,6 +491,17 @@ bool SettingsManager::toolbarIconOnly() const
 void SettingsManager::setToolbarIconOnly(bool iconOnly)
 {
     m_config->group(kGroupUi).writeEntry("ToolbarIconOnly", iconOnly);
+    save();
+}
+
+bool SettingsManager::timelineEnabled() const
+{
+    return m_config->group(kGroupUi).readEntry("TimelineEnabled", true);
+}
+
+void SettingsManager::setTimelineEnabled(bool enabled)
+{
+    m_config->group(kGroupUi).writeEntry("TimelineEnabled", enabled);
     save();
 }
 

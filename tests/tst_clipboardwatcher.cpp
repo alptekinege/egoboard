@@ -22,6 +22,7 @@ private slots:
     void redactsSensitiveText();
     void appliesCustomSensitivePattern();
     void truncatesOversizedText();
+    void skipsDisabledCaptureType();
     void clipboardChangeDoesNotProcessSynchronously();
     void suppressesOwnClipboardWrites();
     void ignoresPrimarySelectionWhenDisabled();
@@ -188,6 +189,29 @@ void TestClipboardWatcher::truncatesOversizedText()
     QCOMPARE(record.textData, QStringLiteral("12345678"));
     QCOMPARE(record.sizeBytes, qint64(8));
     QVERIFY(record.preview.endsWith(QChar(0x2026)));
+}
+
+void TestClipboardWatcher::skipsDisabledCaptureType()
+{
+    SettingsManager settings;
+    settings.setSensitiveMode(SettingsManager::SensitiveMode::Off);
+    settings.setIgnoredSourceApps({});
+    settings.setCaptureText(false);
+    // The shared config dir may carry a small item cap from other tests.
+    settings.setMaxItemBytes(1024 * 1024);
+    settings.setDebounceMs(50);
+    Tracker tracker;
+    ClipboardWatcher watcher(QGuiApplication::clipboard(), &settings, &tracker);
+    QSignalSpy capturedSpy(&watcher, &ClipboardWatcher::captured);
+
+    setClipboardText(watcher, QStringLiteral("no plain text please"));
+    QVERIFY(capturedWithText(capturedSpy, QStringLiteral("no plain text please")) < 0);
+    QCOMPARE(capturedSpy.count(), 0);
+
+    // Re-enabling the type resumes capture.
+    settings.setCaptureText(true);
+    setClipboardText(watcher, QStringLiteral("plain text again"));
+    QVERIFY(capturedWithText(capturedSpy, QStringLiteral("plain text again")) >= 0);
 }
 
 void TestClipboardWatcher::clipboardChangeDoesNotProcessSynchronously()

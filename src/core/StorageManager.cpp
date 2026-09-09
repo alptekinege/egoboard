@@ -471,6 +471,26 @@ int StorageManager::enforceDiskCap(qint64 maxBytes)
     return removeEntries(victims);
 }
 
+int StorageManager::enforceMaxEntries(qint64 maxEntries)
+{
+    if (!m_db.isOpen() || maxEntries <= 0)
+        return 0;
+    const qint64 count = stats().entryCount;
+    if (count <= maxEntries)
+        return 0;
+
+    QList<qint64> victims;
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral(
+        "SELECT id FROM entries WHERE pinned = 0 ORDER BY timestamp_ms ASC, id ASC LIMIT ?"));
+    query.bindValue(0, count - maxEntries);
+    if (!query.exec())
+        return 0;
+    while (query.next())
+        victims.append(query.value(0).toLongLong());
+    return removeEntries(victims);
+}
+
 bool StorageManager::exec(const QString &sql) const
 {
     QSqlQuery query(m_db);

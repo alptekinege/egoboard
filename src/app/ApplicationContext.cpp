@@ -202,10 +202,15 @@ void ApplicationContext::onCaptured(const ClipboardRecord &record)
         m_ocr->recognize(id, record.blobData);
     }
 
-    // Optional disk-size cap: check every N captures to amortize the cost.
+    // Optional retention caps: checked every N captures to amortize the cost.
     const qint64 cap = m_settings->diskCapBytes();
-    if (cap > 0 && ++m_captureCounter % kDiskCapCheckInterval == 0)
-        m_storage->enforceDiskCap(cap);
+    const qint64 maxEntries = m_settings->maxEntries();
+    if ((cap > 0 || maxEntries > 0) && ++m_captureCounter % kDiskCapCheckInterval == 0) {
+        if (cap > 0)
+            m_storage->enforceDiskCap(cap);
+        if (maxEntries > 0)
+            m_storage->enforceMaxEntries(maxEntries);
+    }
 }
 
 void ApplicationContext::toggleMainWindow()

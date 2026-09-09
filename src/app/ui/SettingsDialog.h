@@ -16,26 +16,24 @@ class QRadioButton;
 class QSpinBox;
 class QTextBrowser;
 
-// Detailed settings dialog — 9 tabs: Behaviour / Platform / History & Privacy /
-// Search & Preview / Automation / Hotkeys / Storage / Diagnostics.
-// Every knob is exposed with live diagnostics, all local, no network.
+// Detailed settings dialog — 9 pages in a vertical icon+label sidebar: General /
+// Capture / Privacy / History / Search & Preview / Automation / Shortcuts /
+// Storage / Diagnostics. Every knob is exposed with live diagnostics, all
+// local, no network.
 class SettingsDialog : public QDialog {
     Q_OBJECT
 public:
     explicit SettingsDialog(ApplicationContext &context, QWidget *parent = nullptr);
 private:
-    QWidget *buildBehaviourPage();
-    QWidget *buildAppearancePage();
-    QWidget *buildPlatformPage();
+    QWidget *buildGeneralPage();
+    QWidget *buildCapturePage();
+    QWidget *buildPrivacyPage();
     QWidget *buildHistoryPage();
     QWidget *buildSearchPreviewPage();
-    QWidget *buildStoragePage();
     QWidget *buildAutomationPage();
     QWidget *buildHotkeysPage();
-    QWidget *buildDiagnosticsPage();
-    // legacy names kept for compatibility
-    QWidget *buildGeneralPage() { return buildBehaviourPage(); }
-    QWidget *buildSearchPage() { return buildSearchPreviewPage(); }
+    QWidget *buildStoragePage();
+    QWidget *buildPlatformDiagnosticsPage();
 
     void load();
     void save();
@@ -57,27 +55,27 @@ private:
     // itemChanged handlers below re-enter populate*() unboundedly (stack overflow).
     bool m_populatingLists = false;
 
-    // Behaviour
+    // General
     QCheckBox *m_startVisible = nullptr;
     QCheckBox *m_hideOnFocusOut = nullptr;
-    QCheckBox *m_primarySelection = nullptr;
     QCheckBox *m_autostart = nullptr;
-    QSpinBox *m_quickPasteCount = nullptr;
     QComboBox *m_trayMode = nullptr;
     QCheckBox *m_notifications = nullptr;
-
-    // Appearance
     QComboBox *m_themeCombo = nullptr;
     QCheckBox *m_toolbarIconOnly = nullptr;
 
-    // Platform
-    QLabel *m_platformStatus = nullptr;
-    QLabel *m_dataControlStatus = nullptr;
-    QLabel *m_platformDetails = nullptr;
-    QLabel *m_qpaInfo = nullptr;
-
-    // History & privacy
+    // Capture
+    QCheckBox *m_primarySelection = nullptr;
+    QList<QCheckBox *> m_captureTypeBoxes; // one per recorded ContentType
+    QSpinBox *m_quickPasteCount = nullptr;
     QSpinBox *m_debounce = nullptr;
+    QSpinBox *m_maxItemMb = nullptr;
+    QSpinBox *m_maxImageMb = nullptr;
+    QPlainTextEdit *m_ignoredApps = nullptr;
+    QListWidget *m_appSuggestions = nullptr;
+    QPushButton *m_addIgnoreBtn = nullptr;
+
+    // Privacy
     QRadioButton *m_sensitiveOff = nullptr;
     QRadioButton *m_sensitiveMark = nullptr;
     QRadioButton *m_sensitiveRedact = nullptr;
@@ -85,41 +83,38 @@ private:
     QList<QCheckBox *> m_redactKindBoxes; // one per SensitiveDataDetector::allKinds()
     QPushButton *m_redactTestBtn = nullptr;
     QLabel *m_redactTestResult = nullptr;
+    QPlainTextEdit *m_customPatterns = nullptr;
+    QPushButton *m_testSensitiveBtn = nullptr;
+    QLabel *m_sensitiveTestResult = nullptr;
+    QCheckBox *m_encryptionEnabled = nullptr;
+    QLabel *m_encryptionStatus = nullptr;
+    QPushButton *m_encryptionSetupBtn = nullptr;
+    QPushButton *m_encryptionRemoveBtn = nullptr;
+
+    // History (retention)
+    QSpinBox *m_maxEntries = nullptr;
+    QSpinBox *m_diskCapMb = nullptr;
     QListWidget *m_expireList = nullptr;
     QComboBox *m_expireType = nullptr;
     QLineEdit *m_expireApp = nullptr;
     QSpinBox *m_expireAgeH = nullptr;
     QCheckBox *m_expireKeepPinned = nullptr;
     QList<ExpireRule> m_expireRules; // working copy, written on save
-    QPlainTextEdit *m_customPatterns = nullptr;
-    QPushButton *m_testSensitiveBtn = nullptr;
-    QLabel *m_sensitiveTestResult = nullptr;
-    QSpinBox *m_maxItemMb = nullptr;
-    QSpinBox *m_maxImageMb = nullptr;
-    QSpinBox *m_diskCapMb = nullptr;
-    QWidget *m_storagePage = nullptr;
-    QPlainTextEdit *m_ignoredApps = nullptr;
-    QCheckBox *m_ocrEnabled = nullptr;
-    QComboBox *m_ocrLang = nullptr;
-    QSpinBox *m_ocrMaxChars = nullptr;
-    QListWidget *m_appSuggestions = nullptr;
-    QPushButton *m_addIgnoreBtn = nullptr;
-    QCheckBox *m_encryptionEnabled = nullptr;
-    QLabel *m_encryptionStatus = nullptr;
-    QPushButton *m_encryptionSetupBtn = nullptr;
-    QPushButton *m_encryptionRemoveBtn = nullptr;
 
     // Search & preview
     QLabel *m_ftsStatus = nullptr;
-    QLabel *m_ocrStatus = nullptr;
-    QLabel *m_paletteInfo = nullptr;
     QPushButton *m_ftsRebuildBtn = nullptr;
     QPushButton *m_ftsOptimizeBtn = nullptr;
-    QPushButton *m_testOcrBtn = nullptr;
     QCheckBox *m_previewCode = nullptr;
     QCheckBox *m_previewLinks = nullptr;
     QCheckBox *m_previewColors = nullptr;
     QLabel *m_previewSample = nullptr;
+    QCheckBox *m_timelineEnabled = nullptr;
+    QCheckBox *m_ocrEnabled = nullptr;
+    QComboBox *m_ocrLang = nullptr;
+    QSpinBox *m_ocrMaxChars = nullptr;
+    QLabel *m_ocrStatus = nullptr;
+    QPushButton *m_testOcrBtn = nullptr;
 
     // Automation
     QLabel *m_transformStatus = nullptr;
@@ -129,6 +124,9 @@ private:
     QLabel *m_scriptStatus = nullptr;
     QListWidget *m_scriptList = nullptr;
 
-    // Diagnostics
+    // Platform & diagnostics
+    QLabel *m_platformStatus = nullptr;
+    QLabel *m_dataControlStatus = nullptr;
+    QLabel *m_platformDetails = nullptr;
     QTextBrowser *m_diagBrowser = nullptr;
 };
