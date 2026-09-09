@@ -135,6 +135,18 @@ public:
     bool timelineEnabled() const;
     void setTimelineEnabled(bool enabled);
 
+    // Pasting
+    bool closeAfterPaste() const; // hide the egoboard window when pasting (default on)
+    void setCloseAfterPaste(bool close);
+    bool bumpOnPaste() const; // move the pasted entry back to the top (default on)
+    void setBumpOnPaste(bool bump);
+    bool pasteAsPlainText() const; // strip HTML formatting on paste (default off)
+    void setPasteAsPlainText(bool plain);
+
+    // History list density: "compact" | "comfortable" | "spacious"
+    QString listDensity() const;
+    void setListDensity(const QString &density);
+
     bool encryptionEnabled() const;
     void setEncryptionEnabled(bool enabled);
 

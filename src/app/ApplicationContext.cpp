@@ -29,7 +29,13 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QFileInfo>
 #include <QGuiApplication>
+#include <QImage>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QStandardPaths>
+#include <QTextDocument>
 #include <QTimer>
 
 #include <memory>
@@ -37,6 +43,29 @@
 namespace {
 constexpr qint64 kVacuumSizeThresholdBytes = 50 * 1024 * 1024;
 constexpr int kDiskCapCheckInterval = 25; // captures between cap enforcements
+
+// "Paste as → Image → PNG file": writes the stored image to a temporary PNG
+// and returns a Files-type record pointing at it (pasteable in file managers).
+// Returns a default record when the payload cannot be decoded/saved.
+ClipboardRecord imageAsPngFileRecord(const ClipboardRecord &image)
+{
+    QImage img;
+    if (!img.loadFromData(image.blobData, "PNG"))
+        return {};
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    QDir().mkpath(dir);
+    const QString path = dir + QStringLiteral("/egoboard-%1.png")
+                             .arg(QDateTime::currentMSecsSinceEpoch());
+    if (!img.save(path, "PNG"))
+        return {};
+    ClipboardRecord file;
+    file.type = ContentType::Files;
+    file.textData = QString::fromUtf8(
+        QJsonDocument(QJsonArray{path}).toJson(QJsonDocument::Compact));
+    file.sizeBytes = QFileInfo(path).size();
+    file.preview = QStringLiteral("PNG file: %1").arg(QFileInfo(path).fileName());
+    return file;
+}
 } // namespace
 
 ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui, QObject *parent)
@@ -75,7 +104,8 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
 
     m_scripts = new ScriptActionManager(this);
     m_dbus = new EgoboardDbusAdaptor(m_storage, this);
-    connect(m_dbus, &EgoboardDbusAdaptor::pasteRequested, this, &ApplicationContext::pasteEntry);
+    connect(m_dbus, &EgoboardDbusAdaptor::pasteRequested, this,
+            [this](qint64 entryId) { pasteEntry(entryId); });
 
     if (QGuiApplication::platformName() == QLatin1String("wayland"))
         m_tracker = std::make_unique<WaylandActiveWindowTracker>();
@@ -171,13 +201,17 @@ void ApplicationContext::start()
             &ApplicationContext::toggleMainWindow);
     connect(m_hotkeys, &HotkeyManager::quickPasteRequested, this,
             &ApplicationContext::showQuickPaste);
+    connect(m_hotkeys, &HotkeyManager::deleteLastRequested, this,
+            &ApplicationContext::deleteLastEntry);
 
     connect(m_tray, &TrayController::toggleRequested, this, &ApplicationContext::toggleMainWindow);
     connect(m_tray, &TrayController::quickPasteRequested, this, &ApplicationContext::showQuickPaste);
-    connect(m_tray, &TrayController::pasteRequested, this, &ApplicationContext::pasteEntry);
+    connect(m_tray, &TrayController::pasteRequested, this,
+            [this](qint64 entryId) { pasteEntry(entryId); });
     connect(m_tray, &TrayController::quitRequested, qApp, &QCoreApplication::quit);
 
-    connect(m_quickPaste, &QuickPasteMenu::pasteRequested, this, &ApplicationContext::pasteEntry);
+    connect(m_quickPaste, &QuickPasteMenu::pasteRequested, this,
+            [this](qint64 entryId) { pasteEntry(entryId); });
 
     m_watcher->start();
     m_dataControl->start();
@@ -228,18 +262,66 @@ void ApplicationContext::showQuickPaste()
     m_quickPaste->popupAtCursor();
 }
 
-void ApplicationContext::pasteEntry(qint64 entryId)
+void ApplicationContext::pasteEntry(qint64 entryId, PasteVariant variant)
 {
     ClipboardRecord record;
     if (!m_storage->fetchFull(entryId, &record))
         return;
+
+    // Text variants reshape the payload before it reaches the clipboard.
+    const bool wantsPlainText = variant == PasteVariant::PlainText
+        || (variant == PasteVariant::Normal && m_settings->pasteAsPlainText());
+    const bool textVariant = variant == PasteVariant::UpperCase
+        || variant == PasteVariant::LowerCase || variant == PasteVariant::WithTimestamp;
+    if ((wantsPlainText || textVariant)
+        && (record.type == ContentType::Text || record.type == ContentType::RichText)) {
+        if (record.type == ContentType::RichText) {
+            QTextDocument document;
+            document.setHtml(record.textData);
+            record.textData = document.toPlainText();
+            record.type = ContentType::Text;
+        }
+        if (variant == PasteVariant::UpperCase)
+            record.textData = record.textData.toUpper();
+        else if (variant == PasteVariant::LowerCase)
+            record.textData = record.textData.toLower();
+        else if (variant == PasteVariant::WithTimestamp)
+            record.textData = QDateTime::currentDateTime().toString(
+                                  QStringLiteral("[yyyy-MM-dd HH:mm] "))
+                + record.textData;
+    }
+    // "Image → PNG file": swap in a Files record pointing at the temp PNG;
+    // on failure the original image is pasted as usual.
+    if (variant == PasteVariant::ImageAsPngFile && record.type == ContentType::Image
+        && record.hasBlob) {
+        const ClipboardRecord file = imageAsPngFileRecord(record);
+        if (file.type == ContentType::Files)
+            record = file;
+    }
+
+    // "Bump on paste": move the pasted entry back to the top of the history.
+    if (m_settings->bumpOnPaste())
+        m_storage->touchEntry(entryId);
+
     if (m_dataControl) m_dataControl->suppressOwnSets();
     QWidget *hideTarget = nullptr;
-    if (m_window->isVisible())
-        hideTarget = m_window.get();
-    else if (m_quickPaste->isVisible())
-        hideTarget = m_quickPaste;
+    if (m_settings->closeAfterPaste()) {
+        if (m_window->isVisible())
+            hideTarget = m_window.get();
+        else if (m_quickPaste->isVisible())
+            hideTarget = m_quickPaste;
+    }
     m_paster->paste(record, hideTarget);
+}
+
+void ApplicationContext::deleteLastEntry()
+{
+    // Newest entry first. Pinned entries are protected: if the newest row is
+    // pinned the hotkey does nothing rather than removing an older entry.
+    const auto page = m_storage->fetchPage(FilterSpec{}, PageCursor{}, 1);
+    if (page.isEmpty() || page.first().pinned)
+        return;
+    m_storage->remove(page.first().id);
 }
 
 void ApplicationContext::vacuumNow()

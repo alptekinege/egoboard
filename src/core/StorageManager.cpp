@@ -3,6 +3,7 @@
 #include "DatabaseSchema.h"
 #include "SearchEngine.h"
 
+#include <QDateTime>
 #include <QFile>
 #include <QSqlError>
 #include <QSqlQuery>
@@ -357,6 +358,23 @@ bool StorageManager::setOcrText(qint64 id, const QString &ocrText)
     query.bindValue(QStringLiteral(":t"), ocrText);
     query.bindValue(QStringLiteral(":id"), id);
     return query.exec() && query.numRowsAffected() > 0;
+}
+
+bool StorageManager::touchEntry(qint64 id)
+{
+    if (!m_db.isOpen() || id <= 0)
+        return false;
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral(
+        "UPDATE entries SET timestamp_ms = :ts, use_count = use_count + 1 WHERE id = :id"));
+    query.bindValue(QStringLiteral(":ts"), QDateTime::currentMSecsSinceEpoch());
+    query.bindValue(QStringLiteral(":id"), id);
+    if (!query.exec() || query.numRowsAffected() != 1) {
+        qWarning("egoboard: touchEntry failed: %s", qPrintable(query.lastError().text()));
+        return false;
+    }
+    emit entryTouched(id);
+    return true;
 }
 
 QStringList StorageManager::sourceApps() const

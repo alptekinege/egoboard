@@ -260,12 +260,31 @@ QWidget *SettingsDialog::buildGeneralPage()
     m_themeCombo->addItem(tr("Light"), QStringLiteral("light"));
     m_themeCombo->addItem(tr("Dark"), QStringLiteral("dark"));
     appearanceForm->addRow(tr("Color theme:"), m_themeCombo);
+    m_densityCombo = new QComboBox(appearanceBox);
+    m_densityCombo->addItem(tr("Compact"), QStringLiteral("compact"));
+    m_densityCombo->addItem(tr("Comfortable"), QStringLiteral("comfortable"));
+    m_densityCombo->addItem(tr("Spacious"), QStringLiteral("spacious"));
+    m_densityCombo->setToolTip(tr("Vertical breathing room of the history list rows."));
+    appearanceForm->addRow(tr("List density:"), m_densityCombo);
     appearanceLayout->addLayout(appearanceForm);
     m_toolbarIconOnly = new QCheckBox(tr("Show toolbar buttons as icons only (compact)"), appearanceBox);
     m_toolbarIconOnly->setToolTip(tr("Toolbar buttons appear as logos only — hover for the label. Text+icon otherwise. Takes effect immediately, also while the window is open."));
     appearanceLayout->addWidget(m_toolbarIconOnly);
     appearanceLayout->addWidget(makeHint(tr("Light and Dark apply a palette on top of the current style; System restores the desktop theme. Applies immediately to the whole app and is remembered across restarts."), appearanceBox));
     layout->addWidget(appearanceBox);
+
+    auto *pastingBox = new QGroupBox(tr("Pasting"), page);
+    auto *pastingLayout = new QVBoxLayout(pastingBox);
+    m_closeAfterPaste = new QCheckBox(tr("Close the Egoboard window after pasting"), pastingBox);
+    m_closeAfterPaste->setToolTip(tr("When on, the window hides as soon as you activate an entry so focus returns to the app you paste into."));
+    pastingLayout->addWidget(m_closeAfterPaste);
+    m_bumpOnPaste = new QCheckBox(tr("Move the pasted entry to the top of history"), pastingBox);
+    m_bumpOnPaste->setToolTip(tr("Pasting an older entry bumps its timestamp and use count, so it shows up first."));
+    pastingLayout->addWidget(m_bumpOnPaste);
+    m_pasteAsPlainText = new QCheckBox(tr("Always paste as plain text (strip formatting)"), pastingBox);
+    pastingLayout->addWidget(m_pasteAsPlainText);
+    pastingLayout->addWidget(makeHint(tr("Plain-text paste affects rich text (HTML) entries — images and file copies are unchanged. The stored entry keeps its original formatting either way."), pastingBox));
+    layout->addWidget(pastingBox);
 
     layout->addStretch(1);
     return makeScrollable(page);
@@ -1044,19 +1063,32 @@ QWidget *SettingsDialog::buildHotkeysPage()
             });
     hotkeyForm->addRow(tr("Quick paste menu:"), quickKey);
 
+    auto *deleteKey = new KKeySequenceWidget(hotkeyBox);
+    deleteKey->setKeySequence(
+        KGlobalAccel::self()->shortcut(m_ctx.hotkeys()->deleteLastAction()).value(0));
+    connect(deleteKey, &KKeySequenceWidget::keySequenceChanged, this,
+            [this, deleteKey](const QKeySequence &sequence) {
+                KGlobalAccel::self()->setShortcut(m_ctx.hotkeys()->deleteLastAction(),
+                                                  {sequence}, KGlobalAccel::NoAutoloading);
+            });
+    hotkeyForm->addRow(tr("Delete last entry:"), deleteKey);
+
     auto *paletteKey = new QLabel(QStringLiteral("Ctrl+K"), hotkeyBox);
     paletteKey->setTextInteractionFlags(Qt::TextSelectableByMouse);
     paletteKey->setStyleSheet(QStringLiteral("font-family: monospace; background: palette(midlight); padding: 2px 6px; border-radius: 4px;"));
     hotkeyForm->addRow(tr("Command palette (in-app):"), paletteKey);
 
-    auto *resetKeys = new QPushButton(tr("Reset to defaults (Meta+V / Meta+Shift+V)"), hotkeyBox);
-    connect(resetKeys, &QPushButton::clicked, this, [this, toggleKey, quickKey] {
+    auto *resetKeys = new QPushButton(tr("Reset to defaults (Meta+V / Meta+Shift+V / Meta+Shift+D)"), hotkeyBox);
+    connect(resetKeys, &QPushButton::clicked, this, [this, toggleKey, quickKey, deleteKey] {
         KGlobalAccel::self()->setShortcut(m_ctx.hotkeys()->toggleAction(),
                                           HotkeyManager::defaultToggleShortcut());
         KGlobalAccel::self()->setShortcut(m_ctx.hotkeys()->quickPasteAction(),
                                           HotkeyManager::defaultQuickPasteShortcut());
+        KGlobalAccel::self()->setShortcut(m_ctx.hotkeys()->deleteLastAction(),
+                                          HotkeyManager::defaultDeleteLastShortcut());
         toggleKey->setKeySequence(HotkeyManager::defaultToggleShortcut().value(0));
         quickKey->setKeySequence(HotkeyManager::defaultQuickPasteShortcut().value(0));
+        deleteKey->setKeySequence(HotkeyManager::defaultDeleteLastShortcut().value(0));
     });
     hotkeyForm->addRow(QString(), resetKeys);
     auto *hotkeyHint = new QLabel(tr("Shortcuts are registered with KWin via KGlobalAccel. They work even when Egoboard is hidden. The palette (Ctrl+K) is local to the window and needs no registration."), hotkeyBox);
@@ -1433,6 +1465,13 @@ void SettingsDialog::load()
     if (m_previewLinks) m_previewLinks->setChecked(m_ctx.settings()->previewLinkify());
     if (m_previewColors) m_previewColors->setChecked(m_ctx.settings()->previewColorSwatches());
     if (m_timelineEnabled) m_timelineEnabled->setChecked(m_ctx.settings()->timelineEnabled());
+    if (m_densityCombo) {
+        const int idx = m_densityCombo->findData(m_ctx.settings()->listDensity());
+        if (idx >= 0) m_densityCombo->setCurrentIndex(idx);
+    }
+    if (m_closeAfterPaste) m_closeAfterPaste->setChecked(m_ctx.settings()->closeAfterPaste());
+    if (m_bumpOnPaste) m_bumpOnPaste->setChecked(m_ctx.settings()->bumpOnPaste());
+    if (m_pasteAsPlainText) m_pasteAsPlainText->setChecked(m_ctx.settings()->pasteAsPlainText());
     if (m_themeCombo) {
         const int idx = m_themeCombo->findData(m_ctx.settings()->theme());
         if (idx >= 0) m_themeCombo->setCurrentIndex(idx);
@@ -1493,6 +1532,11 @@ void SettingsDialog::save()
     if (m_previewLinks) m_ctx.settings()->setPreviewLinkify(m_previewLinks->isChecked());
     if (m_previewColors) m_ctx.settings()->setPreviewColorSwatches(m_previewColors->isChecked());
     if (m_timelineEnabled) m_ctx.settings()->setTimelineEnabled(m_timelineEnabled->isChecked());
+    if (m_densityCombo)
+        m_ctx.settings()->setListDensity(m_densityCombo->currentData().toString());
+    if (m_closeAfterPaste) m_ctx.settings()->setCloseAfterPaste(m_closeAfterPaste->isChecked());
+    if (m_bumpOnPaste) m_ctx.settings()->setBumpOnPaste(m_bumpOnPaste->isChecked());
+    if (m_pasteAsPlainText) m_ctx.settings()->setPasteAsPlainText(m_pasteAsPlainText->isChecked());
     if (m_themeCombo)
         m_ctx.settings()->setTheme(m_themeCombo->currentData().toString());
     if (m_toolbarIconOnly)

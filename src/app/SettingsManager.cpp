@@ -505,6 +505,56 @@ void SettingsManager::setTimelineEnabled(bool enabled)
     save();
 }
 
+bool SettingsManager::closeAfterPaste() const
+{
+    return m_config->group(kGroupUi).readEntry("CloseAfterPaste", true);
+}
+
+void SettingsManager::setCloseAfterPaste(bool close)
+{
+    m_config->group(kGroupUi).writeEntry("CloseAfterPaste", close);
+    save();
+}
+
+bool SettingsManager::bumpOnPaste() const
+{
+    return m_config->group(kGroupUi).readEntry("BumpOnPaste", true);
+}
+
+void SettingsManager::setBumpOnPaste(bool bump)
+{
+    m_config->group(kGroupUi).writeEntry("BumpOnPaste", bump);
+    save();
+}
+
+bool SettingsManager::pasteAsPlainText() const
+{
+    return m_config->group(kGroupUi).readEntry("PasteAsPlainText", false);
+}
+
+void SettingsManager::setPasteAsPlainText(bool plain)
+{
+    m_config->group(kGroupUi).writeEntry("PasteAsPlainText", plain);
+    save();
+}
+
+QString SettingsManager::listDensity() const
+{
+    const QString v = m_config->group(kGroupUi).readEntry("ListDensity", QStringLiteral("comfortable"));
+    if (v == QLatin1String("compact") || v == QLatin1String("spacious"))
+        return v;
+    return QStringLiteral("comfortable");
+}
+
+void SettingsManager::setListDensity(const QString &density)
+{
+    QString v = density;
+    if (v != QLatin1String("compact") && v != QLatin1String("spacious"))
+        v = QStringLiteral("comfortable");
+    m_config->group(kGroupUi).writeEntry("ListDensity", v);
+    save();
+}
+
 bool SettingsManager::encryptionEnabled() const
 {
     return m_config->group(kGroupHistory).readEntry("EncryptionEnabled", false);

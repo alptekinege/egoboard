@@ -48,6 +48,9 @@ public:
 
     virtual bool setPinned(qint64 id, bool pinned) = 0;
     virtual bool setOcrText(qint64 id, const QString &ocrText) = 0;
+    // Bumps an entry to the top of the history: timestamp = now, use_count += 1.
+    // Emits entryTouched(id) on success; returns false for unknown ids.
+    virtual bool touchEntry(qint64 id) = 0;
 
     virtual QStringList sourceApps() const = 0;
     virtual StorageStats stats() const = 0;

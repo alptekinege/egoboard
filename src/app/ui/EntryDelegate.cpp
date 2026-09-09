@@ -186,5 +186,5 @@ void EntryDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
 QSize EntryDelegate::sizeHint(const QStyleOptionViewItem &option, const QModelIndex &) const
 {
     const QFontMetrics metrics(option.font);
-    return QSize(option.rect.width(), metrics.height() * 2 + 2 * 8 + 4);
+    return QSize(option.rect.width(), metrics.height() * 2 + 2 * m_rowPadding + 4);
 }

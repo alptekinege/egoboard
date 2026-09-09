@@ -14,6 +14,7 @@ private slots:
     void defaultValues();
     void mutateGeneralSettingsAndSignal();
     void captureTypesAndRetention();
+    void pasteBehaviorAndDensity();
     void sensitiveModeAndRedactKinds();
     void expireRulesPersistence();
     void ignoredSourceAppsWildcardMatching();
@@ -47,6 +48,10 @@ void TestSettings::defaultValues()
     QCOMPARE(settings.theme(), QStringLiteral("system"));
     QCOMPARE(settings.toolbarIconOnly(), false);
     QCOMPARE(settings.timelineEnabled(), true);
+    QCOMPARE(settings.closeAfterPaste(), true);
+    QCOMPARE(settings.bumpOnPaste(), true);
+    QCOMPARE(settings.pasteAsPlainText(), false);
+    QCOMPARE(settings.listDensity(), QStringLiteral("comfortable"));
     QCOMPARE(settings.captureText(), true);
     QCOMPARE(settings.captureRichText(), true);
     QCOMPARE(settings.captureImages(), true);
@@ -110,6 +115,29 @@ void TestSettings::captureTypesAndRetention()
 
     settings.setTimelineEnabled(false);
     QCOMPARE(settings.timelineEnabled(), false);
+}
+
+void TestSettings::pasteBehaviorAndDensity()
+{
+    SettingsManager settings;
+    QSignalSpy changedSpy(&settings, &SettingsManager::changed);
+
+    settings.setCloseAfterPaste(false);
+    QCOMPARE(settings.closeAfterPaste(), false);
+    settings.setBumpOnPaste(false);
+    QCOMPARE(settings.bumpOnPaste(), false);
+    settings.setPasteAsPlainText(true);
+    QCOMPARE(settings.pasteAsPlainText(), true);
+    QCOMPARE(changedSpy.count(), 3);
+
+    // Unknown densities normalize to "comfortable"; the valid set passes through.
+    settings.setListDensity(QStringLiteral("ridiculous"));
+    QCOMPARE(settings.listDensity(), QStringLiteral("comfortable"));
+    settings.setListDensity(QStringLiteral("compact"));
+    QCOMPARE(settings.listDensity(), QStringLiteral("compact"));
+    settings.setListDensity(QStringLiteral("spacious"));
+    QCOMPARE(settings.listDensity(), QStringLiteral("spacious"));
+    QCOMPARE(changedSpy.count(), 6);
 }
 
 void TestSettings::sensitiveModeAndRedactKinds()
@@ -265,6 +293,10 @@ void TestSettings::persistsAcrossInstances()
         settings.setCaptureImages(false);
         settings.setMaxEntries(1000);
         settings.setTimelineEnabled(false);
+        settings.setCloseAfterPaste(false);
+        settings.setBumpOnPaste(false);
+        settings.setPasteAsPlainText(true);
+        settings.setListDensity(QStringLiteral("compact"));
     }
 
     SettingsManager loaded;
@@ -277,6 +309,10 @@ void TestSettings::persistsAcrossInstances()
     QCOMPARE(loaded.captureText(), true);
     QCOMPARE(loaded.maxEntries(), 1000);
     QCOMPARE(loaded.timelineEnabled(), false);
+    QCOMPARE(loaded.closeAfterPaste(), false);
+    QCOMPARE(loaded.bumpOnPaste(), false);
+    QCOMPARE(loaded.pasteAsPlainText(), true);
+    QCOMPARE(loaded.listDensity(), QStringLiteral("compact"));
 }
 
 QTEST_GUILESS_MAIN(TestSettings)

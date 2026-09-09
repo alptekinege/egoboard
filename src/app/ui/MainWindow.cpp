@@ -43,6 +43,18 @@
 
 using DateRange = ExportImportDialogs::DateRange;
 
+namespace {
+// Vertical row padding for the history list, from the listDensity setting.
+int densityPadding(const QString &density)
+{
+    if (density == QLatin1String("compact"))
+        return 4;
+    if (density == QLatin1String("spacious"))
+        return 12;
+    return 8;
+}
+} // namespace
+
 MainWindow::MainWindow(ApplicationContext &context, QWidget *parent)
     : QMainWindow(parent)
     , m_ctx(context)
@@ -105,6 +117,7 @@ void MainWindow::buildUi()
 
     m_model = new ClipboardListModel(m_ctx.storage(), this);
     m_delegate = new EntryDelegate(m_ctx.bookmarks(), this);
+    m_delegate->setRowPadding(densityPadding(m_ctx.settings()->listDensity()));
 
     m_list = new QListView(splitter);
     m_list->setModel(m_model);
@@ -250,6 +263,16 @@ void MainWindow::connectSignals()
     if (auto *sc = new QShortcut(QKeySequence(QStringLiteral("Ctrl+K")), this)) {
         connect(sc, &QShortcut::activated, this, &MainWindow::openPalette);
     }
+    // Ctrl+1…9: paste the first nine entries of the current filter, mirroring
+    // the number keys in the quick-paste popup.
+    for (int i = 1; i <= 9; ++i) {
+        auto *numberKey = new QShortcut(QKeySequence(QStringLiteral("Ctrl+%1").arg(i)), this);
+        connect(numberKey, &QShortcut::activated, this, [this, i] {
+            const QModelIndex index = m_model->index(i - 1, 0);
+            if (index.isValid())
+                pasteEntry(index.data(ClipboardListModel::IdRole).toLongLong());
+        });
+    }
     connect(m_search, &QLineEdit::textChanged, this,
             [this] { m_searchDebounce->start(); });
 
@@ -303,6 +326,8 @@ void MainWindow::connectSignals()
     connect(m_ctx.settings(), &SettingsManager::changed, this, [this] {
         if (m_timeline)
             m_timeline->setVisible(m_ctx.settings()->timelineEnabled());
+        if (m_delegate)
+            m_delegate->setRowPadding(densityPadding(m_ctx.settings()->listDensity()));
         if (!m_toolbar) return;
         m_toolbar->setToolButtonStyle(m_ctx.settings()->toolbarIconOnly()
                                           ? Qt::ToolButtonIconOnly
@@ -474,6 +499,32 @@ void MainWindow::showContextMenu(const QPoint &pos)
     connect(paste, &QAction::triggered, this, &MainWindow::pasteCurrent);
     QAction *copy = menu.addAction(tr("Copy to clipboard"));
     connect(copy, &QAction::triggered, this, &MainWindow::copyCurrent);
+
+    // "Paste as" variants reshape the payload; the stored entry is untouched.
+    {
+        const qint64 entryId = index.data(ClipboardListModel::IdRole).toLongLong();
+        const int type = index.data(ClipboardListModel::TypeRole).toInt();
+        const bool isText = type == int(ContentType::Text) || type == int(ContentType::RichText);
+        const bool isImage = type == int(ContentType::Image);
+        if (isText || isImage) {
+            QMenu *pasteAs = menu.addMenu(tr("Paste as"));
+            const auto addVariant = [this, pasteAs, entryId](
+                                        const QString &label,
+                                        ApplicationContext::PasteVariant variant, bool enabled) {
+                QAction *a = pasteAs->addAction(label);
+                a->setEnabled(enabled);
+                connect(a, &QAction::triggered, this,
+                        [this, entryId, variant] { m_ctx.pasteEntry(entryId, variant); });
+            };
+            addVariant(tr("Plain text"), ApplicationContext::PasteVariant::PlainText, isText);
+            addVariant(tr("UPPERCASE"), ApplicationContext::PasteVariant::UpperCase, isText);
+            addVariant(tr("lowercase"), ApplicationContext::PasteVariant::LowerCase, isText);
+            addVariant(tr("With timestamp"), ApplicationContext::PasteVariant::WithTimestamp,
+                       isText);
+            addVariant(tr("Image → PNG file"), ApplicationContext::PasteVariant::ImageAsPngFile,
+                       isImage);
+        }
+    }
 
     const bool pinned = index.data(ClipboardListModel::PinnedRole).toBool();
     QAction *pin = menu.addAction(pinned ? tr("Unpin") : tr("Pin"));

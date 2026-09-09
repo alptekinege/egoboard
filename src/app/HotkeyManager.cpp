@@ -15,6 +15,11 @@ QList<QKeySequence> HotkeyManager::defaultQuickPasteShortcut()
     return {QKeySequence(QStringLiteral("Meta+Shift+V"))};
 }
 
+QList<QKeySequence> HotkeyManager::defaultDeleteLastShortcut()
+{
+    return {QKeySequence(QStringLiteral("Meta+Shift+D"))};
+}
+
 HotkeyManager::HotkeyManager(QObject *parent)
     : QObject(parent)
 {
@@ -32,4 +37,10 @@ HotkeyManager::HotkeyManager(QObject *parent)
     KGlobalAccel::self()->setDefaultShortcut(m_quickPaste, defaultQuickPasteShortcut());
     KGlobalAccel::self()->setShortcut(m_quickPaste, defaultQuickPasteShortcut());
     connect(m_quickPaste, &QAction::triggered, this, &HotkeyManager::quickPasteRequested);
+
+    m_deleteLast = collection->addAction(QStringLiteral("deletelast"));
+    m_deleteLast->setText(tr("Delete Last Clipboard Entry"));
+    KGlobalAccel::self()->setDefaultShortcut(m_deleteLast, defaultDeleteLastShortcut());
+    KGlobalAccel::self()->setShortcut(m_deleteLast, defaultDeleteLastShortcut());
+    connect(m_deleteLast, &QAction::triggered, this, &HotkeyManager::deleteLastRequested);
 }

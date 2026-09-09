@@ -97,10 +97,10 @@ public:
 
 ### 3.3 Pasting
 
-* **Paste behavior settings** — close window after paste (default on), bump pasted entry to top (default on), global "always paste as plain text".
-* **"Paste as" submenu** — plain text, UPPERCASE, with timestamp, image → PNG file next to the cursor.
-* **Number-key paste** — `Ctrl+1…9` pastes the first nine visible entries from the main window.
-* **Global delete-last hotkey** — drop the most recent capture without opening the window.
+* ~~Paste behavior settings — close window after paste (default on), bump pasted entry to top (default on), global "always paste as plain text" — delivered.~~
+* ~~"Paste as" submenu — plain text, UPPERCASE, lowercase, with timestamp, image → PNG file — delivered (list context menu).~~
+* ~~Number-key paste — `Ctrl+1…9` pastes the first nine visible entries from the main window — delivered.~~
+* ~~Global delete-last hotkey — drop the most recent capture without opening the window (default `Meta+Shift+D`, pinned entries protected) — delivered.~~
 * **Quick paste 2.0** — search-as-you-type inside the popup, optional two-line previews, multi-monitor placement memory. *(bigger effort)*
 
 ### 3.4 Privacy

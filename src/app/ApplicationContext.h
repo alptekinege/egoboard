@@ -54,9 +54,19 @@ public:
     MainWindow *window() const { return m_window.get(); }
     QuickPasteMenu *quickPaste() const { return m_quickPaste; }
 
+    enum class PasteVariant {
+        Normal, // as stored (still honors "always paste as plain text")
+        PlainText, // strip HTML formatting
+        UpperCase,
+        LowerCase,
+        WithTimestamp, // prepend "[yyyy-MM-dd HH:mm] "
+        ImageAsPngFile, // save the image to a temp PNG, paste as a file
+    };
+
     void toggleMainWindow();
     void showQuickPaste();
-    void pasteEntry(qint64 entryId);
+    void pasteEntry(qint64 entryId, PasteVariant variant = PasteVariant::Normal);
+    void deleteLastEntry(); // drop the newest capture (global hotkey)
     void vacuumNow();
 
 private:

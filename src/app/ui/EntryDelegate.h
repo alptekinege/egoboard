@@ -11,6 +11,9 @@ class EntryDelegate : public QStyledItemDelegate {
 public:
     explicit EntryDelegate(BookmarkManager *bookmarks, QObject *parent = nullptr);
 
+    // Vertical breathing room per row in pixels (list density).
+    void setRowPadding(int padding) { m_rowPadding = padding; }
+
     void paint(QPainter *painter, const QStyleOptionViewItem &option,
                const QModelIndex &index) const override;
     QSize sizeHint(const QStyleOptionViewItem &option,
@@ -24,4 +27,5 @@ private:
 
     BookmarkManager *m_bookmarks = nullptr;
     mutable QHash<qint64, QVector<QColor>> m_groupColorCache; // per visible entry
+    int m_rowPadding = 8;
 };

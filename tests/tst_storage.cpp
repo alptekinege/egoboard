@@ -20,6 +20,7 @@ private slots:
     void pinnedAndRemove();
     void diskCap();
     void maxEntriesCap();
+    void touchEntryBump();
     void emitsHistorySignals();
     void modelRefreshesOnHistoryChanges();
     void binaryPayloadAndMetadata();
@@ -226,6 +227,34 @@ void TestStorage::maxEntriesCap()
     QCOMPARE(m_storage->enforceMaxEntries(0), 0);
     QCOMPARE(m_storage->enforceMaxEntries(-5), 0);
     QCOMPARE(m_storage->stats().entryCount, qint64(3));
+}
+
+void TestStorage::touchEntryBump()
+{
+    const qint64 id = m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("touch"), QStringLiteral("touch me"), 1000));
+    QVERIFY(id != 0);
+
+    ClipboardRecord before;
+    QVERIFY(m_storage->fetchFull(id, &before));
+    QCOMPARE(before.useCount, 0);
+
+    QSignalSpy touchedSpy(m_storage, &StorageManager::entryTouched);
+    QTest::qWait(2); // timestamp resolution is milliseconds
+    QVERIFY(m_storage->touchEntry(id));
+    QCOMPARE(touchedSpy.count(), 1);
+    QCOMPARE(touchedSpy.first().first().toLongLong(), id);
+
+    ClipboardRecord after;
+    QVERIFY(m_storage->fetchFull(id, &after));
+    QVERIFY(after.timestamp > before.timestamp);
+    QCOMPARE(after.useCount, before.useCount + 1);
+
+    // Unknown ids fail without emitting.
+    QVERIFY(!m_storage->touchEntry(999999));
+    QCOMPARE(touchedSpy.count(), 1);
+    QVERIFY(!m_storage->touchEntry(0));
+    QCOMPARE(touchedSpy.count(), 1);
 }
 
 void TestStorage::emitsHistorySignals()
