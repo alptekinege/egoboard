@@ -86,11 +86,11 @@ public:
 ### 3.2 List & reading
 
 * **List density** — compact / comfortable / spacious row heights. *(delivered in Batch 1)*
-* **Relative timestamps** — "2 h ago" vs absolute; 12/24 h clock setting.
+* ~~**Relative timestamps** — "2 h ago" vs absolute; 12/24 h clock — delivered ("Timestamps" combo + clock checkbox in Appearance, applied live).~~
 * **Row extras** — optional entry index, use-count badge, "pasted today" dot.
-* **Sort modes** — newest first (default) / oldest first / most used.
+* ~~**Sort modes** — newest first (default) / oldest first / most used — delivered (sort combo in the filter bar; keyset pagination is mode-aware; choice persists).~~
 * **Single-click paste** — optional; double-click stays the default activator.
-* **Geometry memory** — remember window size/position and splitter ratio; restore last filter on start.
+* ~~**Geometry memory** — remember window size/position and splitter ratio; restore last filter on start — delivered (geometry/splitter always remembered; last filter is opt-in).~~
 * ~~**Saved searches ("smart folders")** — pin a filter combination (e.g. "unpinned images from GIMP") — delivered ("Searches" menu in the filter bar: apply, save current filter, delete).~~
 * ~~**Tags** — user labels per entry with case-insensitive unique names, tag filter combo, right-click "Tags ▸" submenu — delivered; palette `>tag` support and filter chips still pending.~~
 * **Search highlight + recent searches** — mark matched substrings in results; dropdown of previous queries.
