@@ -248,14 +248,54 @@ QWidget *SettingsDialog::buildGeneralPage()
     m_hideOnFocusOut = new QCheckBox(tr("Hide the window when it loses focus (popup-like)"), startupBox);
     m_hideOnFocusOut->setToolTip(tr("When active, the window hides as soon as it loses focus — keeps the desktop tidy."));
     m_autostart = new QCheckBox(tr("Start Egoboard automatically on login (~/.config/autostart)"), startupBox);
+    m_autostart->setToolTip(tr("Writes <code>Exec=\"%1\"</code> — a bare command name is not resolvable for the systemd autostart generator Plasma 6 uses, which then skips the entry silently.").arg(SettingsManager::autostartExecutablePath().toHtmlEscaped()));
     m_rememberGeometry = new QCheckBox(tr("Remember window size, position and splitter"), startupBox);
     m_restoreFilter = new QCheckBox(tr("Restore the last filter on start"), startupBox);
     startupLayout->addWidget(m_startVisible);
     startupLayout->addWidget(m_hideOnFocusOut);
     startupLayout->addWidget(m_autostart);
+    // Which executable the login entry runs: defaults to the running binary,
+    // but an .AppImage (or an installed copy) can be chosen instead. The entry is
+    // rewritten whenever this changes and on every start, so it cannot go stale.
+    auto *autostartRow = new QWidget(startupBox);
+    auto *autostartRowLayout = new QHBoxLayout(autostartRow);
+    autostartRowLayout->setContentsMargins(0, 0, 0, 0);
+    m_autostartCommand = new QLineEdit(autostartRow);
+    m_autostartCommand->setReadOnly(true);
+    m_autostartCommand->setToolTip(tr("Absolute path the login entry launches."));
+    auto *chooseAutostart = new QPushButton(tr("Choose…"), autostartRow);
+    chooseAutostart->setToolTip(tr("Pick the .AppImage (or an installed binary) to always start that copy at login."));
+    auto *resetAutostart = new QPushButton(tr("Use running binary"), autostartRow);
+    resetAutostart->setToolTip(tr("Forget the choice and start whatever binary is running."));
+    autostartRowLayout->addWidget(m_autostartCommand, 1);
+    autostartRowLayout->addWidget(chooseAutostart);
+    autostartRowLayout->addWidget(resetAutostart);
+    startupLayout->addWidget(autostartRow);
+
+    const auto refreshAutostartCommand = [this] {
+        if (m_autostartCommand)
+            m_autostartCommand->setText(m_ctx.settings()->effectiveAutostartCommand());
+    };
+    connect(chooseAutostart, &QPushButton::clicked, this, [this, refreshAutostartCommand] {
+        const QString chosen = m_ctx.settings()->autostartCommand();
+        const QString start = chosen.isEmpty()
+            ? QFileInfo(SettingsManager::autostartExecutablePath()).absolutePath()
+            : chosen;
+        const QString path = QFileDialog::getOpenFileName(this, tr("Autostart command"), start);
+        if (path.isEmpty())
+            return;
+        m_ctx.settings()->setAutostartCommand(path);
+        refreshAutostartCommand();
+    });
+    connect(resetAutostart, &QPushButton::clicked, this, [this, refreshAutostartCommand] {
+        m_ctx.settings()->setAutostartCommand(QString());
+        refreshAutostartCommand();
+    });
+    connect(m_autostart, &QCheckBox::toggled, autostartRow,
+            [autostartRow](bool on) { autostartRow->setEnabled(on); });
     startupLayout->addWidget(m_rememberGeometry);
     startupLayout->addWidget(m_restoreFilter);
-    startupLayout->addWidget(makeHint(tr("The window is never truly quit — closing hides to tray. Use tray → Quit to exit. Autostart writes <code>~/.config/autostart/org.egoboard.Egoboard.desktop</code> per XDG spec — works on Plasma X11 and Wayland."), startupBox));
+    startupLayout->addWidget(makeHint(tr("The window is never truly quit — closing hides to tray. Use tray → Quit to exit. Autostart writes <code>~/.config/autostart/org.egoboard.Egoboard.desktop</code> with an absolute <code>Exec=</code>, rewritten on every start — Plasma 6 turns these files into systemd units and silently skips entries whose command cannot be resolved. Choose the .AppImage above to always start that copy at login."), startupBox));
     layout->addWidget(startupBox);
 
     auto *trayBox = new QGroupBox(tr("Tray & notifications"), page);
@@ -1459,6 +1499,16 @@ void SettingsDialog::refreshDiagnostics()
         diag += QStringLiteral("DataControl: %1\n").arg(m_ctx.dataControl() ? m_ctx.dataControl()->diagnostics().remove(QRegularExpression(QStringLiteral("<[^>]*>"))) : QStringLiteral("n/a"));
         diag += QStringLiteral("Settings: debounce=%1 quickPaste=%2 maxItem=%3 maxImage=%4 diskCap=%5 maxEntries=%6\n")
                     .arg(m_ctx.settings()->debounceMs()).arg(m_ctx.settings()->quickPasteCount()).arg(m_ctx.settings()->maxItemBytes()).arg(m_ctx.settings()->maxImageBytes()).arg(m_ctx.settings()->diskCapBytes()).arg(m_ctx.settings()->maxEntries());
+        diag += QStringLiteral("Autostart: %1 entry=%2 command=%3 chosen=%4\n")
+                    .arg(m_ctx.settings()->autostartEnabled() ? QStringLiteral("on")
+                                                              : QStringLiteral("off"),
+                         SettingsManager::autostartDesktopFilePath(),
+                         m_ctx.settings()->autostartEnabled()
+                             ? m_ctx.settings()->effectiveAutostartCommand()
+                             : QStringLiteral("-"),
+                         m_ctx.settings()->autostartCommand().isEmpty()
+                             ? QStringLiteral("running-binary")
+                             : m_ctx.settings()->autostartCommand());
         diag += QStringLiteral("Capture: text=%1 rich=%2 image=%3 files=%4\n")
                     .arg(m_ctx.settings()->captureText() ? QStringLiteral("on") : QStringLiteral("off"),
                          m_ctx.settings()->captureRichText() ? QStringLiteral("on") : QStringLiteral("off"),
@@ -1510,6 +1560,10 @@ void SettingsDialog::load()
     m_primarySelection->setChecked(m_ctx.settings()->monitorPrimarySelection());
     m_quickPasteCount->setValue(m_ctx.settings()->quickPasteCount());
     m_autostart->setChecked(m_ctx.settings()->autostartEnabled());
+    if (m_autostartCommand) {
+        m_autostartCommand->setText(m_ctx.settings()->effectiveAutostartCommand());
+        m_autostartCommand->setEnabled(m_ctx.settings()->autostartEnabled());
+    }
     // Same order as buildCapturePage(): Text / RichText / Image / Files.
     const bool captureTypes[] = {
         m_ctx.settings()->captureText(),

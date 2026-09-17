@@ -33,6 +33,8 @@ private slots:
     void themeChangeNotificationsAreFiltered();
     void detectsPlasmaConfigChange();
     void textReadabilitySettings();
+    void autostartEntryPointsAtThisBinary();
+    void autostartCommandCanPointAtAnAppImage();
     void persistsAcrossInstances();
 
 private:
@@ -441,6 +443,105 @@ void TestSettings::textReadabilitySettings()
     // Clearing a color goes back to following the scheme.
     settings.setTextColor(QString());
     QVERIFY(!settings.textAppearance().customText);
+}
+
+void TestSettings::autostartEntryPointsAtThisBinary()
+{
+    SettingsManager settings;
+    const QString path = SettingsManager::autostartDesktopFilePath();
+
+    // Nothing is written while autostart is off.
+    settings.ensureAutostartEntry();
+    QVERIFY(!QFile::exists(path));
+
+    const QString executable = SettingsManager::autostartExecutablePath();
+    QVERIFY(!executable.isEmpty());
+    QVERIFY(QFileInfo(executable).isAbsolute());
+
+    settings.setAutostartEnabled(true);
+    QVERIFY(QFile::exists(path));
+
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const QByteArray entry = file.readAll();
+    file.close();
+
+    // The entry names the binary itself. A bare "egoboard" is resolved against
+    // the reader's PATH, and the systemd xdg-autostart generator Plasma 6 uses
+    // runs with a minimal environment: it drops such entries ("executable
+    // specified in Exec= does not exist") and the app never starts at login.
+    QVERIFY(entry.contains("[Desktop Entry]"));
+    QVERIFY(entry.contains("Type=Application"));
+    QVERIFY(entry.contains(QStringLiteral("Exec=\"%1\"").arg(executable).toUtf8()));
+    QVERIFY(!entry.contains("\nExec=egoboard\n"));
+
+    // An entry left behind by an older build is repaired without touching the
+    // setting, so login keeps working after a rebuild, install or move.
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write("[Desktop Entry]\nType=Application\nExec=egoboard\n");
+    file.close();
+
+    settings.ensureAutostartEntry();
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const QByteArray repaired = file.readAll();
+    file.close();
+    QVERIFY(repaired.contains(QStringLiteral("Exec=\"%1\"").arg(executable).toUtf8()));
+    // Running it again is a no-op, not a rewrite loop.
+    settings.ensureAutostartEntry();
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), repaired);
+    file.close();
+
+    settings.setAutostartEnabled(false);
+    QVERIFY(!QFile::exists(path));
+}
+
+void TestSettings::autostartCommandCanPointAtAnAppImage()
+{
+    SettingsManager settings;
+
+    // A stand-in for the .AppImage the user starts from.
+    const QString appImage = m_tempDir.path() + QStringLiteral("/Egoboard.AppImage");
+    QFile standIn(appImage);
+    QVERIFY(standIn.open(QIODevice::WriteOnly));
+    standIn.write("#!/bin/sh\n");
+    standIn.close();
+    QVERIFY(QFile::setPermissions(appImage, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+
+    // With no choice stored, the entry follows whatever binary is running.
+    QCOMPARE(settings.autostartCommand(), QString());
+    QCOMPARE(settings.effectiveAutostartCommand(), SettingsManager::autostartExecutablePath());
+
+    settings.setAutostartEnabled(true);
+
+    // A chosen command is what the entry runs - that is how "always start from
+    // the AppImage" works.
+    settings.setAutostartCommand(appImage);
+    QCOMPARE(settings.autostartCommand(), appImage);
+    QCOMPARE(settings.effectiveAutostartCommand(), appImage);
+
+    QFile entry(SettingsManager::autostartDesktopFilePath());
+    QVERIFY(entry.open(QIODevice::ReadOnly));
+    QVERIFY(entry.readAll().contains(QStringLiteral("Exec=\"%1\"").arg(appImage).toUtf8()));
+    entry.close();
+
+    // If the chosen file moves away, fall back to the running binary instead of
+    // writing an entry login would silently skip.
+    const QString goneImage = m_tempDir.path() + QStringLiteral("/Moved.AppImage");
+    settings.setAutostartCommand(goneImage);
+    QCOMPARE(settings.autostartCommand(), goneImage);
+    QCOMPARE(settings.effectiveAutostartCommand(), SettingsManager::autostartExecutablePath());
+    QVERIFY(entry.open(QIODevice::ReadOnly));
+    QVERIFY(entry.readAll().contains(
+        QStringLiteral("Exec=\"%1\"").arg(SettingsManager::autostartExecutablePath()).toUtf8()));
+    entry.close();
+
+    // ...and the choice can be cleared again.
+    settings.setAutostartCommand(QString());
+    QCOMPARE(settings.autostartCommand(), QString());
+    QCOMPARE(settings.effectiveAutostartCommand(), SettingsManager::autostartExecutablePath());
+
+    settings.setAutostartEnabled(false);
 }
 
 void TestSettings::persistsAcrossInstances()

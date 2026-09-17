@@ -55,6 +55,21 @@ public:
 
     bool autostartEnabled() const;
     void setAutostartEnabled(bool enabled); // also writes/removes the .desktop entry
+    // Rewrites the autostart entry when it does not point at the right binary, so
+    // an entry from an older build (or a bare command name, which the session's
+    // systemd autostart generator cannot resolve) repairs itself on next start.
+    void ensureAutostartEntry();
+    // Executable the autostart entry launches when nothing else is chosen: the
+    // running binary, or the .AppImage file when running from one (its mount path
+    // is temporary).
+    static QString autostartExecutablePath();
+    // Explicit choice for the autostart entry (an AppImage, or an installed
+    // copy); empty means "whatever binary is running".
+    QString autostartCommand() const;
+    void setAutostartCommand(const QString &path);
+    // What the entry actually gets: the chosen command while the file is there
+    // and executable, otherwise the running binary.
+    QString effectiveAutostartCommand() const;
 
     // History / privacy
     int debounceMs() const;

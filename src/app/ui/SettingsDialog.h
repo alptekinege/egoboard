@@ -65,6 +65,7 @@ private:
     QCheckBox *m_autostart = nullptr;
     QComboBox *m_trayMode = nullptr;
     QCheckBox *m_notifications = nullptr;
+    QLineEdit *m_autostartCommand = nullptr;
     QComboBox *m_themeCombo = nullptr;
     QComboBox *m_iconThemeCombo = nullptr;
     QSpinBox *m_fontSize = nullptr;

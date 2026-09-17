@@ -232,6 +232,9 @@ void ApplicationContext::start()
 
     m_watcher->start();
     m_dataControl->start();
+    // The autostart entry names this binary; re-point it after a rebuild, an
+    // install or a move, otherwise login keeps launching the old path.
+    m_settings->ensureAutostartEntry();
     // Apply the configured theme before any window is shown.
     applyThemes(m_settings->theme(), m_settings->iconTheme(), m_settings->textAppearance());
     if (m_settings->startVisible())

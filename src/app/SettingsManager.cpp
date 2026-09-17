@@ -7,6 +7,7 @@
 #include <KConfig>
 #include <KConfigGroup>
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QRegularExpression>
@@ -40,6 +41,44 @@ QString normalizedColor(const QString &value)
 {
     const QColor color = QColor::fromString(value);
     return color.isValid() ? color.name(QColor::HexRgb) : QString();
+}
+
+// Desktop-entry argument quoting: Exec= is parsed without a shell, so quotes,
+// backslashes and the like inside the path have to be escaped. The argument is
+// always quoted, which the parser (and the systemd autostart generator) accepts.
+QString desktopExecQuoted(const QString &path)
+{
+    QString escaped;
+    escaped.reserve(path.size() + 2);
+    escaped += QLatin1Char('"');
+    for (const QChar character : path) {
+        if (character == QLatin1Char('"') || character == QLatin1Char('\\')
+            || character == QLatin1Char('$') || character == QLatin1Char('`')) {
+            escaped += QLatin1Char('\\');
+        }
+        escaped += character;
+    }
+    escaped += QLatin1Char('"');
+    return escaped;
+}
+
+// The autostart entry must name the executable: a bare "egoboard" is resolved
+// against the PATH of whoever reads the file, and the systemd xdg-autostart
+// generator runs with a minimal environment - it then skips the entry with
+// "executable specified in Exec= does not exist" and the app never starts.
+QByteArray autostartEntryContents(const QString &executable)
+{
+    QByteArray entry;
+    entry += "[Desktop Entry]\n";
+    entry += "Type=Application\n";
+    entry += "Name=Egoboard\n";
+    entry += "Comment=Clipboard history manager\n";
+    entry += "Exec=" + desktopExecQuoted(executable).toUtf8() + "\n";
+    entry += "Icon=egoboard\n";
+    entry += "Terminal=false\n";
+    entry += "X-KDE-autostart-phase=2\n";
+    entry += "X-GNOME-Autostart-enabled=true\n";
+    return entry;
 }
 } // namespace
 
@@ -157,6 +196,16 @@ bool SettingsManager::autostartEnabled() const
     return m_config->group(kGroupGeneral).readEntry("Autostart", false);
 }
 
+QString SettingsManager::autostartExecutablePath()
+{
+    // An AppImage mounts at a path that changes on every launch, so the entry
+    // has to point at the .AppImage file itself.
+    const QByteArray appImage = qgetenv("APPIMAGE");
+    if (!appImage.isEmpty())
+        return QString::fromLocal8Bit(appImage);
+    return QCoreApplication::applicationFilePath();
+}
+
 void SettingsManager::setAutostartEnabled(bool enabled)
 {
     m_config->group(kGroupGeneral).writeEntry("Autostart", enabled);
@@ -165,21 +214,63 @@ void SettingsManager::setAutostartEnabled(bool enabled)
     if (enabled) {
         QDir().mkpath(QFileInfo(path).absolutePath());
         QFile file(path);
-        if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            file.write("[Desktop Entry]\n"
-                       "Type=Application\n"
-                       "Name=Egoboard\n"
-                       "Comment=Clipboard history manager\n"
-                       "Exec=egoboard\n"
-                       "Icon=egoboard\n"
-                       "Terminal=false\n"
-                       "X-KDE-autostart-phase=2\n"
-                       "X-GNOME-Autostart-enabled=true\n");
-        }
+        if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            file.write(autostartEntryContents(effectiveAutostartCommand()));
     } else {
         QFile::remove(path);
     }
     save();
+}
+
+void SettingsManager::ensureAutostartEntry()
+{
+    if (!autostartEnabled())
+        return;
+
+    const QString path = autostartDesktopFilePath();
+    QFile file(path);
+    const QByteArray expected = autostartEntryContents(effectiveAutostartCommand());
+
+    if (file.exists() && file.open(QIODevice::ReadOnly)) {
+        const bool upToDate = file.readAll() == expected;
+        file.close();
+        if (upToDate)
+            return; // already points at the right executable
+    }
+
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        file.write(expected);
+}
+
+QString SettingsManager::autostartCommand() const
+{
+    const QString stored = m_config->group(kGroupGeneral).readEntry("AutostartCommand", QString());
+    if (stored.isEmpty())
+        return QString();
+    return QFileInfo(stored).absoluteFilePath();
+}
+
+void SettingsManager::setAutostartCommand(const QString &path)
+{
+    const QString normalized = path.isEmpty() ? QString() : QFileInfo(path).absoluteFilePath();
+    m_config->group(kGroupGeneral).writeEntry("AutostartCommand", normalized);
+    // Keep the entry in step with the choice right away, not just on next start.
+    ensureAutostartEntry();
+    save();
+}
+
+QString SettingsManager::effectiveAutostartCommand() const
+{
+    const QString chosen = autostartCommand();
+    if (!chosen.isEmpty()) {
+        const QFileInfo info(chosen);
+        if (info.isFile() && info.isExecutable())
+            return chosen;
+        // The chosen file moved away: fall back to the running binary rather than
+        // writing an entry the session would silently skip at login.
+    }
+    return autostartExecutablePath();
 }
 
 int SettingsManager::debounceMs() const
