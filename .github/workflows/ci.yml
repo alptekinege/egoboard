@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare pacman keyring
+        run: |
+          pacman-key --init
+          pacman-key --populate archlinux
+
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            cmake ninja gcc pkgconf \
+            qt6-base qt6-declarative \
+            wayland wayland-protocols \
+            extra-cmake-modules \
+            kconfig kconfigwidgets kwidgetsaddons kglobalaccel knotifications \
+            kstatusnotifieritem kwindowsystem kxmlgui \
+            sqlite
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Headless smoke test
+        run: QT_QPA_PLATFORM=offscreen ./build/egoboard --smoke
