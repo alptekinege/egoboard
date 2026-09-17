@@ -107,12 +107,14 @@ CommandPalette::CommandPalette(IClipboardStorage *storage, QWidget *parent)
     m_input = new QLineEdit(this);
     m_input->setPlaceholderText(tr("Type to search history…  •  >transform  >snippet  •  >pin etc."));
     m_input->setClearButtonEnabled(true);
+    m_input->setAccessibleName(tr("Command palette search"));
     QFont f = m_input->font();
     f.setPointSizeF(f.pointSizeF() + 1.5);
     m_input->setFont(f);
     layout->addWidget(m_input);
 
     m_list = new QListView(this);
+    m_list->setAccessibleName(tr("Palette results"));
     m_list->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_list->setSelectionMode(QAbstractItemView::SingleSelection);
     m_list->setUniformItemSizes(true);
@@ -239,14 +241,27 @@ void CommandPalette::refreshResults(const QString &query)
             updateHint();
             return;
         }
-        // Unknown command like >pin, >copy — treat as history but hint will show commands
-        // Fall through to history with original query stripped? Keep history empty for unknown command
+        // Commands that act on the entry selected in the main window.
+        const bool isCopy = (cmd == QStringLiteral("copy") || cmd == QStringLiteral("c"));
+        const bool isPin = (cmd == QStringLiteral("pin") || cmd == QStringLiteral("p"));
+        if (isCopy || isPin) {
+            m_mode = Mode::Command;
+            m_pendingCommand = isCopy ? QStringLiteral("copy") : QStringLiteral("pin");
+            m_results.clear();
+            m_model->setRecords(m_results, trimmed);
+            m_list->setCurrentIndex(QModelIndex());
+            updateHint();
+            return;
+        }
+
+        // Unknown command — show no results, the hint lists the commands.
         m_mode = Mode::History;
         m_results.clear();
         m_model->setRecords(m_results, trimmed);
         updateHint();
         return;
     }
+    m_pendingCommand.clear();
 
     // History mode
     m_mode = Mode::History;
@@ -274,6 +289,12 @@ void CommandPalette::refreshResults(const QString &query)
 
 void CommandPalette::updateHint()
 {
+    if (m_mode == Mode::Command) {
+        m_hint->setText(m_pendingCommand == QLatin1String("copy")
+                            ? tr("⏎ copy the entry selected in the main window to the clipboard  •  Esc close")
+                            : tr("⏎ pin/unpin the entry selected in the main window  •  Esc close"));
+        return;
+    }
     if (m_mode == Mode::Transforms) {
         if (m_transformItems.isEmpty())
             m_hint->setText(tr("No transforms match — try fewer letters. Built-ins + JS scripts from ~/.local/share/egoboard/actions/"));
@@ -290,7 +311,7 @@ void CommandPalette::updateHint()
     }
     if (m_results.isEmpty()) {
         if (m_currentQuery.trimmed().startsWith(QLatin1Char('>')))
-            m_hint->setText(tr("Commands:  >transform [filter]  >snippet [filter]  >pin / >copy (soon)  •  Esc close"));
+            m_hint->setText(tr("Commands:  >transform [filter]  >snippet [filter]  >pin  >copy  •  Esc close"));
         else if (m_currentQuery.trimmed().isEmpty())
             m_hint->setText(tr("Showing recent entries  •  ⏎ paste  •  Esc close  •  Type > for commands (>transform, >snippet)"));
         else
@@ -343,6 +364,15 @@ void CommandPalette::onActivated(const QModelIndex &index)
 
 void CommandPalette::executeCurrent()
 {
+    if (m_mode == Mode::Command && !m_pendingCommand.isEmpty()) {
+        const QString command = m_pendingCommand;
+        accept();
+        if (command == QLatin1String("copy"))
+            emit copyRequested(0); // 0 = the entry selected in the main window
+        else
+            emit pinRequested(0);
+        return;
+    }
     const QModelIndex cur = m_list->currentIndex();
     if (cur.isValid()) { onActivated(cur); return; }
     if (m_model->rowCount() > 0) onActivated(m_model->index(0,0));

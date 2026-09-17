@@ -3,6 +3,7 @@
 #include "ScriptActionManager.h"
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QTemporaryDir>
 
@@ -24,6 +25,8 @@ private slots:
     void handlesMissingScript();
     void handlesNullAndUndefinedResults();
     void reloadRemovesDeletedActions();
+    void timesOutRunawayScripts();
+    void supportsArrowFunctionTransforms();
 
 private:
     QTemporaryDir m_tempDir;
@@ -257,6 +260,48 @@ void TestScripts::reloadRemovesDeletedActions()
     const auto result = manager.apply(QStringLiteral("reloadable"), QStringLiteral("data"));
     QVERIFY(!result.ok);
     QVERIFY(result.error.contains(QStringLiteral("not found")));
+}
+
+void TestScripts::timesOutRunawayScripts()
+{
+    const QString dirPath = ScriptActionManager::actionsDir();
+    QDir().mkpath(dirPath);
+
+    const QString scriptPath = QDir(dirPath).filePath(QStringLiteral("runaway.js"));
+    QFile file(scriptPath);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    QVERIFY(file.write("function transform(text) { while (true) {} }\n") > 0);
+    file.close();
+
+    ScriptActionManager manager;
+    QVERIFY(manager.hasAction(QStringLiteral("runaway")));
+
+    QElapsedTimer timer;
+    timer.start();
+    const auto res = manager.apply(QStringLiteral("runaway"), QStringLiteral("data"));
+    QVERIFY(!res.ok);
+    QVERIFY(res.error.contains(QStringLiteral("timed out")));
+    QVERIFY(timer.elapsed() < 10000); // interrupted, not hung
+}
+
+void TestScripts::supportsArrowFunctionTransforms()
+{
+    const QString dirPath = ScriptActionManager::actionsDir();
+    QDir().mkpath(dirPath);
+
+    const QString scriptPath = QDir(dirPath).filePath(QStringLiteral("arrow.js"));
+    QFile file(scriptPath);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    QVERIFY(file.write(
+        "var meta = { label: \"Arrow\" };\n"
+        "const transform = (text) => text.split('').reverse().join('');\n") > 0);
+    file.close();
+
+    ScriptActionManager manager;
+    QVERIFY(manager.hasAction(QStringLiteral("arrow")));
+    const auto res = manager.apply(QStringLiteral("arrow"), QStringLiteral("abc"));
+    QVERIFY2(res.ok, qPrintable(res.error));
+    QCOMPARE(res.output, QStringLiteral("cba"));
 }
 
 QTEST_GUILESS_MAIN(TestScripts)

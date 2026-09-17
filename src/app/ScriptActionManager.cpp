@@ -8,9 +8,14 @@
 #include <QRegularExpression>
 #include <QStandardPaths>
 
+#include <atomic>
+#include <chrono>
+#include <thread>
+
 namespace {
 constexpr int kMaxFileBytes = 64 * 1024;
 constexpr int kMaxInputBytes = 256 * 1024;
+constexpr int kExecutionTimeoutMs = 2000;
 }
 
 ScriptActionManager::ScriptActionManager(QObject *parent)
@@ -68,6 +73,13 @@ QString ScriptActionManager::preprocessSource(const QString &source)
     // Remove `export { ... };` lines (module re-exports not needed)
     static const QRegularExpression exportBlockRe(QStringLiteral(R"(^\s*export\s*\{[^}]*\}\s*;?\s*$)"), QRegularExpression::MultilineOption);
     out.remove(exportBlockRe);
+    // `const transform = ...` / `let transform = ...` are lexically scoped to
+    // the evaluated script and never appear on the global object; promote them
+    // to `var` so arrow-function transforms are callable.
+    static const QRegularExpression lexicalTransformRe(
+        QStringLiteral(R"(^(\s*)(?:const|let)(\s+transform\s*=))"),
+        QRegularExpression::MultilineOption);
+    out.replace(lexicalTransformRe, QStringLiteral("\\1var\\2"));
     return out;
 }
 
@@ -77,7 +89,10 @@ ScriptAction ScriptActionManager::parseMeta(const QString &id, const QString &fi
     a.id = id;
     a.filePath = filePath;
     a.label = id;
-    a.hasTransform = source.contains(QStringLiteral("function transform"));
+    // Function declarations, function expressions and arrow functions.
+    static const QRegularExpression transformRe(QStringLiteral(
+        R"((function\s+transform\s*\()|(\btransform\s*=\s*(?:function\b|async\s+function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)))"));
+    a.hasTransform = transformRe.match(source).hasMatch();
 
     // Quick parse of meta.label and meta.match without executing JS (fast, no engine)
     // Supports: var meta = { label: "X", match: "Y" } or const meta = { ... }
@@ -133,6 +148,7 @@ void ScriptActionManager::reload()
         ScriptAction a = parseMeta(id, fi.absoluteFilePath(), source);
         // Only list files that at least define transform (otherwise not an action)
         if (!a.hasTransform) continue;
+        a.source = preprocessSource(source);
         m_actions.append(a);
     }
 }
@@ -148,37 +164,64 @@ ScriptActionManager::Result ScriptActionManager::apply(const QString &id, const 
     if (input.size() > kMaxInputBytes) {
         return {false, {}, QObject::tr("Input too large for script transform (>256 kB)")};
     }
-    QString filePath;
+    const ScriptAction *action = nullptr;
     for (const auto &a : m_actions) {
-        if (a.id == id) { filePath = a.filePath; break; }
+        if (a.id == id) { action = &a; break; }
     }
-    if (filePath.isEmpty()) {
+    if (!action) {
         return {false, {}, QObject::tr("Script not found: %1").arg(id)};
     }
-    QFile f(filePath);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
-        return {false, {}, QObject::tr("Cannot read script file")};
-    if (f.size() > kMaxFileBytes)
-        return {false, {}, QObject::tr("Script file too large")};
-    const QString raw = QString::fromUtf8(f.readAll());
-    f.close();
-    const QString source = preprocessSource(raw);
 
     QJSEngine engine;
     // No exposure of file/network APIs — engine starts clean.
-    const QJSValue evalRes = engine.evaluate(source, filePath);
+
+    // Watchdog: QJSEngine::setInterrupted() is safe to call from another
+    // thread, so a runaway loop (while (true) {}) cannot freeze the GUI.
+    std::atomic_bool interrupted{false};
+    std::atomic_bool finished{false};
+    std::thread watchdog([&engine, &interrupted, &finished] {
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(kExecutionTimeoutMs);
+        while (!finished.load(std::memory_order_relaxed)) {
+            if (std::chrono::steady_clock::now() >= deadline) {
+                interrupted.store(true, std::memory_order_relaxed);
+                engine.setInterrupted(true);
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    });
+    const auto stopWatchdog = [&] {
+        finished.store(true, std::memory_order_relaxed);
+        if (watchdog.joinable())
+            watchdog.join();
+    };
+    const auto timedOut = [&]() -> Result {
+        stopWatchdog();
+        return {false, {}, QObject::tr("Script timed out after %1 ms").arg(kExecutionTimeoutMs)};
+    };
+
+    const QJSValue evalRes = engine.evaluate(action->source, action->filePath);
+    if (interrupted.load(std::memory_order_relaxed))
+        return timedOut();
     if (evalRes.isError()) {
+        stopWatchdog();
         return {false, {}, QObject::tr("Script error at %1: %2").arg(evalRes.property(QStringLiteral("lineNumber")).toString(), evalRes.toString())};
     }
     QJSValue fn = engine.globalObject().property(QStringLiteral("transform"));
     if (!fn.isCallable()) {
+        stopWatchdog();
         return {false, {}, QObject::tr("Script has no function transform(text)")};
     }
     const QJSValueList args = { QJSValue(input) };
     const QJSValue res = fn.call(args);
+    if (interrupted.load(std::memory_order_relaxed))
+        return timedOut();
     if (res.isError()) {
+        stopWatchdog();
         return {false, {}, QObject::tr("transform() error at %1: %2").arg(res.property(QStringLiteral("lineNumber")).toString(), res.toString())};
     }
+    stopWatchdog();
     if (res.isUndefined() || res.isNull())
         return {true, {}, {}};
     return {true, res.toString(), {}};

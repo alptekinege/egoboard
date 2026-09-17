@@ -27,11 +27,16 @@ static bool ensureFts(QSqlDatabase &db)
         alter.exec(QStringLiteral("ALTER TABLE entries ADD COLUMN ocr_text TEXT"));
     }
 
-    // Detect old FTS schema without ocr_text -> drop and recreate
+    // Detect old FTS schema without ocr_text -> drop and recreate. Also note
+    // whether the table is missing entirely: creating it leaves an empty index
+    // behind, and an update trigger issued against that index corrupts it
+    // (external-content FTS5 has no rows of its own to fall back on).
+    bool ftsTableExisted = false;
     bool needsRecreate = false;
     {
         QSqlQuery sq(db);
         if (sq.exec(QStringLiteral("SELECT sql FROM sqlite_master WHERE type='table' AND name='entries_fts'")) && sq.next()) {
+            ftsTableExisted = true;
             const QString sql = sq.value(0).toString();
             if (!sql.contains(QStringLiteral("ocr_text"))) needsRecreate = true;
         }
@@ -82,7 +87,9 @@ static bool ensureFts(QSqlDatabase &db)
         QSqlQuery rebuild(db);
         QSqlQuery countFts(db);
         QSqlQuery countEntries(db);
-        bool needsRebuild = needsRecreate;
+        // A freshly created (or recreated) index is empty even when COUNT(*)
+        // over the external-content table reports the content rows.
+        bool needsRebuild = needsRecreate || !ftsTableExisted;
         if (!needsRebuild && countFts.exec(QStringLiteral("SELECT COUNT(*) FROM entries_fts"))
             && countFts.next() && countEntries.exec(QStringLiteral("SELECT COUNT(*) FROM entries"))
             && countEntries.next()) {
@@ -187,6 +194,11 @@ bool ensure(QSqlDatabase &db)
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_entries_order ON entries(timestamp_ms DESC, id DESC)"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_entries_app ON entries(source_app)"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(content_type)"),
+        // MostUsed sort: use_count leads, timestamp/id break ties.
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_entries_use_count ON entries(use_count DESC, timestamp_ms DESC, id DESC)"),
+        // Filter-only views keep the ordered entries as a covering subset.
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_entries_pinned ON entries(timestamp_ms DESC, id DESC) WHERE pinned = 1"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_entries_sensitive ON entries(timestamp_ms DESC, id DESC) WHERE sensitive = 1"),
         QStringLiteral(
             "CREATE TABLE IF NOT EXISTS groups ("
             " id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -216,11 +228,21 @@ bool ensure(QSqlDatabase &db)
             " tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,"
             " PRIMARY KEY(entry_id, tag_id))"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_entry_tags_tag ON entry_tags(tag_id)"),
+        // Group lookups ("entries in this group") otherwise scan the PK table.
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_entry_groups_group ON entry_groups(group_id)"),
         QStringLiteral(
             "CREATE TABLE IF NOT EXISTS saved_searches ("
             " id INTEGER PRIMARY KEY AUTOINCREMENT,"
             " name TEXT NOT NULL UNIQUE,"
             " filter TEXT NOT NULL)"),
+        // Legacy rows may differ only by case; keep the lowest id per name so
+        // the case-insensitive unique index below can be created.
+        QStringLiteral(
+            "DELETE FROM saved_searches WHERE id NOT IN "
+            "(SELECT MIN(id) FROM saved_searches GROUP BY name COLLATE NOCASE)"),
+        // Queries match names with COLLATE NOCASE; enforce the same uniqueness.
+        QStringLiteral(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_searches_name ON saved_searches(name COLLATE NOCASE)"),
     };
 
     for (const QString &statement : statements) {
@@ -231,6 +253,33 @@ bool ensure(QSqlDatabase &db)
             return false;
         }
     }
+
+    // content_hash is declared TEXT but older builds bound it as BLOB. SQLite
+    // compares values by storage class, so mixed rows would silently miss
+    // dedup hits; normalize legacy rows in place.
+    {
+        QSqlQuery select(db);
+        if (select.exec(QStringLiteral("SELECT id FROM entries WHERE typeof(content_hash) = 'blob'"))) {
+            QList<qint64> legacyIds;
+            while (select.next())
+                legacyIds.append(select.value(0).toLongLong());
+            if (!legacyIds.isEmpty()) {
+                db.transaction();
+                for (const qint64 id : legacyIds) {
+                    QSqlQuery update(db);
+                    update.prepare(QStringLiteral(
+                        "UPDATE OR IGNORE entries SET content_hash = CAST(content_hash AS TEXT)"
+                        " WHERE id = :id"));
+                    update.bindValue(QStringLiteral(":id"), id);
+                    if (!update.exec())
+                        qWarning("egoboard: content_hash normalization failed for %lld: %s",
+                                 id, qPrintable(update.lastError().text()));
+                }
+                db.commit();
+            }
+        }
+    }
+
     ensureFts(db);
     return true;
 }

@@ -32,6 +32,8 @@ QuickPasteMenu::QuickPasteMenu(StorageManager *storage, int itemCount, QWidget *
     m_list->setWordWrap(false);
     m_list->setUniformItemSizes(true);
     m_list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_list->setAccessibleName(tr("Quick paste entries"));
+    m_list->setAccessibleDescription(tr("Recent entries; press 1-9 or Enter to paste"));
     layout->addWidget(m_list, 1);
 
     auto *footer = new QLabel(tr("1–9 paste · Esc close"), this);
@@ -46,6 +48,16 @@ QuickPasteMenu::QuickPasteMenu(StorageManager *storage, int itemCount, QWidget *
             [this](QListWidgetItem *item) { activateRow(m_list->row(item)); });
 
     refresh();
+}
+
+void QuickPasteMenu::setItemCount(int count)
+{
+    const int clamped = qBound(1, count, 9);
+    if (clamped == m_itemCount)
+        return;
+    m_itemCount = clamped;
+    if (isVisible())
+        refresh();
 }
 
 void QuickPasteMenu::refresh()

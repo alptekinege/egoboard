@@ -27,6 +27,7 @@ namespace {
 
 constexpr qint64 kSuppressMs = 2000;
 constexpr qint64 kMaxOfferBytes = 5 * 1024 * 1024;
+constexpr qint64 kReadBudgetMs = 1200; // total mime-read budget per selection
 
 QString singleLineLocal(const QString &s) {
     QString line = s.simplified();
@@ -270,6 +271,20 @@ void WlrDataControlHelper::destroyDevice() {
 
 void WlrDataControlHelper::onDeviceSelection(void *offerId, bool primary) {
     if (primary && !(m_settings && m_settings->monitorPrimarySelection())) return;
+
+    // A new selection invalidates every earlier offer; destroying them here
+    // (and dropping their wrappers) keeps the offer maps from growing on
+    // every copy.
+    for (auto it = m_offerObjects.begin(); it != m_offerObjects.end();) {
+        if (it.key() != offerId) {
+            delete it.value();
+            m_offers.remove(it.key());
+            it = m_offerObjects.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
     m_pendingOffer = offerId;
     m_pendingPrimary = primary;
     m_readDebounce.start();
@@ -300,7 +315,12 @@ void WlrDataControlHelper::handleSelection(void *offerId, bool primary) {
     const qint64 maxBytes = m_settings ? m_settings->maxItemBytes() : kMaxOfferBytes;
     const qint64 cap = (maxBytes > 0) ? qMin(maxBytes, kMaxOfferBytes) : kMaxOfferBytes;
 
+    // All mime reads of one selection share a single budget: the pipe poll
+    // blocks the GUI thread, so it must not be multiplied by the number of
+    // advertised mime types.
+    const qint64 readDeadlineMs = QDateTime::currentMSecsSinceEpoch() + kReadBudgetMs;
     auto readMimeSync = [&](const QString &mimeStr) -> QByteArray {
+        if (QDateTime::currentMSecsSinceEpoch() >= readDeadlineMs) return {};
         if (!mimes.isEmpty()) {
             bool found = false;
             for (const QString &m : std::as_const(mimes))
@@ -314,11 +334,9 @@ void WlrDataControlHelper::handleSelection(void *offerId, bool primary) {
         close(pipefd[1]);
         wl_display_flush(display);
         QByteArray out; out.reserve(4096);
-        const int timeoutMs = 1200;
-        qint64 start = QDateTime::currentMSecsSinceEpoch();
         while (out.size() < cap) {
             struct pollfd pfd; pfd.fd = pipefd[0]; pfd.events = POLLIN; pfd.revents = 0;
-            int ret = poll(&pfd, 1, 80);
+            const int ret = poll(&pfd, 1, 80);
             if (ret > 0 && (pfd.revents & POLLIN)) {
                 char buf[8192];
                 ssize_t n = read(pipefd[0], buf, sizeof(buf));
@@ -332,7 +350,7 @@ void WlrDataControlHelper::handleSelection(void *offerId, bool primary) {
                 else if (errno != EAGAIN && errno != EWOULDBLOCK) break;
             }
             if (display) wl_display_dispatch_pending(display);
-            if (QDateTime::currentMSecsSinceEpoch() - start > timeoutMs) break;
+            if (QDateTime::currentMSecsSinceEpoch() >= readDeadlineMs) break;
         }
         close(pipefd[0]);
         return out;
@@ -446,6 +464,9 @@ void WlrDataControlHelper::handleSelection(void *offerId, bool primary) {
     }
     delete mimeData;
     if (record.hash.isEmpty()) return;
+    // Same capture-type filter the QClipboard watcher applies.
+    if (m_settings && !m_settings->captureTypeEnabled(record.type))
+        return;
     if (!text.isEmpty() && m_settings) {
         switch (m_settings->sensitiveMode()) {
         case SettingsManager::SensitiveMode::Exclude:

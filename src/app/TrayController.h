@@ -35,6 +35,5 @@ private:
     KStatusNotifierItem *m_sni = nullptr;
     QSystemTrayIcon *m_fallbackIcon = nullptr;
     QMenu *m_menu = nullptr;
-    QList<qint64> m_recentIds;
     static constexpr int kRecentCount = 8;
 };

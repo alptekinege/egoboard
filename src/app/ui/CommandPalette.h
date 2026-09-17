@@ -28,7 +28,9 @@ public:
 
 signals:
     void pasteRequested(qint64 entryId);
+    // entryId 0 = the entry selected in the main window.
     void copyRequested(qint64 entryId);
+    void pinRequested(qint64 entryId);
     void transformRequested(const QString &transformName, qint64 entryId);
     void snippetRequested(qint64 snippetId, qint64 entryId);
 
@@ -42,8 +44,9 @@ private:
     void updateHint();
     static int fuzzyScore(const QString &query, const QString &candidate);
 
-    enum class Mode { History, Transforms, Snippets };
+    enum class Mode { History, Transforms, Snippets, Command };
     Mode m_mode = Mode::History;
+    QString m_pendingCommand; // set in Mode::Command ("copy" / "pin")
 
     IClipboardStorage *m_storage = nullptr;
     SnippetManager *m_snippets = nullptr;

@@ -60,31 +60,23 @@ TrayController::TrayController(StorageManager *storage, QObject *parent)
     } else {
         qWarning("egoboard: no system tray available");
     }
-
-    connect(m_storage, &StorageManager::entryAdded, this, &TrayController::rebuildMenu,
-            Qt::QueuedConnection);
 }
 
 void TrayController::rebuildMenu()
 {
-    // Rebuild the whole menu: recent entries may have changed. Menus are
-    // rebuilt lazily on aboutToShow, so this stays cheap.
+    // Rebuild the whole menu on aboutToShow (the DBusMenu host asks for the
+    // layout then), so captures never pay for a menu nobody is looking at.
     const auto actions = m_menu->actions();
     for (QAction *action : actions) {
         m_menu->removeAction(action);
         action->deleteLater();
     }
 
-    m_recentIds.clear();
-    const auto recents = m_storage->fetchPage(FilterSpec{}, {}, kRecentCount);
-    for (const ClipboardRecord &record : recents)
-        m_recentIds.append(record.id);
-
     m_menu->addSection(tr("Recent"));
-    for (int i = 0; i < m_recentIds.size(); ++i) {
-        ClipboardRecord record;
-        if (!m_storage->fetchFull(m_recentIds.at(i), &record))
-            continue;
+    // The summary page already carries the preview shown here; no per-entry
+    // fetchFull round trip needed.
+    const auto recents = m_storage->fetchPage(FilterSpec{}, {}, kRecentCount);
+    for (const ClipboardRecord &record : recents) {
         QAction *action = new QAction(record.preview.isEmpty() ? tr("(empty)") : record.preview,
                                       m_menu);
         connect(action, &QAction::triggered, this,

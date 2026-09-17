@@ -81,8 +81,8 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
     m_settings = new SettingsManager(this);
     m_storage = new StorageManager(databasePath, this);
     m_bookmarks = new BookmarkManager(m_storage->database(), this);
-    m_io = new ExportImportManager(m_storage, m_bookmarks, this);
     m_snippets = new SnippetManager(m_storage->database(), this);
+    m_io = new ExportImportManager(m_storage, m_bookmarks, m_snippets, this);
 
     // Vacuum runs on its own thread/connection so the GUI connection stays
     // responsive while the database is being compacted.
@@ -94,13 +94,42 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
 
     m_encryption = new EncryptionManager(this);
     if (m_settings->encryptionEnabled()) {
-        QString key;
-        if (m_encryption->readKey(&key) == EncryptionManager::Status::Ok && !key.isEmpty()) {
-            if (!m_storage->setEncryptionKey(key)) {
-                qWarning("egoboard: encryption key from KWallet failed to unlock database");
-            } else if (!m_storage->verifyEncryptionKey()) {
-                qWarning("egoboard: encryption enabled but key verification failed");
+        const auto reportProblem = [this](const QString &message) {
+            qWarning("egoboard: %s", qPrintable(message));
+            if (!m_fullGui)
+                return;
+            KNotification::event(QStringLiteral("encryptionProblem"),
+                                 QObject::tr("Database encryption problem"), message,
+                                 QStringLiteral("security-medium"), KNotification::CloseOnTimeout);
+        };
+        const auto statusText = [](EncryptionManager::Status status) -> QString {
+            switch (status) {
+            case EncryptionManager::Status::NotAvailable:
+                return QObject::tr("SQLCipher is not available in this build");
+            case EncryptionManager::Status::WalletDisabled:
+                return QObject::tr("KWallet is disabled");
+            case EncryptionManager::Status::WalletOpenFailed:
+                return QObject::tr("KWallet could not be opened");
+            case EncryptionManager::Status::WalletOperationFailed:
+                return QObject::tr("the wallet operation failed");
+            case EncryptionManager::Status::EntryMissing:
+                return QObject::tr("no database key is stored in KWallet");
+            case EncryptionManager::Status::Ok:
+                break;
             }
+            return {};
+        };
+
+        QString key;
+        const EncryptionManager::Status status = m_encryption->readKey(&key);
+        if (status != EncryptionManager::Status::Ok || key.isEmpty()) {
+            reportProblem(QObject::tr(
+                              "Encryption is enabled but the history database cannot be unlocked: %1.")
+                              .arg(statusText(status)));
+        } else if (!m_storage->setEncryptionKey(key)) {
+            reportProblem(QObject::tr("The key from KWallet was rejected while opening the database."));
+        } else if (!m_storage->verifyEncryptionKey()) {
+            reportProblem(QObject::tr("Encryption key verification failed after unlock."));
         }
     }
 
@@ -136,6 +165,7 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
     connect(m_settings, &SettingsManager::changed, this, [this] {
         m_ocr->setLanguage(m_settings->ocrLanguage());
         m_ocr->setMaxChars(m_settings->ocrMaxChars());
+        m_quickPaste->setItemCount(m_settings->quickPasteCount());
     });
     connect(m_ocr, &OcrWorker::recognized, this, [this](qint64 id, const QString &text){
         m_storage->setOcrText(id, text);
@@ -225,6 +255,8 @@ void ApplicationContext::start()
     connect(m_tray, &TrayController::quickPasteRequested, this, &ApplicationContext::showQuickPaste);
     connect(m_tray, &TrayController::pasteRequested, this,
             [this](qint64 entryId) { pasteEntry(entryId); });
+    connect(m_tray, &TrayController::settingsRequested, m_window.get(), &MainWindow::openSettings);
+    connect(m_tray, &TrayController::clearRequested, m_window.get(), &MainWindow::clearHistory);
     connect(m_tray, &TrayController::quitRequested, qApp, &QCoreApplication::quit);
 
     connect(m_quickPaste, &QuickPasteMenu::pasteRequested, this,
@@ -241,6 +273,20 @@ void ApplicationContext::start()
         m_window->show();
 
     scheduleVacuumChecks();
+
+    // Retention caps are enforced after capture bursts (every 25th capture);
+    // this periodic pass catches the smaller bursts that never reach 25.
+    m_retentionTimer = new QTimer(this);
+    m_retentionTimer->setInterval(5 * 60 * 1000);
+    connect(m_retentionTimer, &QTimer::timeout, this, [this] {
+        const qint64 cap = m_settings->diskCapBytes();
+        const qint64 maxEntries = m_settings->maxEntries();
+        if (cap > 0)
+            m_storage->enforceDiskCap(cap);
+        if (maxEntries > 0)
+            m_storage->enforceMaxEntries(maxEntries);
+    });
+    m_retentionTimer->start();
 }
 
 void ApplicationContext::applyThemes(const QString &colorTheme, const QString &iconTheme,

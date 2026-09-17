@@ -25,15 +25,19 @@ The codebase is strictly layered into distinct modules:
 
 ```
 src/
-├── core/                  # egoboard_core (STATIC library)
-│   ├── IClipboardStorage.h       # Interface for history storage operations
+├── core/                  # egoboard_core (STATIC library; Qt6::Core + Qt6::Sql only)
+│   ├── IClipboardStorage.h       # Storage seam (history interface + signals)
 │   ├── StorageManager.{h,cpp}    # SQLite implementation with WAL mode & dedup
-│   ├── DatabaseSchema.{h,cpp}    # DDL & index creation
+│   ├── DatabaseSchema.{h,cpp}    # DDL, additive migrations, indexes, FTS5
+│   ├── SearchEngine.{h,cpp}      # FTS5 query builder & LIKE fallback
+│   ├── TransformEngine.{h,cpp}   # Built-in string transforms & chains
+│   ├── SnippetManager.{h,cpp}    # Snippet templates + placeholder expansion
 │   ├── VacuumWorker.{h,cpp}      # Dedicated-thread DB compaction
 │   ├── BookmarkManager.{h,cpp}   # Pinned status & hierarchical group tree
 │   ├── GroupTreeModel.{h,cpp}    # QAbstractItemModel for bookmark groups
-│   ├── ExportImportManager.{h,cpp} # JSON export/import & merge engine
+│   ├── ExportImportManager.{h,cpp} # Versioned JSON export/import & merge engine
 │   ├── SensitiveDataDetector.{h,cpp} # Luhn card & credential regex scanner
+│   ├── ExpirePolicy.{h,cpp}      # Rule-based expiry (age/type/source app)
 │   ├── ClipboardListModel.{h,cpp}# Virtualized paged model for QListView
 │   ├── ClipboardRecord.h         # Value type for clipboard records
 │   ├── ContentType.h             # Enum: Text, RichText, Image, Files
@@ -41,24 +45,43 @@ src/
 │
 ├── app/                   # Desktop runtime & platform integration
 │   ├── ApplicationContext.{h,cpp} # Composition root & dependency wiring
-│   ├── ClipboardWatcher.{h,cpp}  # QClipboard listener & debounce manager
-│   ├── AutoPaster.{h,cpp}        # Clipboard restoration & key injection
+│   ├── ClipboardWatcher.{h,cpp}  # QClipboard listener, filters & sensitive policy
+│   ├── WlrDataControlHelper.{h,cpp} # wlr-data-control capture (Wayland, focus-free)
+│   ├── AutoPaster.{h,cpp}        # Clipboard restoration & paste-back
 │   ├── HotkeyManager.{h,cpp}     # KGlobalAccel global shortcut manager
+│   ├── ExpireScheduler.{h,cpp}   # Applies expire rules on a timer/after captures
 │   ├── TrayController.{h,cpp}    # KStatusNotifierItem system tray integration
 │   ├── SettingsManager.{h,cpp}   # KConfig abstraction for ~/.config/egoboardrc
 │   ├── SingleInstanceGuard.{h,cpp} # Lock file & local socket communication
+│   ├── ScriptActionManager.{h,cpp} # Sandboxed QJSEngine user transforms
+│   ├── EncryptionManager.{h,cpp} # KWallet-held SQLCipher key (opt-in build flag)
+│   ├── EgoboardDbusAdaptor.{h,cpp} # D-Bus automation API / KWin callback
+│   ├── OcrWorker.{h,cpp}         # Tesseract OCR on a worker pool
+│   ├── LayerShellHelper.{h,cpp}  # Layer-shell capability probe (Wayland)
+│   ├── KWinCursorTracker.{h,cpp} # Global cursor position via KWin scripting
 │   ├── ActiveWindowTracker.h     # Interface for window metadata tracking
 │   ├── X11ActiveWindowTracker.{h,cpp}     # X11 / EWMH active window tracker
 │   ├── WaylandActiveWindowTracker.{h,cpp} # Wayland wlr-foreign-toplevel tracker
+│   ├── ThemeManager / ColorSchemeIndex / IconThemeManager / IconThemeIndex
+│   │                             # KDE color-scheme + icon-theme discovery/apply
+│   ├── TextAppearance.{h,cpp}    # Text size/color overrides with contrast floors
+│   ├── SystemThemeWatcher.{h,cpp}# Re-applies themes when Plasma changes them
 │   └── ui/                       # Qt Widgets presentation layer
 │       ├── MainWindow.{h,cpp}          # Main two-pane browser window
 │       ├── EntryDelegate.{h,cpp}       # High-performance custom item delegate
 │       ├── PreviewPane.{h,cpp}         # Multi-format preview stack
 │       ├── QuickPasteMenu.{h,cpp}      # Frameless overlay with numeric shortcuts
 │       ├── GroupsDock.{h,cpp}          # Collapsible tree dock with drag & drop
-│       ├── SettingsDialog.{h,cpp}      # Multi-tab preferences dialog
+│       ├── CommandPalette.{h,cpp}      # Ctrl+K fuzzy palette + >commands
+│       ├── TimelineStrip.{h,cpp}       # 14-day histogram above the list
+│       ├── SnippetDialog.{h,cpp}       # Snippet editor
+│       ├── TransformChainDialog.{h,cpp}# Multi-step transform composer
+│       ├── SettingsDialog.{h,cpp}      # Multi-page preferences dialog
+│       ├── AppearancePreview.{h,cpp}   # Live theme/text preview widget
+│       ├── CodePreviewHighlighter.{h,cpp} # Syntax highlighting for previews
 │       └── ExportImportDialogs.{h,cpp} # Export/import modal dialogs
 │
+├── krunner/               # KRunner plugin (`eb ` trigger, built when KF6Runner exists)
 └── main.cpp               # Application entrypoint & --smoke self-test
 ```
 
@@ -169,7 +192,7 @@ Before committing or marking any task complete, always verify:
 ```bash
 cmake --build build
 ctest --test-dir build --output-on-failure
-./build/src/egoboard --smoke
+QT_QPA_PLATFORM=offscreen ./build/egoboard --smoke
 ```
 
 ---

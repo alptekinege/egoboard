@@ -33,5 +33,5 @@ protected:
     // Read by the pool lambda only after the queued setter has run on this
     // object's thread — no locking needed.
     QString m_language = QStringLiteral("eng");
-    int m_maxChars = 8000;
+    int m_maxChars = 8192; // matches SettingsManager's default
 };

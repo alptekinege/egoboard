@@ -62,11 +62,9 @@ public:
 
 private:
     static ClipboardRecord recordFromSummary(const QSqlQuery &query);
-    bool exec(const QString &sql) const;
 
     QString m_path;
     QString m_connectionName; // unique per instance (tests create several)
     QSqlDatabase m_db;
-    std::atomic_int m_insertCounter{0}; // throttles enforceDiskCap frequency
     bool m_encrypted = false;
 };

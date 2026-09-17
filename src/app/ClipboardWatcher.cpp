@@ -65,15 +65,7 @@ bool isFilePathList(const QString &text, QStringList *pathsOut)
 // Capture-type filter: false when the user opted out of recording this type.
 bool captureTypeEnabled(const SettingsManager *settings, ContentType type)
 {
-    if (!settings)
-        return true;
-    switch (type) {
-    case ContentType::Text: return settings->captureText();
-    case ContentType::RichText: return settings->captureRichText();
-    case ContentType::Image: return settings->captureImages();
-    case ContentType::Files: return settings->captureFiles();
-    }
-    return true;
+    return !settings || settings->captureTypeEnabled(type);
 }
 
 bool isSensitiveWithCustom(const QString &text, SettingsManager *settings)

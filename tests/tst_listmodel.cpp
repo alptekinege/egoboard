@@ -26,6 +26,7 @@ private slots:
     void removalAndResetRefreshes();
     void invalidIndexesAndParentsAreSafe();
     void refreshEmitsResetAndInitialPageSignal();
+    void accessibleRolesDescribeEntry();
 
 private:
     ClipboardRecord makeRecord(const QByteArray &hash, const QString &text, qint64 timestamp);
@@ -336,6 +337,31 @@ void TestListModel::refreshEmitsResetAndInitialPageSignal()
     QCOMPARE(resetSpy.count(), 3);
     QCOMPARE(loadedSpy.count(), 3);
     QCOMPARE(loadedSpy.last().at(0).toBool(), false);
+}
+
+void TestListModel::accessibleRolesDescribeEntry()
+{
+    ClipboardRecord rec = makeRecord(QByteArrayLiteral("a11y_hash"), QStringLiteral("secret text"), 1700000000000);
+    rec.type = ContentType::Image;
+    rec.pinned = true;
+    rec.sensitive = true;
+    m_storage->insertOrUpdate(rec);
+
+    ClipboardListModel model(m_storage);
+    model.refresh();
+    const QModelIndex idx = model.index(0, 0);
+
+    // The delegate paints state as color/badges; the accessible text must
+    // carry the same information.
+    const QString accessible = model.data(idx, Qt::AccessibleTextRole).toString();
+    QVERIFY(accessible.contains(QStringLiteral("secret text")));
+    QVERIFY(accessible.contains(QStringLiteral("Image")));
+    QVERIFY(accessible.contains(QStringLiteral("Pinned")));
+    QVERIFY(accessible.contains(QStringLiteral("Sensitive")));
+    QVERIFY(accessible.contains(QStringLiteral("test-app")));
+
+    const QString description = model.data(idx, Qt::AccessibleDescriptionRole).toString();
+    QVERIFY(description.contains(QStringLiteral("Pinned")));
 }
 
 QTEST_GUILESS_MAIN(TestListModel)

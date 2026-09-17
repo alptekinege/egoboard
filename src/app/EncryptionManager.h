@@ -11,6 +11,7 @@ public:
         NotAvailable,
         WalletDisabled,
         WalletOpenFailed,
+        WalletOperationFailed, // wallet reachable, but the entry operation failed
         EntryMissing,
     };
 

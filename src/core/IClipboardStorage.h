@@ -39,9 +39,11 @@ class IClipboardStorage : public QObject {
 public:
     using QObject::QObject;
 
-    // Inserts the record, or - when the content hash already exists - bumps
-    // the existing row's timestamp/use count instead (deduplication).
-    // Returns the row id; sets *updatedExisting when an old row was touched.
+    // Inserts the record, or - when the content hash already exists - updates
+    // the existing row instead (deduplication): use_count is bumped, payload
+    // and metadata come from the incoming (latest) copy, and the timestamp
+    // only moves forward. Returns the row id; sets *updatedExisting when an
+    // old row was touched.
     virtual qint64 insertOrUpdate(const ClipboardRecord &record, bool *updatedExisting = nullptr) = 0;
 
     virtual QVector<ClipboardRecord> fetchPage(const FilterSpec &filter, const PageCursor &cursor,

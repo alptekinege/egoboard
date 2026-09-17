@@ -146,6 +146,17 @@ void SettingsManager::setCaptureFiles(bool enabled)
     save();
 }
 
+bool SettingsManager::captureTypeEnabled(ContentType type) const
+{
+    switch (type) {
+    case ContentType::Text: return captureText();
+    case ContentType::RichText: return captureRichText();
+    case ContentType::Image: return captureImages();
+    case ContentType::Files: return captureFiles();
+    }
+    return true;
+}
+
 bool SettingsManager::startVisible() const
 {
     return m_config->group(kGroupGeneral).readEntry("StartVisible", false);

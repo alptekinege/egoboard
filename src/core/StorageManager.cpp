@@ -57,7 +57,9 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
     {
         QSqlQuery find(m_db);
         find.prepare(QStringLiteral("SELECT id FROM entries WHERE content_hash = :h LIMIT 1"));
-        find.bindValue(QStringLiteral(":h"), record.hash);
+        // The column is TEXT; hashes are hex, so bind them as text to match
+        // both older normalized rows and new ones (BLOB binds would not).
+        find.bindValue(QStringLiteral(":h"), QString::fromLatin1(record.hash));
         if (!find.exec()) {
             qWarning("egoboard: duplicate lookup failed: %s", qPrintable(find.lastError().text()));
             m_db.rollback();
@@ -65,13 +67,32 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
         }
         if (find.next()) {
             const qint64 existingId = find.value(0).toLongLong();
+            // Dedup touch: the latest copy wins for payload and metadata, but
+            // the timestamp only moves forward - copying an old entry again
+            // must not sink it in Newest order. A pin is never removed and
+            // existing OCR text survives a copy that carries none.
             QSqlQuery touch(m_db);
             touch.prepare(QStringLiteral(
-                "UPDATE entries SET timestamp_ms = :ts, use_count = use_count + 1,"
-                " source_app = :app, source_window = :win WHERE id = :id"));
+                "UPDATE entries SET"
+                " timestamp_ms = MAX(timestamp_ms, :ts),"
+                " use_count = use_count + 1,"
+                " source_app = :app, source_window = :win,"
+                " preview = :preview, size_bytes = :size,"
+                " text_data = :text, blob_data = :blob,"
+                " sensitive = :sensitive,"
+                " pinned = MAX(pinned, :pinned),"
+                " ocr_text = CASE WHEN :ocr != '' THEN :ocr ELSE ocr_text END"
+                " WHERE id = :id"));
             touch.bindValue(QStringLiteral(":ts"), record.timestamp);
             touch.bindValue(QStringLiteral(":app"), record.sourceApp);
             touch.bindValue(QStringLiteral(":win"), record.sourceWindow);
+            touch.bindValue(QStringLiteral(":preview"), record.preview);
+            touch.bindValue(QStringLiteral(":size"), record.sizeBytes);
+            touch.bindValue(QStringLiteral(":text"), record.textData);
+            touch.bindValue(QStringLiteral(":blob"), record.hasBlob ? record.blobData : QVariant());
+            touch.bindValue(QStringLiteral(":sensitive"), record.sensitive ? 1 : 0);
+            touch.bindValue(QStringLiteral(":pinned"), record.pinned ? 1 : 0);
+            touch.bindValue(QStringLiteral(":ocr"), record.ocrText);
             touch.bindValue(QStringLiteral(":id"), existingId);
             if (!touch.exec() || !m_db.commit()) {
                 qWarning("egoboard: duplicate update failed: %s",
@@ -93,7 +114,7 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
         " VALUES (:ts, :type, :h, :text, :blob, :preview, :size, :pinned, :sensitive, 0, :app, :win)"));
     insert.bindValue(QStringLiteral(":ts"), record.timestamp);
     insert.bindValue(QStringLiteral(":type"), static_cast<int>(record.type));
-    insert.bindValue(QStringLiteral(":h"), record.hash);
+    insert.bindValue(QStringLiteral(":h"), QString::fromLatin1(record.hash));
     insert.bindValue(QStringLiteral(":text"), record.textData);
     insert.bindValue(QStringLiteral(":blob"), record.hasBlob ? record.blobData : QVariant());
     insert.bindValue(QStringLiteral(":preview"), record.preview);
@@ -261,7 +282,10 @@ QVector<ClipboardRecord> StorageManager::fetchAll(const FilterSpec &filter) cons
         all.append(page);
         if (!hasMore)
             break;
-        cursor = PageCursor{true, page.last().timestamp, page.last().id};
+        // The cursor must carry every key the active sort compares, otherwise
+        // paging past page 1 silently truncates (MostUsed also orders by
+        // use_count before timestamp/id).
+        cursor = PageCursor{true, page.last().timestamp, page.last().id, page.last().useCount};
     }
     return all;
 }
@@ -349,36 +373,59 @@ int StorageManager::removeEntries(const QList<qint64> &ids)
 {
     if (!m_db.isOpen() || ids.isEmpty())
         return 0;
-    int removed = 0;
-    m_db.transaction();
+    if (!m_db.transaction()) {
+        qWarning("egoboard: cannot begin transaction: %s", qPrintable(m_db.lastError().text()));
+        return 0;
+    }
+    QList<qint64> removedIds;
+    removedIds.reserve(ids.size());
     for (const qint64 id : ids) {
         QSqlQuery query(m_db);
         query.prepare(QStringLiteral("DELETE FROM entries WHERE id = :id"));
         query.bindValue(QStringLiteral(":id"), id);
-        if (query.exec())
-            removed += query.numRowsAffected();
+        if (query.exec() && query.numRowsAffected() > 0)
+            removedIds.append(id); // only rows that actually existed
     }
-    m_db.commit();
-    if (removed > 0)
-        emit entriesRemoved(ids);
-    return removed;
+    if (!m_db.commit()) {
+        qWarning("egoboard: removeEntries commit failed: %s",
+                 qPrintable(m_db.lastError().text()));
+        m_db.rollback();
+        return 0;
+    }
+    if (!removedIds.isEmpty())
+        emit entriesRemoved(removedIds);
+    return removedIds.size();
 }
 
 int StorageManager::clearHistory(bool includePinned)
 {
     if (!m_db.isOpen())
         return 0;
+    // Collect the doomed ids first so listeners can react to exactly what was
+    // removed instead of inferring it from the reset.
+    const QString where = includePinned ? QString() : QStringLiteral(" WHERE pinned = 0");
+    QList<qint64> removedIds;
+    {
+        QSqlQuery select(m_db);
+        if (!select.exec(QStringLiteral("SELECT id FROM entries") + where)) {
+            qWarning("egoboard: clearHistory select failed: %s",
+                     qPrintable(select.lastError().text()));
+            return 0;
+        }
+        while (select.next())
+            removedIds.append(select.value(0).toLongLong());
+    }
+    if (removedIds.isEmpty())
+        return 0;
+
     QSqlQuery query(m_db);
-    const QString sql = includePinned ? QStringLiteral("DELETE FROM entries")
-                                      : QStringLiteral("DELETE FROM entries WHERE pinned = 0");
-    if (!query.exec(sql)) {
+    if (!query.exec(QStringLiteral("DELETE FROM entries") + where)) {
         qWarning("egoboard: clearHistory failed: %s", qPrintable(query.lastError().text()));
         return 0;
     }
-    const int removed = query.numRowsAffected();
-    if (removed > 0)
-        emit storageReset();
-    return removed;
+    emit entriesRemoved(removedIds);
+    emit storageReset();
+    return removedIds.size();
 }
 
 bool StorageManager::setPinned(qint64 id, bool pinned)
@@ -528,18 +575,43 @@ qint64 StorageManager::addSavedSearch(const QString &name, const FilterSpec &fil
 {
     if (!m_db.isOpen() || name.trimmed().isEmpty())
         return 0;
-    QSqlQuery query(m_db);
-    query.prepare(QStringLiteral(
-        "INSERT OR REPLACE INTO saved_searches (name, filter) VALUES (:name, :filter)"));
-    query.bindValue(QStringLiteral(":name"), name.trimmed());
-    query.bindValue(QStringLiteral(":filter"), filter.toJsonString());
-    if (!query.exec()) {
-        qWarning("egoboard: addSavedSearch failed: %s", qPrintable(query.lastError().text()));
+    const QString trimmed = name.trimmed();
+
+    // True upsert on the case-insensitive name: an existing search keeps its
+    // row id, only its filter is replaced.
+    QSqlQuery find(m_db);
+    find.prepare(QStringLiteral(
+        "SELECT id FROM saved_searches WHERE name = :name COLLATE NOCASE LIMIT 1"));
+    find.bindValue(QStringLiteral(":name"), trimmed);
+    if (!find.exec()) {
+        qWarning("egoboard: addSavedSearch lookup failed: %s",
+                 qPrintable(find.lastError().text()));
         return 0;
     }
-    // INSERT OR REPLACE keeps the row id when the name already existed.
-    const qint64 id = query.lastInsertId().toLongLong();
-    return id > 0 ? id : 0;
+    if (find.next()) {
+        const qint64 id = find.value(0).toLongLong();
+        QSqlQuery update(m_db);
+        update.prepare(QStringLiteral("UPDATE saved_searches SET filter = :filter WHERE id = :id"));
+        update.bindValue(QStringLiteral(":filter"), filter.toJsonString());
+        update.bindValue(QStringLiteral(":id"), id);
+        if (!update.exec()) {
+            qWarning("egoboard: addSavedSearch update failed: %s",
+                     qPrintable(update.lastError().text()));
+            return 0;
+        }
+        return id;
+    }
+
+    QSqlQuery insert(m_db);
+    insert.prepare(QStringLiteral(
+        "INSERT INTO saved_searches (name, filter) VALUES (:name, :filter)"));
+    insert.bindValue(QStringLiteral(":name"), trimmed);
+    insert.bindValue(QStringLiteral(":filter"), filter.toJsonString());
+    if (!insert.exec()) {
+        qWarning("egoboard: addSavedSearch failed: %s", qPrintable(insert.lastError().text()));
+        return 0;
+    }
+    return insert.lastInsertId().toLongLong();
 }
 
 bool StorageManager::removeSavedSearch(qint64 id)
@@ -682,17 +754,6 @@ int StorageManager::enforceMaxEntries(qint64 maxEntries)
     while (query.next())
         victims.append(query.value(0).toLongLong());
     return removeEntries(victims);
-}
-
-bool StorageManager::exec(const QString &sql) const
-{
-    QSqlQuery query(m_db);
-    if (!query.exec(sql)) {
-        qWarning("egoboard: exec failed: %s (%s)", qPrintable(query.lastError().text()),
-                 qPrintable(sql));
-        return false;
-    }
-    return true;
 }
 
 bool StorageManager::setEncryptionKey(const QString &key)

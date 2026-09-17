@@ -1,6 +1,7 @@
 #include "ClipboardListModel.h"
 
 #include <QDataStream>
+#include <QDateTime>
 #include <QIODevice>
 #include <QMimeData>
 
@@ -66,6 +67,28 @@ QVariant ClipboardListModel::data(const QModelIndex &index, int role) const
         return record.useCount;
     case HashRole:
         return record.hash;
+    case Qt::AccessibleTextRole: {
+        // The delegate conveys type/pin/sensitive state by color and badges;
+        // screen readers need the same information as text.
+        QString text = record.preview.isEmpty() ? tr("Empty entry") : record.preview;
+        QStringList bits;
+        switch (record.type) {
+        case ContentType::Text: bits << tr("Text"); break;
+        case ContentType::RichText: bits << tr("Rich text"); break;
+        case ContentType::Image: bits << tr("Image"); break;
+        case ContentType::Files: bits << tr("Files"); break;
+        }
+        if (record.pinned) bits << tr("Pinned");
+        if (record.sensitive) bits << tr("Sensitive");
+        if (!record.sourceApp.isEmpty()) bits << record.sourceApp;
+        return text + QStringLiteral(" (%1)").arg(bits.join(QStringLiteral(", ")));
+    }
+    case Qt::AccessibleDescriptionRole: {
+        const QString when = QDateTime::fromMSecsSinceEpoch(record.timestamp)
+                                 .toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+        return record.pinned ? tr("Pinned entry from %1").arg(when)
+                             : tr("Copied %1").arg(when);
+    }
     default:
         return {};
     }

@@ -60,7 +60,7 @@ std::optional<qint64> findByHash(QSqlDatabase db, const QByteArray &hash)
 {
     QSqlQuery query(db);
     query.prepare(QStringLiteral("SELECT id FROM entries WHERE content_hash = :h LIMIT 1"));
-    query.bindValue(QStringLiteral(":h"), hash);
+    query.bindValue(QStringLiteral(":h"), QString::fromLatin1(hash));
     if (query.exec() && query.next())
         return query.value(0).toLongLong();
     return std::nullopt;
@@ -69,10 +69,11 @@ std::optional<qint64> findByHash(QSqlDatabase db, const QByteArray &hash)
 } // namespace
 
 ExportImportManager::ExportImportManager(StorageManager *storage, BookmarkManager *bookmarks,
-                                         QObject *parent)
+                                         SnippetManager *snippets, QObject *parent)
     : QObject(parent)
     , m_storage(storage)
     , m_bookmarks(bookmarks)
+    , m_snippets(snippets)
 {
 }
 
@@ -151,6 +152,15 @@ bool ExportImportManager::exportToFile(const ExportRequest &request, QString *er
         object.insert(QStringLiteral("useCount"), record.useCount);
         object.insert(QStringLiteral("sourceApp"), record.sourceApp);
         object.insert(QStringLiteral("sourceWindow"), record.sourceWindow);
+        if (!record.ocrText.isEmpty())
+            object.insert(QStringLiteral("ocrText"), record.ocrText);
+        const QStringList tags = m_storage->tagsForEntry(record.id);
+        if (!tags.isEmpty()) {
+            QJsonArray tagArray;
+            for (const QString &tag : tags)
+                tagArray.append(tag);
+            object.insert(QStringLiteral("tags"), tagArray);
+        }
         entryArray.append(object);
     }
 
@@ -168,6 +178,30 @@ bool ExportImportManager::exportToFile(const ExportRequest &request, QString *er
         groupArray.append(object);
     }
 
+    // --- snippet library ----------------------------------------------------
+    QJsonArray snippetArray;
+    if (m_snippets) {
+        const QVector<Snippet> snippets = m_snippets->snippets();
+        for (const Snippet &snippet : snippets) {
+            QJsonObject object;
+            object.insert(QStringLiteral("name"), snippet.name);
+            object.insert(QStringLiteral("template"), snippet.templateText);
+            object.insert(QStringLiteral("shortcut"), snippet.shortcut);
+            object.insert(QStringLiteral("createdMs"), double(snippet.createdMs));
+            snippetArray.append(object);
+        }
+    }
+
+    // --- saved searches -----------------------------------------------------
+    QJsonArray searchArray;
+    const QList<SavedSearch> searches = m_storage->savedSearches();
+    for (const SavedSearch &search : searches) {
+        QJsonObject object;
+        object.insert(QStringLiteral("name"), search.name);
+        object.insert(QStringLiteral("filter"), search.filter.toJson());
+        searchArray.append(object);
+    }
+
     QJsonObject root;
     root.insert(QStringLiteral("format"), exportFormatTag());
     root.insert(QStringLiteral("version"), exportFormatVersion());
@@ -176,6 +210,8 @@ bool ExportImportManager::exportToFile(const ExportRequest &request, QString *er
     root.insert(QStringLiteral("entries"), entryArray);
     root.insert(QStringLiteral("groups"), groupArray);
     root.insert(QStringLiteral("memberships"), memberships);
+    root.insert(QStringLiteral("snippets"), snippetArray);
+    root.insert(QStringLiteral("savedSearches"), searchArray);
 
     QFile file(request.path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -227,9 +263,13 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode)
     }
 
     if (mode == ImportMode::Overwrite) {
+        // A self-contained backup replaces every piece of user data it carries.
         m_storage->clearHistory(true);
         QSqlQuery wipe(db);
         wipe.exec(QStringLiteral("DELETE FROM groups")); // cascades memberships
+        wipe.exec(QStringLiteral("DELETE FROM tags")); // entry links already cascaded
+        wipe.exec(QStringLiteral("DELETE FROM snippets"));
+        wipe.exec(QStringLiteral("DELETE FROM saved_searches"));
     }
 
     // --- groups: map imported ids to local ids by matching full path --------
@@ -301,6 +341,13 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode)
     }
 
     // --- entries -------------------------------------------------------------
+    const auto applyImportedTags = [this, &result](qint64 entryId, const QStringList &tags) {
+        for (const QString &tag : tags) {
+            if (m_storage->addTag(entryId, tag))
+                ++result.tagsImported;
+        }
+    };
+
     const QJsonArray entryArray = root.value(QStringLiteral("entries")).toArray();
     QHash<QByteArray, qint64> entryIdByHash; // imported hash -> local id
     for (const auto &value : entryArray) {
@@ -320,6 +367,14 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode)
         record.useCount = object.value(QStringLiteral("useCount")).toInt();
         record.sourceApp = object.value(QStringLiteral("sourceApp")).toString();
         record.sourceWindow = object.value(QStringLiteral("sourceWindow")).toString();
+        record.ocrText = object.value(QStringLiteral("ocrText")).toString();
+        QStringList tagNames;
+        const QJsonArray tagArray = object.value(QStringLiteral("tags")).toArray();
+        for (const QJsonValue &tagValue : tagArray) {
+            const QString tag = tagValue.toString().trimmed();
+            if (!tag.isEmpty())
+                tagNames.append(tag);
+        }
         if (record.hash.isEmpty())
             continue;
 
@@ -346,7 +401,10 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode)
                     update.bindValue(QStringLiteral(":s"), record.sensitive ? 1 : 0);
                     update.bindValue(QStringLiteral(":id"), *existingId);
                     update.exec();
+                    if (!record.ocrText.isEmpty() && existing.ocrText.isEmpty())
+                        m_storage->setOcrText(*existingId, record.ocrText);
                 }
+                applyImportedTags(*existingId, tagNames);
                 ++result.entriesMerged;
                 continue;
             }
@@ -366,6 +424,9 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode)
             fixCount.bindValue(QStringLiteral(":uc"), record.useCount);
             fixCount.bindValue(QStringLiteral(":id"), insertedId);
             fixCount.exec();
+            if (!record.ocrText.isEmpty())
+                m_storage->setOcrText(insertedId, record.ocrText);
+            applyImportedTags(insertedId, tagNames);
         }
     }
 
@@ -379,6 +440,62 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode)
         const qint64 localEntryId = entryIdByHash.value(hash, 0);
         if (localGroupId != 0 && localEntryId != 0)
             m_bookmarks->assignEntry(localEntryId, localGroupId);
+    }
+
+    // --- snippet library ------------------------------------------------------
+    // Snippets have no stable identity across machines, so the name is the key:
+    // an existing snippet with the same name is left untouched (Overwrite mode
+    // started from an empty table and re-creates everything).
+    const QJsonArray snippetArray = root.value(QStringLiteral("snippets")).toArray();
+    QSet<QString> importedSnippetNames;
+    for (const auto &value : snippetArray) {
+        const QJsonObject object = value.toObject();
+        const QString name = object.value(QStringLiteral("name")).toString().trimmed();
+        const QString plainTemplate = object.value(QStringLiteral("template")).toString();
+        if (name.isEmpty() || plainTemplate.isEmpty())
+            continue;
+        const QString key = name.toCaseFolded();
+        if (importedSnippetNames.contains(key))
+            continue;
+
+        QSqlQuery probe(db);
+        probe.prepare(QStringLiteral("SELECT id FROM snippets WHERE name = :name LIMIT 1"));
+        probe.bindValue(QStringLiteral(":name"), name);
+        if (probe.exec() && probe.next()) {
+            importedSnippetNames.insert(key);
+            continue;
+        }
+
+        QSqlQuery insert(db);
+        insert.prepare(QStringLiteral(
+            "INSERT INTO snippets (name, template, shortcut, created_ms)"
+            " VALUES (:name, :template, :shortcut, :created)"));
+        insert.bindValue(QStringLiteral(":name"), name);
+        insert.bindValue(QStringLiteral(":template"), plainTemplate);
+        insert.bindValue(QStringLiteral(":shortcut"),
+                         object.value(QStringLiteral("shortcut")).toString());
+        insert.bindValue(QStringLiteral(":created"),
+                         qint64(object.value(QStringLiteral("createdMs")).toDouble()));
+        if (insert.exec()) {
+            importedSnippetNames.insert(key);
+            ++result.snippetsImported;
+        } else {
+            qWarning("egoboard: snippet import failed: %s",
+                     qPrintable(insert.lastError().text()));
+        }
+    }
+
+    // --- saved searches -------------------------------------------------------
+    const QJsonArray searchArray = root.value(QStringLiteral("savedSearches")).toArray();
+    for (const auto &value : searchArray) {
+        const QJsonObject object = value.toObject();
+        const QString name = object.value(QStringLiteral("name")).toString().trimmed();
+        if (name.isEmpty())
+            continue;
+        const FilterSpec filter =
+            FilterSpec::fromJson(object.value(QStringLiteral("filter")).toObject());
+        if (m_storage->addSavedSearch(name, filter) != 0)
+            ++result.savedSearchesImported;
     }
 
     emit m_storage->storageReset(); // coarser but correct: let views reload

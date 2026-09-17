@@ -105,6 +105,7 @@ private:
     VacuumWorker *m_vacuumWorker = nullptr;
     QThread *m_vacuumThread = nullptr;
     QTimer *m_vacuumTimer = nullptr;
+    QTimer *m_retentionTimer = nullptr;
     OcrWorker *m_ocr = nullptr;
     EncryptionManager *m_encryption = nullptr;
     SystemThemeWatcher *m_systemTheme = nullptr;

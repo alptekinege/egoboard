@@ -8,14 +8,14 @@
 #include <QPainter>
 #include <QDateTime>
 #include <QMouseEvent>
-#include <QToolTip>
 #include "SearchEngine.h"
 
 TimelineStrip::TimelineStrip(IClipboardStorage *storage, QWidget *parent)
     : QWidget(parent), m_storage(storage)
 {
     setMouseTracking(true);
-    setToolTip(tr("Click a bar to filter by day \u2022 click again to clear"));
+    m_defaultHint = tr("Click a bar to filter by day \u2022 click again to clear");
+    setToolTip(m_defaultHint);
     recompute();
 }
 
@@ -126,26 +126,52 @@ void TimelineStrip::paintEvent(QPaintEvent *)
             p.drawText(QRect(br.x()-2, y0+barH+2, barW+4, 10), Qt::AlignCenter, label);
         }
     }
-    // count on hover
-    if (m_hovered >= 0 && m_hovered < n) {
-        p.setPen(palette().color(QPalette::HighlightedText));
-        // not needed
-    }
+}
+
+int TimelineStrip::barIndexAt(const QPoint &pos) const
+{
+    const int n = m_bins.size();
+    if (n == 0)
+        return -1;
+    const int barW = qMax(4, (width() - 16 - (n - 1) * 4) / n);
+    const int totalW = n * barW + (n - 1) * 4;
+    const int x0 = (width() - totalW) / 2;
+    const int idx = (pos.x() - x0) / (barW + 4);
+    return (idx < 0 || idx >= n) ? -1 : idx;
 }
 
 void TimelineStrip::mousePressEvent(QMouseEvent *event)
 {
-    const int n = m_bins.size();
-    if (n == 0) return;
-    const int w = width();
-    const int barW = qMax(4, (w - 16 - (n-1)*4) / n);
-    const int totalW = n*barW + (n-1)*4;
-    int x0 = (w - totalW)/2;
-    int x = event->pos().x();
-    int idx = (x - x0) / (barW+4);
-    if (idx < 0 || idx >= n) { emit daySelected(0,0); return; }
-    if (m_bins[idx].count == 0) { emit daySelected(0,0); return; }
+    const int idx = barIndexAt(event->pos());
+    if (idx < 0 || m_bins[idx].count == 0) { emit daySelected(0,0); return; }
     qint64 from = m_bins[idx].dayStartMs;
     qint64 to = from + 86400000 - 1;
     emit daySelected(from, to);
+}
+
+void TimelineStrip::mouseMoveEvent(QMouseEvent *event)
+{
+    const int idx = barIndexAt(event->pos());
+    if (idx != m_hovered) {
+        m_hovered = idx;
+        if (idx >= 0) {
+            const QDate day = QDateTime::fromMSecsSinceEpoch(m_bins[idx].dayStartMs).date();
+            setToolTip(tr("%1 — %n entrie(s)", nullptr, m_bins[idx].count)
+                           .arg(day.toString(Qt::ISODate)));
+        } else {
+            setToolTip(m_defaultHint);
+        }
+        update();
+    }
+    QWidget::mouseMoveEvent(event);
+}
+
+void TimelineStrip::leaveEvent(QEvent *event)
+{
+    if (m_hovered != -1) {
+        m_hovered = -1;
+        update();
+    }
+    setToolTip(m_defaultHint);
+    QWidget::leaveEvent(event);
 }

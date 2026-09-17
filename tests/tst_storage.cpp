@@ -15,6 +15,7 @@ private slots:
     void init();
     void insertAndFetch();
     void dedupUpdatesTimestamp();
+    void dedupRefreshesPayloadAndKeepsTimestampMonotonic();
     void pagination();
     void filters();
     void pinnedAndRemove();
@@ -24,6 +25,7 @@ private slots:
     void tagLifecycleAndFilter();
     void savedSearchesRoundtrip();
     void sortModes();
+    void fetchAllCoversEveryPageInAllSortModes();
     void emitsHistorySignals();
     void modelRefreshesOnHistoryChanges();
     void binaryPayloadAndMetadata();
@@ -105,6 +107,47 @@ void TestStorage::dedupUpdatesTimestamp()
     QVERIFY(m_storage->fetchFull(first, &full));
     QCOMPARE(full.timestamp, qint64(9000));
     QCOMPARE(full.useCount, 1);
+}
+
+void TestStorage::dedupRefreshesPayloadAndKeepsTimestampMonotonic()
+{
+    ClipboardRecord first = makeRecord(QByteArrayLiteral("refresh"), QStringLiteral("old payload"), 5000);
+    first.preview = QStringLiteral("old preview");
+    first.sizeBytes = 3;
+    const qint64 id = m_storage->insertOrUpdate(first);
+    QVERIFY(id > 0);
+    QVERIFY(m_storage->setOcrText(id, QStringLiteral("recognized once")));
+    QVERIFY(m_storage->setPinned(id, true));
+
+    // Same hash, older timestamp, new payload/flags: latest copy wins for the
+    // payload, the timestamp only moves forward, OCR text and pin survive.
+    ClipboardRecord again = makeRecord(QByteArrayLiteral("refresh"), QStringLiteral("new payload"), 1000);
+    again.preview = QStringLiteral("new preview");
+    again.sizeBytes = 42;
+    again.sensitive = true;
+    again.sourceApp = QStringLiteral("new-app");
+    bool updated = false;
+    QCOMPARE(m_storage->insertOrUpdate(again, &updated), id);
+    QVERIFY(updated);
+
+    ClipboardRecord full;
+    QVERIFY(m_storage->fetchFull(id, &full));
+    QCOMPARE(full.timestamp, qint64(5000)); // monotonic: no jump down
+    QCOMPARE(full.useCount, 1);
+    QCOMPARE(full.textData, QStringLiteral("new payload"));
+    QCOMPARE(full.preview, QStringLiteral("new preview"));
+    QCOMPARE(full.sizeBytes, qint64(42));
+    QVERIFY(full.sensitive);
+    QVERIFY(full.pinned);
+    QCOMPARE(full.sourceApp, QStringLiteral("new-app"));
+    QCOMPARE(full.ocrText, QStringLiteral("recognized once"));
+
+    // A newer copy advances the timestamp and counts again.
+    ClipboardRecord newer = makeRecord(QByteArrayLiteral("refresh"), QStringLiteral("new payload"), 9000);
+    QCOMPARE(m_storage->insertOrUpdate(newer), id);
+    QVERIFY(m_storage->fetchFull(id, &full));
+    QCOMPARE(full.timestamp, qint64(9000));
+    QCOMPARE(full.useCount, 2);
 }
 
 void TestStorage::pagination()
@@ -342,12 +385,14 @@ void TestStorage::savedSearchesRoundtrip()
     QCOMPARE(loaded.tags, filter.tags);
     QCOMPARE(loaded.sortMode, FilterSpec::SortMode::MostUsed);
 
-    // Re-saving under the same name replaces the row (upsert, new row id).
+    // Re-saving under the same name is a true upsert: same row id, and the
+    // name match is case-insensitive.
     FilterSpec updated;
     updated.searchText = QStringLiteral("bye");
-    const qint64 replacedId = m_storage->addSavedSearch(QStringLiteral("My search"), updated);
-    QVERIFY(replacedId != 0);
+    const qint64 replacedId = m_storage->addSavedSearch(QStringLiteral("MY SEARCH"), updated);
+    QCOMPARE(replacedId, id);
     QCOMPARE(m_storage->savedSearches().size(), 1);
+    QCOMPARE(m_storage->savedSearches().first().id, id);
     QCOMPARE(m_storage->savedSearches().first().filter.searchText, QStringLiteral("bye"));
 
     QVERIFY(m_storage->removeSavedSearch(replacedId));
@@ -410,6 +455,29 @@ void TestStorage::sortModes()
     QCOMPARE(page.size(), 2);
     QCOMPARE(page.at(0).timestamp, qint64(2000));
     QCOMPARE(page.at(1).timestamp, qint64(1000));
+}
+
+void TestStorage::fetchAllCoversEveryPageInAllSortModes()
+{
+    // Regression: with more rows than one internal page (500) the MostUsed
+    // cursor dropped useCount, so paging silently stopped after page one.
+    const int total = 505;
+    for (int i = 0; i < total; ++i)
+        m_storage->insertOrUpdate(
+            makeRecord(QByteArrayLiteral("page-") + QByteArray::number(i),
+                       QStringLiteral("entry %1").arg(i), 1000 + i));
+    QCOMPARE(m_storage->stats().entryCount, qint64(total));
+    QCOMPARE(m_storage->fetchAll(FilterSpec{}).size(), total);
+
+    // The oldest entry is the only one with useCount > 0 after touchEntry.
+    const qint64 touched = m_storage->fetchAll(FilterSpec{}).constLast().id;
+    QVERIFY(m_storage->touchEntry(touched));
+
+    FilterSpec mostUsed;
+    mostUsed.sortMode = FilterSpec::SortMode::MostUsed;
+    const auto rows = m_storage->fetchAll(mostUsed);
+    QCOMPARE(rows.size(), total);
+    QCOMPARE(rows.first().id, touched);
 }
 
 void TestStorage::emitsHistorySignals()
@@ -613,8 +681,9 @@ void TestStorage::bulkRemovalAndSignal()
     QCOMPARE(m_storage->removeEntries({}), 0);
     QCOMPARE(spy.count(), 0);
 
-    // Bulk remove id1 and id3
-    const int removed = m_storage->removeEntries({id1, id3});
+    // Bulk remove id1 and id3 plus one id that does not exist: the signal
+    // reports only the rows that were actually deleted.
+    const int removed = m_storage->removeEntries({id1, id3, 99999});
     QCOMPARE(removed, 2);
     QCOMPARE(m_storage->stats().entryCount, qint64(1));
     QCOMPARE(spy.count(), 1);
@@ -641,6 +710,7 @@ void TestStorage::clearHistorySelectiveAndTotal()
     QCOMPARE(m_storage->stats().pinnedCount, qint64(1));
 
     QSignalSpy resetSpy(m_storage, &IClipboardStorage::storageReset);
+    QSignalSpy removedSpy(m_storage, &IClipboardStorage::entriesRemoved);
 
     // Clear without including pinned
     const int removedUnpinned = m_storage->clearHistory(false);
@@ -648,6 +718,11 @@ void TestStorage::clearHistorySelectiveAndTotal()
     QCOMPARE(m_storage->stats().entryCount, qint64(1));
     QCOMPARE(m_storage->stats().pinnedCount, qint64(1));
     QCOMPARE(resetSpy.count(), 1);
+    QCOMPARE(removedSpy.count(), 1);
+    const QList<qint64> clearedIds = removedSpy.first().at(0).value<QList<qint64>>();
+    QCOMPARE(clearedIds.size(), 2);
+    QVERIFY(clearedIds.contains(unpinned1));
+    QVERIFY(clearedIds.contains(unpinned2));
 
     ClipboardRecord rec;
     QVERIFY(!m_storage->fetchFull(unpinned1, &rec));

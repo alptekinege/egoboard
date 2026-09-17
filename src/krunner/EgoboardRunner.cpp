@@ -1,14 +1,21 @@
 #include "EgoboardRunner.h"
 
+#include <KLocalizedString>
 #include <KPluginFactory>
 #include <KRunner/QueryMatch>
 #include <KRunner/RunnerContext>
+
+#ifdef EGOBOARD_HAVE_KSERVICE
+#include <KIO/ApplicationLauncherJob>
+#include <KService>
+#endif
 
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusReply>
 #include <QIcon>
 #include <QProcess>
+#include <QStandardPaths>
 
 K_PLUGIN_CLASS_WITH_JSON(EgoboardRunner, "egoboardrunner.json")
 
@@ -33,8 +40,8 @@ void EgoboardRunner::match(KRunner::RunnerContext &context)
                          QDBusConnection::sessionBus());
     if (!iface.isValid()) {
         KRunner::QueryMatch m(this);
-        m.setText(QStringLiteral("Start Egoboard"));
-        m.setSubtext(QStringLiteral("Egoboard is not running"));
+        m.setText(i18n("Start Egoboard"));
+        m.setSubtext(i18n("Egoboard is not running"));
         m.setIconName(QStringLiteral("edit-paste"));
         m.setData(QStringLiteral("__launch__"));
         context.addMatch(m);
@@ -53,7 +60,7 @@ void EgoboardRunner::match(KRunner::RunnerContext &context)
             continue;
         KRunner::QueryMatch m(this);
         m.setText(preview.left(120));
-        m.setSubtext(QStringLiteral("Egoboard #%1").arg(id));
+        m.setSubtext(i18n("Egoboard #%1", id));
         m.setIconName(QStringLiteral("edit-paste"));
         m.setData(id);
         m.setRelevance(0.9);
@@ -61,7 +68,8 @@ void EgoboardRunner::match(KRunner::RunnerContext &context)
     }
     if (rows.isEmpty()) {
         KRunner::QueryMatch m(this);
-        m.setText(needle.isEmpty() ? QStringLiteral("No clipboard history yet") : QStringLiteral("No matches for \"%1\"").arg(needle));
+        m.setText(needle.isEmpty() ? i18n("No clipboard history yet")
+                                   : i18n("No matches for \"%1\"", needle));
         m.setIconName(QStringLiteral("edit-paste"));
         m.setData(QString());
         context.addMatch(m);
@@ -73,6 +81,21 @@ void EgoboardRunner::run(const KRunner::RunnerContext &context, const KRunner::Q
     Q_UNUSED(context)
     const QString data = match.data().toString();
     if (data == QLatin1String("__launch__")) {
+#ifdef EGOBOARD_HAVE_KSERVICE
+        // The desktop entry knows where the app lives; AppImage installs are
+        // not necessarily on PATH (and their Exec line carries the mount path).
+        if (const KService::Ptr service =
+                KService::serviceByDesktopName(QStringLiteral("org.egoboard.Egoboard"))) {
+            auto *job = new KIO::ApplicationLauncherJob(service, this);
+            job->start();
+            return;
+        }
+#endif
+        const QString executable = QStandardPaths::findExecutable(QStringLiteral("egoboard"));
+        if (!executable.isEmpty()) {
+            QProcess::startDetached(executable, {});
+            return;
+        }
         QProcess::startDetached(QStringLiteral("egoboard"), {});
         return;
     }

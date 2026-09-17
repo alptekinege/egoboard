@@ -17,6 +17,9 @@ private slots:
     void dataAndSearchSurviveReopening();
     void foreignKeysCascadeMemberships();
     void migratesLegacyOcrAndFtsSchema();
+    void createsPerformanceIndexes();
+    void normalizesLegacyBlobHashesAndDedupes();
+    void dedupesCaseInsensitiveSavedSearches();
 };
 
 void TestSchema::ensureIsIdempotentAndEnablesForeignKeys()
@@ -197,6 +200,129 @@ void TestSchema::migratesLegacyOcrAndFtsSchema()
         }
     }
     QVERIFY(hasOcrColumn);
+}
+
+void TestSchema::createsPerformanceIndexes()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString connectionName = QStringLiteral("schema-index-test");
+    QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+    db.setDatabaseName(dir.filePath(QStringLiteral("indexes.db")));
+    QVERIFY(db.open());
+    QVERIFY(DatabaseSchema::ensure(db));
+
+    QSqlQuery indexes(db);
+    QVERIFY(indexes.exec(QStringLiteral("SELECT name FROM sqlite_master WHERE type='index'")));
+    QSet<QString> names;
+    while (indexes.next())
+        names.insert(indexes.value(0).toString());
+
+    QVERIFY(names.contains(QStringLiteral("idx_entries_use_count")));
+    QVERIFY(names.contains(QStringLiteral("idx_entries_pinned")));
+    QVERIFY(names.contains(QStringLiteral("idx_entries_sensitive")));
+    QVERIFY(names.contains(QStringLiteral("idx_entry_groups_group")));
+    QVERIFY(names.contains(QStringLiteral("idx_saved_searches_name")));
+
+    indexes = QSqlQuery();
+    db.close();
+    db = QSqlDatabase();
+    QSqlDatabase::removeDatabase(connectionName);
+}
+
+void TestSchema::normalizesLegacyBlobHashesAndDedupes()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("legacy-blob.db"));
+    const QString connectionName = QStringLiteral("legacy-blob-test");
+
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+        db.setDatabaseName(path);
+        QVERIFY(db.open());
+        QSqlQuery query(db);
+        QVERIFY(query.exec(QStringLiteral(
+            "CREATE TABLE entries ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "timestamp_ms INTEGER NOT NULL,"
+            "content_type INTEGER NOT NULL,"
+            "content_hash TEXT NOT NULL UNIQUE,"
+            "text_data TEXT, blob_data BLOB, preview TEXT,"
+            "size_bytes INTEGER NOT NULL DEFAULT 0,"
+            "pinned INTEGER NOT NULL DEFAULT 0,"
+            "sensitive INTEGER NOT NULL DEFAULT 0,"
+            "use_count INTEGER NOT NULL DEFAULT 0,"
+            "source_app TEXT, source_window TEXT)")));
+        QSqlQuery insert(db);
+        insert.prepare(QStringLiteral(
+            "INSERT INTO entries(timestamp_ms, content_type, content_hash, text_data, preview, size_bytes)"
+            " VALUES (1000, 0, :hash, 'blob hashed', 'blob hashed', 10)"));
+        insert.bindValue(QStringLiteral(":hash"), QByteArrayLiteral("legacyblobhash"));
+        QVERIFY(insert.exec());
+        db.close();
+        db = QSqlDatabase();
+        QSqlDatabase::removeDatabase(connectionName);
+    }
+
+    StorageManager storage(path);
+    QSqlQuery typeQuery(storage.database());
+    QVERIFY(typeQuery.exec(QStringLiteral("SELECT typeof(content_hash) FROM entries")));
+    QVERIFY(typeQuery.next());
+    QCOMPARE(typeQuery.value(0).toString(), QStringLiteral("text"));
+
+    // The normalized row participates in dedup again.
+    ClipboardRecord record;
+    record.hash = QByteArrayLiteral("legacyblobhash");
+    record.type = ContentType::Text;
+    record.textData = QStringLiteral("blob hashed");
+    record.preview = record.textData;
+    record.timestamp = 5000;
+    bool updated = false;
+    const qint64 id = storage.insertOrUpdate(record, &updated);
+    QVERIFY(updated);
+    QCOMPARE(storage.stats().entryCount, qint64(1));
+    QCOMPARE(id, qint64(1));
+}
+
+void TestSchema::dedupesCaseInsensitiveSavedSearches()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("legacy-searches.db"));
+    const QString connectionName = QStringLiteral("legacy-searches-test");
+
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+        db.setDatabaseName(path);
+        QVERIFY(db.open());
+        QSqlQuery query(db);
+        QVERIFY(query.exec(QStringLiteral(
+            "CREATE TABLE saved_searches ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "name TEXT NOT NULL UNIQUE,"
+            "filter TEXT NOT NULL)")));
+        QVERIFY(query.exec(QStringLiteral(
+            "INSERT INTO saved_searches(name, filter) VALUES ('Work', '{}')")));
+        QVERIFY(query.exec(QStringLiteral(
+            "INSERT INTO saved_searches(name, filter) VALUES ('work', '{}')")));
+        db.close();
+        db = QSqlDatabase();
+        QSqlDatabase::removeDatabase(connectionName);
+    }
+
+    StorageManager storage(path);
+    const auto searches = storage.savedSearches();
+    QCOMPARE(searches.size(), 1);
+    const qint64 id = searches.first().id;
+
+    // Saving with different casing updates the same row instead of adding one.
+    FilterSpec filter;
+    filter.searchText = QStringLiteral("x");
+    QCOMPARE(storage.addSavedSearch(QStringLiteral("WORK"), filter), id);
+    QCOMPARE(storage.savedSearches().size(), 1);
+    QCOMPARE(storage.savedSearches().first().filter.searchText, QStringLiteral("x"));
 }
 
 QTEST_GUILESS_MAIN(TestSchema)

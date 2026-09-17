@@ -46,7 +46,6 @@ public:
     qint64 groupId() const;
 
 private:
-    void updatePath();
     void pickPath();
 
     QLineEdit *m_pathEdit = nullptr;

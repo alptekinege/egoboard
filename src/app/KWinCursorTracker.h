@@ -28,7 +28,7 @@ public:
 private:
     explicit KWinCursorTracker(QObject *parent);
     static KWinCursorTracker *self();
-    bool loadAndRunScript(const QString &pluginName);
+    bool loadAndRunScript(const QString &filePath, const QString &pluginName);
     void unloadScript(const QString &pluginName);
 
     std::function<void(const QPoint &)> m_callback;

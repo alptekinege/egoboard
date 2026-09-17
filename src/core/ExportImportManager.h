@@ -2,6 +2,7 @@
 
 #include "BookmarkManager.h"
 #include "ClipboardRecord.h"
+#include "SnippetManager.h"
 #include "StorageManager.h"
 
 #include <QObject>
@@ -39,18 +40,24 @@ public:
         int entriesMerged = 0;
         int entriesSkipped = 0;
         int groupsImported = 0;
+        int tagsImported = 0; // tag links attached to imported/merged entries
+        int snippetsImported = 0;
+        int savedSearchesImported = 0;
     };
 
     explicit ExportImportManager(StorageManager *storage, BookmarkManager *bookmarks,
-                                 QObject *parent = nullptr);
+                                 SnippetManager *snippets = nullptr, QObject *parent = nullptr);
 
     bool exportToFile(const ExportRequest &request, QString *error = nullptr);
     ImportResult importFromFile(const QString &path, ImportMode mode);
 
     static QString exportFormatTag() { return QStringLiteral("egoboard-export"); }
-    static int exportFormatVersion() { return 1; }
+    // v2 adds ocrText + tags per entry, the snippet library and saved searches.
+    // v1 files stay importable (missing arrays are simply empty).
+    static int exportFormatVersion() { return 2; }
 
 private:
     StorageManager *m_storage = nullptr;
     BookmarkManager *m_bookmarks = nullptr;
+    SnippetManager *m_snippets = nullptr;
 };

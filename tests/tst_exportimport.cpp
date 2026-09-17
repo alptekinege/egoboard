@@ -2,6 +2,7 @@
 
 #include "BookmarkManager.h"
 #include "ExportImportManager.h"
+#include "SnippetManager.h"
 #include "StorageManager.h"
 
 #include <QFile>
@@ -21,6 +22,8 @@ private slots:
     void skipDuplicates();
     void pinnedOnlyExport();
     void groupSubtreePreservesHierarchy();
+    void roundTripsOcrTagsSnippetsAndSearches();
+    void overwriteClearsAllUserData();
     void rejectsMalformedImportFiles();
     void reportsExportWriteErrors();
 
@@ -30,6 +33,7 @@ private:
     QTemporaryDir m_dir;
     StorageManager *m_storage = nullptr;
     BookmarkManager *m_bookmarks = nullptr;
+    SnippetManager *m_snippets = nullptr;
     ExportImportManager *m_io = nullptr;
 };
 
@@ -41,11 +45,13 @@ void TestExportImport::init()
 {
     delete m_io;
     delete m_bookmarks;
+    delete m_snippets;
     delete m_storage; // deleteLater() never runs without an event loop
     m_storage = new StorageManager(m_dir.filePath(
         QStringLiteral("history-%1.db").arg(QRandomGenerator::global()->generate64())));
     m_bookmarks = new BookmarkManager(m_storage->database(), this);
-    m_io = new ExportImportManager(m_storage, m_bookmarks, this);
+    m_snippets = new SnippetManager(m_storage->database(), this);
+    m_io = new ExportImportManager(m_storage, m_bookmarks, m_snippets, this);
 }
 
 void TestExportImport::seed(StorageManager *storage, BookmarkManager *bookmarks)
@@ -261,6 +267,96 @@ void TestExportImport::groupSubtreePreservesHierarchy()
     QCOMPARE(m_bookmarks->entryCount(importedChild->id), 1);
 }
 
+void TestExportImport::roundTripsOcrTagsSnippetsAndSearches()
+{
+    ClipboardRecord image;
+    image.hash = QByteArrayLiteral("rt-image");
+    image.type = ContentType::Image;
+    image.blobData = QByteArrayLiteral("PNGDATA");
+    image.hasBlob = true;
+    image.preview = QStringLiteral("Image 4x4");
+    image.timestamp = 1000;
+    const qint64 imageId = m_storage->insertOrUpdate(image);
+    QVERIFY(imageId > 0);
+    QVERIFY(m_storage->setOcrText(imageId, QStringLiteral("recognized words")));
+    QVERIFY(m_storage->addTag(imageId, QStringLiteral("work")));
+    QVERIFY(m_storage->addTag(imageId, QStringLiteral("screenshots")));
+
+    QVERIFY(m_snippets->createSnippet(QStringLiteral("Signature"),
+                                      QStringLiteral("Best, {{clipboard}}"),
+                                      QStringLiteral("Meta+Shift+1")) > 0);
+
+    FilterSpec saved;
+    saved.searchText = QStringLiteral("invoice");
+    saved.sourceApp = QStringLiteral("kate");
+    QVERIFY(m_storage->addSavedSearch(QStringLiteral("Invoices"), saved) > 0);
+
+    const QString path = m_dir.filePath(QStringLiteral("v2.json"));
+    ExportImportManager::ExportRequest request;
+    request.path = path;
+    request.scope = ExportImportManager::Scope::Everything;
+    QString error;
+    QVERIFY2(m_io->exportToFile(request, &error), qPrintable(error));
+
+    init();
+    const auto result = m_io->importFromFile(path, ExportImportManager::ImportMode::Merge);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.entriesImported, 1);
+    QCOMPARE(result.tagsImported, 2);
+    QCOMPARE(result.snippetsImported, 1);
+    QCOMPARE(result.savedSearchesImported, 1);
+
+    const auto rows = m_storage->fetchAll(FilterSpec{});
+    QCOMPARE(rows.size(), 1);
+    ClipboardRecord full;
+    QVERIFY(m_storage->fetchFull(rows.first().id, &full));
+    QCOMPARE(full.ocrText, QStringLiteral("recognized words"));
+    QCOMPARE(m_storage->tagsForEntry(rows.first().id),
+             (QStringList{QStringLiteral("screenshots"), QStringLiteral("work")}));
+
+    const auto snippets = m_snippets->snippets();
+    QCOMPARE(snippets.size(), 1);
+    QCOMPARE(snippets.first().name, QStringLiteral("Signature"));
+    QCOMPARE(snippets.first().templateText, QStringLiteral("Best, {{clipboard}}"));
+    QCOMPARE(snippets.first().shortcut, QStringLiteral("Meta+Shift+1"));
+
+    const auto searches = m_storage->savedSearches();
+    QCOMPARE(searches.size(), 1);
+    QCOMPARE(searches.first().name, QStringLiteral("Invoices"));
+    QCOMPARE(searches.first().filter.searchText, QStringLiteral("invoice"));
+    QCOMPARE(searches.first().filter.sourceApp, QStringLiteral("kate"));
+}
+
+void TestExportImport::overwriteClearsAllUserData()
+{
+    seed(m_storage, m_bookmarks);
+
+    const QString path = m_dir.filePath(QStringLiteral("overwrite-all.json"));
+    ExportImportManager::ExportRequest request;
+    request.path = path;
+    QVERIFY(m_io->exportToFile(request));
+
+    // Local-only data of every kind must not survive an Overwrite import.
+    ClipboardRecord extra;
+    extra.hash = QByteArrayLiteral("local-only");
+    extra.type = ContentType::Text;
+    extra.textData = QStringLiteral("local");
+    extra.preview = extra.textData;
+    QVERIFY(m_storage->insertOrUpdate(extra) > 0);
+    const auto localRows = m_storage->fetchAll(FilterSpec{});
+    QVERIFY(m_storage->addTag(localRows.first().id, QStringLiteral("local-tag")));
+    QVERIFY(m_snippets->createSnippet(QStringLiteral("Local snippet"),
+                                      QStringLiteral("local template")) > 0);
+    QVERIFY(m_storage->addSavedSearch(QStringLiteral("Local search"), FilterSpec{}) > 0);
+
+    const auto result = m_io->importFromFile(path, ExportImportManager::ImportMode::Overwrite);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(m_storage->stats().entryCount, qint64(3));
+    QCOMPARE(m_storage->allTags(), QStringList());
+    QVERIFY(m_snippets->snippets().isEmpty());
+    QVERIFY(m_storage->savedSearches().isEmpty());
+}
+
 void TestExportImport::rejectsMalformedImportFiles()
 {
     const QString malformed = m_dir.filePath(QStringLiteral("malformed.json"));
@@ -288,7 +384,7 @@ void TestExportImport::rejectsMalformedImportFiles()
     {
         QFile file(newer);
         QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
-        QVERIFY(file.write(R"({"format":"egoboard-export","version":2})") > 0);
+        QVERIFY(file.write(R"({"format":"egoboard-export","version":3})") > 0);
     }
     result = m_io->importFromFile(newer, ExportImportManager::ImportMode::Merge);
     QVERIFY(!result.ok);

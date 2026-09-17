@@ -6,9 +6,9 @@
 #include <QCursor>
 #include <QDBusConnection>
 #include <QDBusMessage>
-#include <QFile>
+#include <QDir>
 #include <QGuiApplication>
-#include <QStandardPaths>
+#include <QTemporaryFile>
 #include <QTimer>
 
 namespace {
@@ -20,7 +20,6 @@ var p = workspace.cursorPos;
 callDBus("org.egoboard.Egoboard", "/org/egoboard/Egoboard",
          "org.egoboard.Egoboard", "ReportCursorPos", Math.round(p.x), Math.round(p.y));
 )";
-constexpr auto kScriptPath = "/egoboard-cursor.js";
 } // namespace
 
 KWinCursorTracker::KWinCursorTracker(QObject *parent)
@@ -45,16 +44,14 @@ KWinCursorTracker *KWinCursorTracker::self()
     return instance;
 }
 
-bool KWinCursorTracker::loadAndRunScript(const QString &pluginName)
+bool KWinCursorTracker::loadAndRunScript(const QString &filePath, const QString &pluginName)
 {
     // Reusing a plugin name collides with KWin's still-pending unload of the
     // previous one, so every query gets a fresh name.
     QDBusMessage load = QDBusMessage::createMethodCall(
         QStringLiteral("org.kde.KWin"), QStringLiteral("/Scripting"),
         QStringLiteral("org.kde.kwin.Scripting"), QStringLiteral("loadScript"));
-    load.setArguments({QStandardPaths::writableLocation(QStandardPaths::TempLocation)
-                           + QString::fromLatin1(kScriptPath),
-                       pluginName});
+    load.setArguments({filePath, pluginName});
     QDBusMessage loadReply = QDBusConnection::sessionBus().call(load, QDBus::Block, 1000);
     if (loadReply.type() != QDBusMessage::ReplyMessage || loadReply.arguments().isEmpty())
         return false;
@@ -90,27 +87,36 @@ void KWinCursorTracker::queryGlobal(const std::function<void(const QPoint &)> &c
         return;
     }
 
-    QFile script(QStandardPaths::writableLocation(QStandardPaths::TempLocation)
-                 + QString::fromLatin1(kScriptPath));
-    if (!script.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    // Unique, owner-only temp file: a fixed /tmp name is world-writable and
+    // KWin only needs it until the run call returns; Qt removes it at scope
+    // exit. The plugin name is unique per query because KWin's unload of a
+    // previous script is asynchronous (a reused name can run a stale script).
+    QTemporaryFile script(QDir::tempPath() + QStringLiteral("/egoboard-cursor-XXXXXX.js"));
+    if (!script.open()) {
         tracker->m_kwinUnavailable = true;
         callback(QCursor::pos());
         return;
     }
-    script.write(kCursorScript);
+    if (script.write(kCursorScript) != qstrlen(kCursorScript) || !script.flush()) {
+        tracker->m_kwinUnavailable = true;
+        callback(QCursor::pos());
+        return;
+    }
 
-    // A unique plugin name per query: KWin's unload of a previous script is
-    // asynchronous, so reusing a name can silently run a stale instance.
-    const QString pluginName =
+    const QString pluginBase =
         QStringLiteral("egoboard-cursor-%1-%2")
             .arg(QCoreApplication::applicationPid())
             .arg(++tracker->m_loadCounter);
 
     bool started = false;
+    QString loadedName;
     for (int attempt = 0; attempt < 3 && !started; ++attempt) {
-        started = tracker->loadAndRunScript(pluginName + (attempt > 0
-                                                               ? QStringLiteral("-%1").arg(attempt)
-                                                               : QString()));
+        const QString candidate = attempt > 0
+            ? pluginBase + QStringLiteral("-%1").arg(attempt)
+            : pluginBase;
+        started = tracker->loadAndRunScript(script.fileName(), candidate);
+        if (started)
+            loadedName = candidate;
     }
     if (!started) {
         tracker->m_kwinUnavailable = true; // not KWin, or the scripting API is locked down
@@ -118,7 +124,8 @@ void KWinCursorTracker::queryGlobal(const std::function<void(const QPoint &)> &c
         return;
     }
 
-    tracker->m_activeScriptName = pluginName;
+    // Unload must use the exact name that was loaded (retries add a suffix).
+    tracker->m_activeScriptName = loadedName;
     tracker->m_callback = callback;
     tracker->m_timeoutTimer->start(timeoutMs);
 }

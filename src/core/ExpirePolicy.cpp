@@ -6,7 +6,11 @@
 namespace {
 
 // Content type field: "any" or a content-type tag (or a numeric enum value,
-// for hand-written configs). Unknown values map to -1 (any).
+// for hand-written configs). Unknown names map to -1 (any); a numeric value
+// outside the enum is invalid (kInvalidContentType) and the rule is dropped,
+// rather than silently matching nothing or everything.
+constexpr int kInvalidContentType = -2;
+
 int parseContentType(const QString &field)
 {
     const QString trimmed = field.trimmed();
@@ -15,7 +19,8 @@ int parseContentType(const QString &field)
     bool numeric = false;
     const int value = trimmed.toInt(&numeric);
     if (numeric)
-        return value;
+        return (value >= 0 && value <= static_cast<int>(ContentType::Files)) ? value
+                                                                             : kInvalidContentType;
     for (int type = 0; type <= static_cast<int>(ContentType::Files); ++type) {
         if (QString::fromLatin1(contentTypeTag(static_cast<ContentType>(type)))
                 .compare(trimmed, Qt::CaseInsensitive) == 0)

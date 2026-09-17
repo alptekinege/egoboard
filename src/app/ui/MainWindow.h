@@ -33,6 +33,8 @@ public:
     void refreshAppFilter();
     void refreshTagFilter();
     void applySavedSearch(const FilterSpec &filter);
+    void openSettings();
+    void clearHistory();
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
@@ -51,8 +53,6 @@ private:
     void togglePinSelected();
     void showContextMenu(const QPoint &pos);
     void buildSavedSearchesMenu();
-    void openSettings();
-    void clearHistory();
     void updateActionStates();
     void openPalette();
     void openSnippetDialog();

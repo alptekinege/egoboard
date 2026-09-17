@@ -99,9 +99,12 @@ void MainWindow::buildUi()
     m_search = new QLineEdit(central);
     m_search->setPlaceholderText(tr("Search history…"));
     m_search->setClearButtonEnabled(true);
+    m_search->setAccessibleName(tr("Search history"));
+    m_search->setAccessibleDescription(tr("Full-text search over previews, stored text and OCR output"));
     filterRow->addWidget(m_search, 3);
 
     m_typeCombo = new QComboBox(central);
+    m_typeCombo->setAccessibleName(tr("Content type filter"));
     m_typeCombo->addItem(tr("All types"), -1);
     m_typeCombo->addItem(tr("Text"), int(ContentType::Text));
     m_typeCombo->addItem(tr("Rich text"), int(ContentType::RichText));
@@ -110,6 +113,7 @@ void MainWindow::buildUi()
     filterRow->addWidget(m_typeCombo);
 
     m_dateCombo = new QComboBox(central);
+    m_dateCombo->setAccessibleName(tr("Date range filter"));
     m_dateCombo->addItem(tr("Any time"), 0);
     m_dateCombo->addItem(tr("Today"), 1);
     m_dateCombo->addItem(tr("Yesterday"), 2);
@@ -119,16 +123,19 @@ void MainWindow::buildUi()
     filterRow->addWidget(m_dateCombo);
     m_appCombo = new QComboBox(central);
     m_appCombo->setMinimumWidth(140);
+    m_appCombo->setAccessibleName(tr("Source application filter"));
     m_appCombo->addItem(tr("All sources"), QString());
     refreshAppFilter();
     filterRow->addWidget(m_appCombo, 1);
 
     m_tagCombo = new QComboBox(central);
     m_tagCombo->setToolTip(tr("Filter by tag — an entry matches when it carries the selected tag."));
+    m_tagCombo->setAccessibleName(tr("Tag filter"));
     refreshTagFilter();
     filterRow->addWidget(m_tagCombo);
 
     m_sortCombo = new QComboBox(central);
+    m_sortCombo->setAccessibleName(tr("Sort order"));
     m_sortCombo->addItem(tr("Newest first"), int(FilterSpec::SortMode::Newest));
     m_sortCombo->addItem(tr("Oldest first"), int(FilterSpec::SortMode::Oldest));
     m_sortCombo->addItem(tr("Most used"), int(FilterSpec::SortMode::MostUsed));
@@ -169,6 +176,8 @@ void MainWindow::buildUi()
     m_list = new QListView(splitter);
     m_list->setModel(m_model);
     m_list->setItemDelegate(m_delegate);
+    m_list->setAccessibleName(tr("Clipboard history"));
+    m_list->setAccessibleDescription(tr("Entries copied recently; Enter pastes the selected one"));
     m_list->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_list->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_list->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
@@ -307,10 +316,8 @@ void MainWindow::connectSignals()
     m_searchDebounce->setSingleShot(true);
     m_searchDebounce->setInterval(200);
     connect(m_searchDebounce, &QTimer::timeout, this, &MainWindow::applyCurrentFilter);
-    // Global palette shortcut (works from list/selection too)
-    if (auto *sc = new QShortcut(QKeySequence(QStringLiteral("Ctrl+K")), this)) {
-        connect(sc, &QShortcut::activated, this, &MainWindow::openPalette);
-    }
+    // Ctrl+K is registered exactly once, on the toolbar palette action; extra
+    // QShortcut/keyPressEvent registrations made the sequence ambiguous.
     // Ctrl+1…9: paste the first nine entries of the current filter, mirroring
     // the number keys in the quick-paste popup.
     for (int i = 1; i <= 9; ++i) {
@@ -877,9 +884,20 @@ void MainWindow::openPalette()
         m_palette->setScriptManager(m_ctx.scripts());
         connect(m_palette, &CommandPalette::pasteRequested, this, &MainWindow::pasteEntry);
         connect(m_palette, &CommandPalette::copyRequested, this, [this](qint64 id){
+            if (id == 0) id = m_selectedId; // ">copy": the main window's selection
             ClipboardRecord rec;
-            if (m_ctx.storage()->fetchFull(id, &rec))
+            if (id != 0 && m_ctx.storage()->fetchFull(id, &rec))
                 m_ctx.autoPaster()->copyToClipboard(rec);
+        });
+        connect(m_palette, &CommandPalette::pinRequested, this, [this](qint64 id){
+            if (id == 0) id = m_selectedId; // ">pin": the main window's selection
+            if (id == 0) return;
+            ClipboardRecord rec;
+            if (!m_ctx.storage()->fetchFull(id, &rec)) return;
+            if (m_ctx.storage()->setPinned(id, !rec.pinned)) {
+                QSignalBlocker blocker(m_pinAction);
+                m_pinAction->setChecked(!rec.pinned);
+            }
         });
         connect(m_palette, &CommandPalette::transformRequested, this, [this](const QString &name, qint64 entryId){
             // Resolve transform name -> apply
@@ -984,14 +1002,6 @@ void MainWindow::keyPressEvent(QKeyEvent *event)
         hide();
         event->accept();
         return;
-    case Qt::Key_K: {
-        if (event->modifiers() == Qt::ControlModifier) {
-            openPalette();
-            event->accept();
-            return;
-        }
-        break;
-    }
     case Qt::Key_F: {
         if (event->modifiers() == Qt::ControlModifier) {
             m_search->setFocus();

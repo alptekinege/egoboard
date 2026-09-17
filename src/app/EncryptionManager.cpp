@@ -104,10 +104,14 @@ EncryptionManager::Status EncryptionManager::removeKey() const
         return Status::WalletOpenFailed;
     if (wallet->hasFolder(QStringLiteral(kWalletFolder))) {
         wallet->setFolder(QStringLiteral(kWalletFolder));
-        wallet->removeEntry(QStringLiteral(kWalletEntry));
+        if (wallet->hasEntry(QStringLiteral(kWalletEntry))) {
+            const int rc = wallet->removeEntry(QStringLiteral(kWalletEntry));
+            delete wallet;
+            return rc == 0 ? Status::Ok : Status::WalletOperationFailed;
+        }
     }
     delete wallet;
-    return Status::Ok;
+    return Status::Ok; // nothing stored, nothing to remove
 #else
     return Status::NotAvailable;
 #endif
@@ -115,9 +119,12 @@ EncryptionManager::Status EncryptionManager::removeKey() const
 
 QString EncryptionManager::generateKey()
 {
+    // QRandomGenerator::system() draws from the OS CSPRNG (getrandom /
+    // /dev/urandom); global() is a fast, non-cryptographic PRNG and must not
+    // be used for key material.
     QByteArray bytes(32, 0);
-    for (int i = 0; i < bytes.size(); ++i)
-        bytes[i] = char(QRandomGenerator::global()->bounded(256));
+    QRandomGenerator::system()->generate(reinterpret_cast<quint32 *>(bytes.data()),
+                                         reinterpret_cast<quint32 *>(bytes.data() + bytes.size()));
     return QString::fromLatin1(bytes.toBase64());
 }
 
@@ -125,13 +132,19 @@ bool EncryptionManager::isSqlCipherAvailable()
 {
     QSqlDatabase db = QSqlDatabase::database();
     if (!db.isValid()) {
-        QSqlDatabase tmp = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("egoboard-probe-cipher"));
-        tmp.setDatabaseName(QStringLiteral(":memory:"));
-        tmp.open();
-        QSqlQuery q(tmp);
-        const bool ok = q.exec(QStringLiteral("PRAGMA cipher_version")) && q.next() && !q.value(0).toString().trimmed().isEmpty();
-        tmp.close();
-        QSqlDatabase::removeDatabase(QStringLiteral("egoboard-probe-cipher"));
+        const QString connectionName = QStringLiteral("egoboard-probe-cipher");
+        bool ok = false;
+        {
+            QSqlDatabase tmp = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+            tmp.setDatabaseName(QStringLiteral(":memory:"));
+            tmp.open();
+            QSqlQuery q(tmp);
+            ok = q.exec(QStringLiteral("PRAGMA cipher_version")) && q.next()
+                && !q.value(0).toString().trimmed().isEmpty();
+            tmp.close();
+            tmp = QSqlDatabase(); // release the handle before removing the connection
+        }
+        QSqlDatabase::removeDatabase(connectionName);
         return ok;
     }
     QSqlQuery q(db);

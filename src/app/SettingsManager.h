@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ContentType.h"
 #include "ExpirePolicy.h"
 #include "TextAppearance.h"
 
@@ -39,6 +40,9 @@ public:
     void setCaptureImages(bool enabled);
     bool captureFiles() const;
     void setCaptureFiles(bool enabled);
+    // True when the configured capture filters accept this content type.
+    // Shared by both capture paths (QClipboard watcher and wlr-data-control).
+    bool captureTypeEnabled(ContentType type) const;
 
     // General
     bool startVisible() const;

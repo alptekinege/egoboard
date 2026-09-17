@@ -24,6 +24,7 @@ public:
 
     void popupAtCursor();
     void hide(); // shadows QWidget::hide() to stop the auto-hide timer
+    void setItemCount(int count); // 1..9, applied without a restart
 
 signals:
     void pasteRequested(qint64 entryId);

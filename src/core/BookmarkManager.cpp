@@ -44,9 +44,11 @@ bool BookmarkManager::updateGroup(qint64 id, const QString &name, const QString 
 
 bool BookmarkManager::deleteGroup(qint64 id)
 {
-    if (!m_db.transaction())
+    if (!m_db.transaction()) {
         qWarning("egoboard: deleteGroup cannot start transaction: %s",
                  qPrintable(m_db.lastError().text()));
+        return false;
+    }
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral("SELECT parent_id FROM groups WHERE id = :id"));
     query.bindValue(QStringLiteral(":id"), id);

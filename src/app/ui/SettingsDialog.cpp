@@ -665,7 +665,8 @@ QWidget *SettingsDialog::buildPrivacyPage()
     connect(m_encryptionRemoveBtn, &QPushButton::clicked, this, [this]{
         if (QMessageBox::question(this, tr("Encryption"), tr("Remove the KWallet key? You must also uncheck encryption and re-open the DB.")) != QMessageBox::Yes) return;
         EncryptionManager enc;
-        enc.removeKey();
+        if (enc.removeKey() != EncryptionManager::Status::Ok)
+            QMessageBox::warning(this, tr("Encryption"), tr("Could not remove key: %1").arg(enc.walletStatusText()));
         refreshDiagnostics();
     });
     historyLayout->addWidget(encryptBox);
@@ -901,8 +902,12 @@ QWidget *SettingsDialog::buildStoragePage()
     auto *dbInfoBox = new QGroupBox(tr("Database"), page);
     auto *dbLayout = new QVBoxLayout(dbInfoBox);
     const QString path = m_ctx.storage()->databasePath();
-    auto *pathLabel = new QLabel(tr("File: <code>%1</code> — click to open folder").arg(path.toHtmlEscaped()), dbInfoBox);
+    auto *pathLabel = new QLabel(dbInfoBox);
     pathLabel->setTextFormat(Qt::RichText);
+    // The link must be a real anchor: linkActivated only fires for <a href>.
+    pathLabel->setText(tr("File: <a href=\"%1\"><code>%2</code></a> — click to open folder")
+                           .arg(QUrl::fromLocalFile(QFileInfo(path).absolutePath()).toString(),
+                                path.toHtmlEscaped()));
     pathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
     pathLabel->setCursor(Qt::PointingHandCursor);
     dbLayout->addWidget(pathLabel);
@@ -1251,7 +1256,9 @@ QWidget *SettingsDialog::buildPlatformDiagnosticsPage()
     if (m_ctx.dataControl())
         m_dataControlStatus->setText(m_ctx.dataControl()->diagnostics());
     else
-        m_dataControlStatus->setText(WlrDataControlHelper::isWayland() ? QStringLiteral("wlr-data-control: <b>inactive</b> (no helper)") : QStringLiteral("wlr-data-control: <b>n/a</b>"));
+        m_dataControlStatus->setText(WlrDataControlHelper::isWayland()
+                                         ? tr("wlr-data-control: <b>inactive</b> (no helper)")
+                                         : tr("wlr-data-control: <b>n/a</b>"));
     platLayout->addWidget(new QLabel(tr("<b>wlr-data-control (privileged clipboard observe)</b>"), platBox));
     platLayout->addWidget(m_dataControlStatus);
 
@@ -1422,7 +1429,9 @@ void SettingsDialog::refreshDiagnostics()
         if (m_ctx.dataControl())
             m_dataControlStatus->setText(m_ctx.dataControl()->diagnostics());
         else
-            m_dataControlStatus->setText(WlrDataControlHelper::isWayland() ? QStringLiteral("wlr-data-control: <b>inactive</b>") : QStringLiteral("wlr-data-control: <b>n/a</b>"));
+            m_dataControlStatus->setText(WlrDataControlHelper::isWayland()
+                                             ? tr("wlr-data-control: <b>inactive</b>")
+                                             : tr("wlr-data-control: <b>n/a</b>"));
     }
     if (m_encryptionStatus) {
         EncryptionManager enc;

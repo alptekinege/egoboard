@@ -7,6 +7,11 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 
+#ifdef Q_OS_UNIX
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 class TestSingleInstance : public QObject
 {
     Q_OBJECT
@@ -18,6 +23,7 @@ private slots:
     void lockFreedOnDestruction();
     void sendShowFailsWithoutServer();
     void ignoresNonShowMessages();
+    void recoversLockLeftBehindByCrash();
 
 private:
     QTemporaryDir m_tempDir;
@@ -88,6 +94,30 @@ void TestSingleInstance::ignoresNonShowMessages()
     socket.disconnectFromServer();
     QTest::qWait(50);
     QCOMPARE(showSpy.count(), 0);
+}
+
+void TestSingleInstance::recoversLockLeftBehindByCrash()
+{
+#ifdef Q_OS_UNIX
+    // Child takes the lock and exits without unlocking (simulated crash), so
+    // the lock file survives with a dead PID.
+    const pid_t pid = fork();
+    if (pid == 0) {
+        SingleInstanceGuard child(m_lockPath, m_serverName);
+        _exit(child.tryLock() ? 0 : 1);
+    }
+    QVERIFY(pid > 0);
+    int status = 0;
+    QCOMPARE(waitpid(pid, &status, 0), pid);
+    QVERIFY(WIFEXITED(status));
+    QCOMPARE(WEXITSTATUS(status), 0);
+
+    // Startup must recover instead of blocking forever on the stale lock.
+    SingleInstanceGuard guard(m_lockPath, m_serverName);
+    QVERIFY(guard.tryLock());
+#else
+    QSKIP("POSIX-only crash simulation");
+#endif
 }
 
 QTEST_GUILESS_MAIN(TestSingleInstance)
