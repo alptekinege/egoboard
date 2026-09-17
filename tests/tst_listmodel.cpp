@@ -25,7 +25,8 @@ private slots:
     void pinnedChangedUpdatesRowWithoutFullReset();
     void removalAndResetRefreshes();
     void invalidIndexesAndParentsAreSafe();
-    void refreshEmitsResetAndInitialPageSignal();
+    void initialPageLoadedSignalReportsEmptiness();
+    void incrementalSignalsPatchTheWindow();
     void accessibleRolesDescribeEntry();
 
 private:
@@ -316,7 +317,7 @@ void TestListModel::invalidIndexesAndParentsAreSafe()
     QVERIFY(model.mimeData({QModelIndex()}) == nullptr);
 }
 
-void TestListModel::refreshEmitsResetAndInitialPageSignal()
+void TestListModel::initialPageLoadedSignalReportsEmptiness()
 {
     ClipboardListModel model(m_storage);
     QSignalSpy resetSpy(&model, &QAbstractItemModel::modelReset);
@@ -328,15 +329,61 @@ void TestListModel::refreshEmitsResetAndInitialPageSignal()
     QCOMPARE(loadedSpy.first().at(0).toBool(), true);
 
     m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("signal-model"), QStringLiteral("loaded"), 1000));
+    model.refresh();
     QCOMPARE(resetSpy.count(), 2);
     QCOMPARE(loadedSpy.count(), 2);
     QCOMPARE(loadedSpy.last().at(0).toBool(), false);
     QCOMPARE(model.filter().isTrivial(), true);
+}
 
+void TestListModel::incrementalSignalsPatchTheWindow()
+{
+    // Capturing, bumping and deleting patch the loaded window in place: a full
+    // reset on every capture would throw away scroll position and selection.
+    const qint64 older = m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("inc-1"), QStringLiteral("older"), 1000));
+    ClipboardListModel model(m_storage);
     model.refresh();
-    QCOMPARE(resetSpy.count(), 3);
-    QCOMPARE(loadedSpy.count(), 3);
-    QCOMPARE(loadedSpy.last().at(0).toBool(), false);
+    QCOMPARE(model.rowCount(), 1);
+
+    QSignalSpy resetSpy(&model, &QAbstractItemModel::modelReset);
+    QSignalSpy insertedSpy(&model, &QAbstractItemModel::rowsInserted);
+    QSignalSpy removedSpy(&model, &QAbstractItemModel::rowsRemoved);
+
+    // New capture: spliced in at the top, no reset.
+    const qint64 newer = m_storage->insertOrUpdate(
+        makeRecord(QByteArrayLiteral("inc-2"), QStringLiteral("newer"), 2000));
+    QCOMPARE(insertedSpy.count(), 1);
+    QCOMPARE(resetSpy.count(), 0);
+    QCOMPARE(model.rowCount(), 2);
+    QCOMPARE(model.idAt(0), newer);
+    QCOMPARE(model.idAt(1), older);
+
+    // Dedup touch of the older entry moves it back to the top.
+    m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("inc-1"), QStringLiteral("older"), 3000));
+    QCOMPARE(resetSpy.count(), 0);
+    QCOMPARE(model.rowCount(), 2);
+    QCOMPARE(model.idAt(0), older);
+    QCOMPARE(model.recordAt(0).timestamp, qint64(3000));
+
+    // Removal drops exactly that row.
+    QVERIFY(m_storage->remove(older));
+    QCOMPARE(removedSpy.count(), 1);
+    QCOMPARE(resetSpy.count(), 0);
+    QCOMPARE(model.rowCount(), 1);
+    QCOMPARE(model.idAt(0), newer);
+
+    // A filtered view cannot know whether a capture matches, so it reloads.
+    FilterSpec filtered;
+    filtered.pinnedOnly = true;
+    model.setFilter(filtered);
+    const int resetsBefore = resetSpy.count();
+    m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("inc-3"), QStringLiteral("unpinned"), 4000));
+    QCOMPARE(resetSpy.count(), resetsBefore + 1);
+
+    // Full resets (import, clear) still reload from page one.
+    m_storage->clearHistory(true);
+    QCOMPARE(model.rowCount(), 0);
 }
 
 void TestListModel::accessibleRolesDescribeEntry()

@@ -5,6 +5,9 @@
 #include "SettingsManager.h"
 #include "SystemThemeWatcher.h"
 
+#include <KConfig>
+#include <KConfigGroup>
+
 #include <QDir>
 #include <QFile>
 #include <QSignalSpy>
@@ -36,6 +39,7 @@ private slots:
     void autostartEntryPointsAtThisBinary();
     void autostartCommandCanPointAtAnAppImage();
     void persistsAcrossInstances();
+    void configMigrationsAreForwardOnly();
 
 private:
     QTemporaryDir m_tempDir;
@@ -586,6 +590,56 @@ void TestSettings::persistsAcrossInstances()
     QCOMPARE(loaded.clock24h(), false);
     QCOMPARE(loaded.rememberWindowGeometry(), false);
     QCOMPARE(loaded.restoreLastFilter(), true);
+}
+
+void TestSettings::configMigrationsAreForwardOnly()
+{
+    const QString path = m_tempDir.path() + QStringLiteral("/egoboardrc");
+
+    // A config from before versioning: no ConfigVersion, unchecked values.
+    QFile::remove(path);
+    {
+        KConfig legacy(QStringLiteral("egoboardrc"), KConfig::NoGlobals);
+        legacy.group(QStringLiteral("General")).writeEntry(QStringLiteral("QuickPasteCount"), 42);
+        legacy.group(QStringLiteral("History")).writeEntry(QStringLiteral("DebounceMs"), 1);
+        legacy.group(QStringLiteral("History")).writeEntry(QStringLiteral("MaxItemBytes"), qint64(-5));
+        legacy.group(QStringLiteral("History")).writeEntry(QStringLiteral("DiskCapBytes"), qint64(-1));
+        legacy.group(QStringLiteral("History")).writeEntry(QStringLiteral("MaxEntries"), -9);
+        legacy.sync();
+    }
+
+    {
+        SettingsManager settings;
+        QCOMPARE(settings.configVersion(), SettingsManager::currentConfigVersion());
+        QCOMPARE(settings.quickPasteCount(), 9);
+        QCOMPARE(settings.debounceMs(), 50);
+        QCOMPARE(settings.maxItemBytes(), qint64(0)); // negative cap normalized
+        QCOMPARE(settings.diskCapBytes(), qint64(0));
+        QCOMPARE(settings.maxEntries(), 0);
+    }
+
+    // The migration wrote the normalized values and the version back.
+    {
+        KConfig check(QStringLiteral("egoboardrc"), KConfig::NoGlobals);
+        QCOMPARE(check.group(QStringLiteral("General")).readEntry("ConfigVersion", 0),
+                 SettingsManager::currentConfigVersion());
+        QCOMPARE(check.group(QStringLiteral("History")).readEntry("DebounceMs", 0), 50);
+        QCOMPARE(check.group(QStringLiteral("General")).readEntry("QuickPasteCount", 0), 9);
+        QCOMPARE(check.group(QStringLiteral("History")).readEntry<qint64>("MaxItemBytes", qint64(1)),
+                 qint64(0));
+    }
+
+    // A file written by a newer build is left alone (never downgraded).
+    QFile::remove(path);
+    {
+        KConfig newer(QStringLiteral("egoboardrc"), KConfig::NoGlobals);
+        newer.group(QStringLiteral("General")).writeEntry(QStringLiteral("ConfigVersion"), 999);
+        newer.group(QStringLiteral("History")).writeEntry(QStringLiteral("MaxItemBytes"), qint64(-5));
+        newer.sync();
+    }
+    SettingsManager future;
+    QCOMPARE(future.configVersion(), 999);
+    QCOMPARE(future.maxItemBytes(), qint64(-5)); // untouched
 }
 
 QTEST_GUILESS_MAIN(TestSettings)

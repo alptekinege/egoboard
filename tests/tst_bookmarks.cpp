@@ -20,6 +20,7 @@ private slots:
     void signalsAndForeignKeys();
     void deepCyclePrevention();
     void rejectsInvalidGroupOperations();
+    void rejectsDuplicateSiblingNames();
     void membershipCascadesWithEntryAndGroupDeletion();
 
 private:
@@ -170,6 +171,31 @@ void TestBookmarks::rejectsInvalidGroupOperations()
     QVERIFY(!m_bookmarks->assignEntry(99999, 99999));
     QCOMPARE(m_bookmarks->entryIdsForGroup(99999), QList<qint64>{});
     QCOMPARE(m_bookmarks->groupIdsForEntry(99999), QList<qint64>{});
+}
+
+void TestBookmarks::rejectsDuplicateSiblingNames()
+{
+    const qint64 work = m_bookmarks->createGroup(QStringLiteral("Work"));
+    QVERIFY(work > 0);
+    // Same name (any case) under the same parent is rejected.
+    QCOMPARE(m_bookmarks->createGroup(QStringLiteral("work")), qint64(0));
+    QCOMPARE(m_bookmarks->createGroup(QStringLiteral("Work")), qint64(0));
+
+    // A different parent may reuse the name.
+    const qint64 personal = m_bookmarks->createGroup(QStringLiteral("Personal"));
+    QVERIFY(personal > 0);
+    const qint64 nested = m_bookmarks->createGroup(QStringLiteral("Work"), personal);
+    QVERIFY(nested > 0);
+
+    // Renaming into a sibling collision fails and leaves the original name.
+    const qint64 other = m_bookmarks->createGroup(QStringLiteral("Other"), personal);
+    QVERIFY(other > 0);
+    QCOMPARE(m_bookmarks->updateGroup(other, QStringLiteral("work"), {}, {}), false);
+    QCOMPARE(m_bookmarks->group(other)->name, QStringLiteral("Other"));
+    QCOMPARE(m_bookmarks->updateGroup(work, QStringLiteral("personal"), {}, {}), false);
+    QCOMPARE(m_bookmarks->group(work)->name, QStringLiteral("Work"));
+    // Renaming to the same name (self) is not a collision.
+    QVERIFY(m_bookmarks->updateGroup(work, QStringLiteral("Work"), {}, {}));
 }
 
 void TestBookmarks::membershipCascadesWithEntryAndGroupDeletion()

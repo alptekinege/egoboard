@@ -30,9 +30,12 @@
 #include <KNotification>
 
 #include <QApplication>
+#include <QCryptographicHash>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
+#include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QImage>
@@ -93,44 +96,56 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
     m_vacuumThread->start();
 
     m_encryption = new EncryptionManager(this);
-    if (m_settings->encryptionEnabled()) {
-        const auto reportProblem = [this](const QString &message) {
-            qWarning("egoboard: %s", qPrintable(message));
-            if (!m_fullGui)
-                return;
-            KNotification::event(QStringLiteral("encryptionProblem"),
-                                 QObject::tr("Database encryption problem"), message,
-                                 QStringLiteral("security-medium"), KNotification::CloseOnTimeout);
-        };
-        const auto statusText = [](EncryptionManager::Status status) -> QString {
-            switch (status) {
-            case EncryptionManager::Status::NotAvailable:
-                return QObject::tr("SQLCipher is not available in this build");
-            case EncryptionManager::Status::WalletDisabled:
-                return QObject::tr("KWallet is disabled");
-            case EncryptionManager::Status::WalletOpenFailed:
-                return QObject::tr("KWallet could not be opened");
-            case EncryptionManager::Status::WalletOperationFailed:
-                return QObject::tr("the wallet operation failed");
-            case EncryptionManager::Status::EntryMissing:
-                return QObject::tr("no database key is stored in KWallet");
-            case EncryptionManager::Status::Ok:
-                break;
-            }
-            return {};
-        };
+    const auto reportProblem = [this](const QString &message) {
+        qWarning("egoboard: %s", qPrintable(message));
+        if (!m_fullGui)
+            return;
+        KNotification::event(QStringLiteral("encryptionProblem"),
+                             QObject::tr("Database encryption problem"), message,
+                             QStringLiteral("security-medium"), KNotification::CloseOnTimeout);
+    };
+    const auto statusText = [](EncryptionManager::Status status) -> QString {
+        switch (status) {
+        case EncryptionManager::Status::NotAvailable:
+            return QObject::tr("SQLCipher is not available in this build");
+        case EncryptionManager::Status::WalletDisabled:
+            return QObject::tr("KWallet is disabled");
+        case EncryptionManager::Status::WalletOpenFailed:
+            return QObject::tr("KWallet could not be opened");
+        case EncryptionManager::Status::WalletOperationFailed:
+            return QObject::tr("the wallet operation failed");
+        case EncryptionManager::Status::EntryMissing:
+            return QObject::tr("no database key is stored in KWallet");
+        case EncryptionManager::Status::Ok:
+            break;
+        }
+        return {};
+    };
 
+    if (m_settings->encryptionEnabled()) {
+        // Make the on-disk state match the setting: unlock a locked database,
+        // or encrypt a plaintext one in place (e.g. enabled in a config copy).
         QString key;
         const EncryptionManager::Status status = m_encryption->readKey(&key);
         if (status != EncryptionManager::Status::Ok || key.isEmpty()) {
             reportProblem(QObject::tr(
                               "Encryption is enabled but the history database cannot be unlocked: %1.")
                               .arg(statusText(status)));
-        } else if (!m_storage->setEncryptionKey(key)) {
-            reportProblem(QObject::tr("The key from KWallet was rejected while opening the database."));
-        } else if (!m_storage->verifyEncryptionKey()) {
-            reportProblem(QObject::tr("Encryption key verification failed after unlock."));
+        } else if (m_storage->requiresEncryptionKey()) {
+            if (!m_storage->setEncryptionKey(key)) {
+                reportProblem(QObject::tr("The key from KWallet was rejected while opening the database."));
+            } else if (!m_storage->verifyEncryptionKey()) {
+                reportProblem(QObject::tr("Encryption key verification failed after unlock."));
+            }
+        } else if (!m_storage->changeEncryptionKey(key)) {
+            reportProblem(QObject::tr("Encryption is enabled but the history database could not be encrypted. "
+                                      "Check that SQLCipher is available (-DEGOBOARD_USE_SQLCIPHER=ON)."));
         }
+    } else if (m_storage->requiresEncryptionKey()) {
+        // Disabling the setting without decrypting leaves the file unreadable.
+        reportProblem(QObject::tr(
+            "The history database is encrypted but encryption is disabled in settings. "
+            "Re-enable it to unlock the database, or decrypt it from the settings dialog."));
     }
 
     if (!m_fullGui)
@@ -178,6 +193,17 @@ ApplicationContext::~ApplicationContext()
         m_vacuumThread->quit();
         m_vacuumThread->wait(5000);
     }
+    // Tear the GUI down first (it references the managers below), then the
+    // helpers that hold their own QSqlDatabase handles, so they are released
+    // before the storage manager removes its connection; otherwise Qt warns
+    // that the connection is still in use.
+    m_window.reset();
+    delete m_quickPaste; // parentless popup, not owned by the QObject tree
+    m_quickPaste = nullptr;
+    delete m_snippets;
+    m_snippets = nullptr;
+    delete m_bookmarks;
+    m_bookmarks = nullptr;
 }
 
 void ApplicationContext::start()
@@ -219,6 +245,13 @@ void ApplicationContext::start()
     };
     connect(m_watcher, &ClipboardWatcher::redactedSensitive, this, notifyRedacted);
     connect(m_dataControl, &WlrDataControlHelper::redactedSensitive, this, notifyRedacted);
+
+    // Paste-back failures (missing payload, no key injection available) must
+    // not be silent: the user pressed paste and nothing happened.
+    connect(m_paster, &AutoPaster::failed, this, [](const QString &reason) {
+        KNotification::event(QStringLiteral("pasteFailed"), QObject::tr("Paste failed"), reason,
+                             QStringLiteral("dialog-warning"), KNotification::CloseOnTimeout);
+    });
 
     // Auto-expire rules: apply at startup + every 15 min + after capture bursts.
     connect(m_watcher, &ClipboardWatcher::captured, m_expire,
@@ -429,6 +462,123 @@ void ApplicationContext::scheduleVacuumChecks()
             vacuumNow();
     });
     m_vacuumTimer->start();
+}
+
+int ApplicationContext::benchmark(int entryCount)
+{
+    QElapsedTimer timer;
+    const int total = qBound(1, entryCount > 0 ? entryCount : 50000, 500000);
+    qInfo("egoboard benchmark: %d entries, database %s", total, qPrintable(m_storage->databasePath()));
+
+    bool failed = false;
+    const auto report = [&failed](const QString &label, qint64 ms, qint64 budgetMs) {
+        const bool ok = ms <= budgetMs;
+        failed = failed || !ok;
+        qInfo("  %-28s %8lld ms  (budget %lld ms)  %s", qPrintable(label), ms, budgetMs,
+              ok ? "ok" : "OVER BUDGET");
+    };
+
+    // --- bulk insertion ------------------------------------------------------
+    timer.start();
+    m_storage->beginBulk();
+    for (int i = 0; i < total; ++i) {
+        ClipboardRecord record;
+        record.type = ContentType::Text;
+        record.textData = QStringLiteral("benchmark entry %1 — searchable words: postgres error index")
+                              .arg(i);
+        record.preview = record.textData.left(120);
+        record.sizeBytes = record.textData.size();
+        record.timestamp = 1700000000000LL + i;
+        record.sourceApp = (i % 7 == 0) ? QStringLiteral("kate") : QStringLiteral("firefox");
+        record.hash = QCryptographicHash::hash(record.textData.toUtf8(),
+                                               QCryptographicHash::Sha256)
+                          .toHex();
+        m_storage->insertOrUpdate(record);
+    }
+    m_storage->endBulk(true);
+    const qint64 insertMs = timer.elapsed();
+    if (m_storage->stats().entryCount != total) {
+        qCritical("benchmark: expected %d rows, got %lld", total,
+                  m_storage->stats().entryCount);
+        return 1;
+    }
+    report(QStringLiteral("insert %1 (bulk)").arg(total), insertMs,
+           qMax<qint64>(5000, total)); // 1 ms/entry allowance
+
+    // --- first page of the list ---------------------------------------------
+    timer.restart();
+    bool hasMore = false;
+    const auto page = m_storage->fetchPage(FilterSpec{}, {}, 200, &hasMore);
+    report(QStringLiteral("page 1 (200 rows)"), timer.elapsed(), 100);
+    if (page.size() != 200 || !hasMore) {
+        qCritical("benchmark: page 1 returned %lld rows (hasMore=%d)", page.size(), hasMore);
+        return 1;
+    }
+
+    // --- deep paging through the keyset cursor -------------------------------
+    timer.restart();
+    PageCursor cursor;
+    int walked = 0;
+    for (int i = 0; i < 50; ++i) {
+        bool more = false;
+        const auto p = m_storage->fetchPage(FilterSpec{}, cursor, 200, &more);
+        if (p.isEmpty())
+            break;
+        walked += p.size();
+        cursor = PageCursor{true, p.last().timestamp, p.last().id, p.last().useCount};
+        if (!more)
+            break;
+    }
+    report(QStringLiteral("paging %1 rows").arg(walked), timer.elapsed(), 500);
+    if (walked < qMin(total, 10000)) {
+        qCritical("benchmark: deep paging stopped early after %d rows", walked);
+        return 1;
+    }
+
+    // --- MostUsed sort (indexed) ---------------------------------------------
+    timer.restart();
+    FilterSpec mostUsed;
+    mostUsed.sortMode = FilterSpec::SortMode::MostUsed;
+    const auto mostUsedPage = m_storage->fetchPage(mostUsed, {}, 200, nullptr);
+    report(QStringLiteral("most-used page"), timer.elapsed(), 100);
+    if (mostUsedPage.size() != 200) {
+        qCritical("benchmark: most-used page returned %lld rows", mostUsedPage.size());
+        return 1;
+    }
+
+    // --- FTS query ------------------------------------------------------------
+    timer.restart();
+    FilterSpec search;
+    search.searchText = QStringLiteral("postgres error");
+    const auto hits = m_storage->fetchPage(search, {}, 200, nullptr);
+    report(QStringLiteral("FTS query"), timer.elapsed(), 500);
+    if (hits.isEmpty()) {
+        qCritical("benchmark: FTS query returned no hits");
+        return 1;
+    }
+
+    // --- export ---------------------------------------------------------------
+    const QString exportPath =
+        QDir(QDir::tempPath()).filePath(QStringLiteral("egoboard-bench-export.json"));
+    ExportImportManager::ExportRequest request;
+    request.path = exportPath;
+    request.scope = ExportImportManager::Scope::Everything;
+    timer.restart();
+    QString error;
+    const bool exported = m_io->exportToFile(request, &error);
+    report(QStringLiteral("export (JSON)"), timer.elapsed(), qMax<qint64>(5000, total / 5));
+    QFile::remove(exportPath);
+    if (!exported) {
+        qCritical("benchmark: export failed: %s", qPrintable(error));
+        return 1;
+    }
+
+    if (failed) {
+        qCritical("egoboard benchmark: OVER BUDGET");
+        return 1;
+    }
+    qInfo("egoboard benchmark: OK");
+    return 0;
 }
 
 int ApplicationContext::smokeTest()

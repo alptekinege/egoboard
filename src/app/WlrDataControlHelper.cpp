@@ -315,6 +315,30 @@ void WlrDataControlHelper::handleSelection(void *offerId, bool primary) {
     const qint64 maxBytes = m_settings ? m_settings->maxItemBytes() : kMaxOfferBytes;
     const qint64 cap = (maxBytes > 0) ? qMin(maxBytes, kMaxOfferBytes) : kMaxOfferBytes;
 
+    const auto typeEnabled = [this](ContentType type) {
+        return !m_settings || m_settings->captureTypeEnabled(type);
+    };
+    // The record this selection would produce follows the same priority as the
+    // build below; if the user disabled that type, stop before reading any
+    // payload (pipe polls block the GUI thread and the record would be dropped).
+    if (!mimes.isEmpty()) {
+        ContentType primary = ContentType::Text;
+        const auto advertises = [&mimes](const char *mime) {
+            for (const QString &m : mimes)
+                if (m == QLatin1String(mime))
+                    return true;
+            return false;
+        };
+        if (advertises("image/png") || advertises("image/jpeg"))
+            primary = ContentType::Image;
+        else if (advertises("text/uri-list"))
+            primary = ContentType::Files;
+        else if (advertises("text/html"))
+            primary = ContentType::RichText;
+        if (!typeEnabled(primary))
+            return;
+    }
+
     // All mime reads of one selection share a single budget: the pipe poll
     // blocks the GUI thread, so it must not be multiplied by the number of
     // advertised mime types.
@@ -359,7 +383,7 @@ void WlrDataControlHelper::handleSelection(void *offerId, bool primary) {
     QMimeData *mimeData = new QMimeData;
     bool hasData = false;
 
-    QByteArray uriData = readMimeSync(QStringLiteral("text/uri-list"));
+    QByteArray uriData = typeEnabled(ContentType::Files) ? readMimeSync(QStringLiteral("text/uri-list")) : QByteArray();
     if (!uriData.isEmpty()) {
         QList<QUrl> urls;
         const QString text = QString::fromUtf8(uriData);
@@ -372,12 +396,12 @@ void WlrDataControlHelper::handleSelection(void *offerId, bool primary) {
         if (!urls.isEmpty()) { mimeData->setUrls(urls); hasData = true; }
     }
 
-    QByteArray imgPng = readMimeSync(QStringLiteral("image/png"));
+    QByteArray imgPng = typeEnabled(ContentType::Image) ? readMimeSync(QStringLiteral("image/png")) : QByteArray();
     if (!imgPng.isEmpty()) {
         QImage img = QImage::fromData(imgPng, "PNG");
         if (!img.isNull()) { mimeData->setImageData(img); hasData = true; }
     }
-    if (!hasData) {
+    if (!hasData && typeEnabled(ContentType::Image)) {
         QByteArray imgJpeg = readMimeSync(QStringLiteral("image/jpeg"));
         if (!imgJpeg.isEmpty()) {
             QImage img = QImage::fromData(imgJpeg, "JPEG");
@@ -385,28 +409,23 @@ void WlrDataControlHelper::handleSelection(void *offerId, bool primary) {
         }
     }
 
-    QByteArray html = readMimeSync(QStringLiteral("text/html"));
+    QByteArray html = typeEnabled(ContentType::RichText) ? readMimeSync(QStringLiteral("text/html")) : QByteArray();
     if (!html.isEmpty()) { mimeData->setHtml(QString::fromUtf8(html)); hasData = true; }
 
-    QByteArray textData = readMimeSync(QStringLiteral("text/plain;charset=utf-8"));
-    if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("text/plain"));
-    if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("UTF8_STRING"));
-    if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("TEXT"));
-    if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("STRING"));
+    QByteArray textData;
+    if (typeEnabled(ContentType::Text)) {
+        textData = readMimeSync(QStringLiteral("text/plain;charset=utf-8"));
+        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("text/plain"));
+        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("UTF8_STRING"));
+        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("TEXT"));
+        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("STRING"));
+    }
     if (!textData.isEmpty()) { mimeData->setText(QString::fromUtf8(textData)); hasData = true; }
 
     if (!hasData) { delete mimeData; return; }
 
-    // Build record — reuse sensitive/ignore logic
+    // Privacy check + record build; the capture-type filter runs at the end.
     const QString text = mimeData->text();
-    if (!text.isEmpty() && m_settings) {
-        const auto mode = m_settings->sensitiveMode();
-        if (mode == SettingsManager::SensitiveMode::Exclude && isSensitiveWithCustom(text, m_settings)) {
-            emit excludedSensitive(customKinds(text, m_settings).join(QStringLiteral(", ")));
-            delete mimeData; return;
-        }
-    }
-
     ClipboardRecord record;
     const qint64 maxStore = m_settings ? m_settings->maxItemBytes() : kMaxOfferBytes;
 

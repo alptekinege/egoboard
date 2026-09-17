@@ -51,6 +51,10 @@ QT_QPA_PLATFORM=offscreen ./build/egoboard --smoke
 - `--smoke` runs a headless end-to-end self-check (storage, groups, search,
   export/import, transforms, snippets, platform probes) and exits non-zero on
   failure; it needs no display.
+- `--bench[=N]` (default 50000 entries) bulk-loads a scratch database and
+  reports insertion, first page, deep keyset paging, most-used sort, FTS and
+  JSON export timings against budgets; it exits non-zero when a budget is
+  exceeded.
 - `-DEGOBOARD_USE_SQLCIPHER=ON` enables the SQLCipher build when `sqlcipher`
   and `kwallet` are available.
 

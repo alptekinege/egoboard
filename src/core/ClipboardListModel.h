@@ -55,6 +55,14 @@ signals:
 
 private:
     void connectStorage();
+    // Incremental updates: full resets discard scroll position and selection,
+    // so per-entry signals patch the loaded window in place where it is safe
+    // to do so (see the handlers).
+    void onEntryAdded(qint64 id);
+    void onEntryTouched(qint64 id);
+    void onEntriesRemoved(const QList<qint64> &ids);
+    void onPinnedChanged(qint64 id, bool pinned);
+    void replaceRow(int row, const ClipboardRecord &record);
 
     IClipboardStorage *m_storage = nullptr;
     FilterSpec m_filter;

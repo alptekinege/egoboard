@@ -15,6 +15,8 @@ private slots:
     void settingsFlagRoundTrip();
     void reportsUnavailableBackendConsistently();
     void rejectsEmptyRekey();
+    void rejectsEncryptWhenSqlCipherUnavailable();
+    void plaintextDatabaseDoesNotRequireKey();
 };
 
 void TestEncryption::walletStatusNotEmpty()
@@ -99,6 +101,31 @@ void TestEncryption::rejectsEmptyRekey()
 #else
     Q_UNUSED(rekeyed);
 #endif
+}
+
+void TestEncryption::rejectsEncryptWhenSqlCipherUnavailable()
+{
+#ifndef EGOBOARD_HAVE_SQLCIPHER
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    StorageManager storage(dir.filePath(QStringLiteral("no-cipher.db")));
+    // Plain SQLite ignores PRAGMA rekey and reports success; the manager must
+    // refuse instead of claiming the file is encrypted.
+    QVERIFY(!storage.changeEncryptionKey(QStringLiteral("correct horse battery staple")));
+    QVERIFY(!storage.isEncrypted());
+    QVERIFY(!storage.setEncryptionKey(QStringLiteral("correct horse battery staple")));
+    QVERIFY(!storage.requiresEncryptionKey());
+#else
+    QSKIP("SQLCipher built — encryption paths are exercised elsewhere");
+#endif
+}
+
+void TestEncryption::plaintextDatabaseDoesNotRequireKey()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    StorageManager storage(dir.filePath(QStringLiteral("plain.db")));
+    QVERIFY(!storage.requiresEncryptionKey());
 }
 
 QTEST_GUILESS_MAIN(TestEncryption)

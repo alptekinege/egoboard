@@ -51,6 +51,10 @@ public:
 
     virtual bool fetchFull(qint64 id, ClipboardRecord *out) const = 0;
 
+    // Loads only the list-view fields for one entry (no payload/blob); used by
+    // incremental model updates. False when the id is unknown.
+    virtual bool fetchSummary(qint64 id, ClipboardRecord *out) const = 0;
+
     virtual bool remove(qint64 id) = 0;
     virtual int removeEntries(const QList<qint64> &ids) = 0;
     // Deletes all entries (or all non-pinned when includePinned == false).

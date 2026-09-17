@@ -468,6 +468,12 @@ void TestStorage::fetchAllCoversEveryPageInAllSortModes()
                        QStringLiteral("entry %1").arg(i), 1000 + i));
     QCOMPARE(m_storage->stats().entryCount, qint64(total));
     QCOMPARE(m_storage->fetchAll(FilterSpec{}).size(), total);
+    // Payloads are fetched per page in one query; every page must survive the
+    // round trip with its text intact.
+    const auto allFull = m_storage->fetchAllFull(FilterSpec{});
+    QCOMPARE(allFull.size(), total);
+    QCOMPARE(allFull.first().textData, QStringLiteral("entry 504"));
+    QCOMPARE(allFull.constLast().textData, QStringLiteral("entry 0"));
 
     // The oldest entry is the only one with useCount > 0 after touchEntry.
     const qint64 touched = m_storage->fetchAll(FilterSpec{}).constLast().id;

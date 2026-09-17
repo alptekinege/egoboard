@@ -12,6 +12,11 @@ BookmarkManager::BookmarkManager(QSqlDatabase db, QObject *parent)
 qint64 BookmarkManager::createGroup(const QString &name, qint64 parentId, const QString &color,
                                     const QString &icon)
 {
+    // Sibling names are unique case-insensitively, mirroring the tag table.
+    if (groupNameExists(name, parentId, 0)) {
+        qWarning("egoboard: createGroup: a group named \"%s\" already exists here", qPrintable(name));
+        return 0;
+    }
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral(
         "INSERT INTO groups (parent_id, name, color, icon) VALUES (:p, :n, :c, :i)"));
@@ -30,6 +35,13 @@ qint64 BookmarkManager::createGroup(const QString &name, qint64 parentId, const 
 bool BookmarkManager::updateGroup(qint64 id, const QString &name, const QString &color,
                                   const QString &icon)
 {
+    const auto existing = group(id);
+    if (!existing.has_value())
+        return false;
+    if (groupNameExists(name, existing->parentId, id)) {
+        qWarning("egoboard: updateGroup: a group named \"%s\" already exists here", qPrintable(name));
+        return false;
+    }
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral("UPDATE groups SET name = :n, color = :c, icon = :i WHERE id = :id"));
     query.bindValue(QStringLiteral(":n"), name);
@@ -186,6 +198,22 @@ int BookmarkManager::entryCount(qint64 groupId) const
     if (query.exec() && query.next())
         return query.value(0).toInt();
     return 0;
+}
+
+bool BookmarkManager::groupNameExists(const QString &name, qint64 parentId, qint64 excludeId) const
+{
+    QSqlQuery query(m_db);
+    if (parentId > 0) {
+        query.prepare(QStringLiteral(
+            "SELECT 1 FROM groups WHERE parent_id = :p AND name = :n COLLATE NOCASE AND id != :id"));
+        query.bindValue(QStringLiteral(":p"), parentId);
+    } else {
+        query.prepare(QStringLiteral(
+            "SELECT 1 FROM groups WHERE parent_id IS NULL AND name = :n COLLATE NOCASE AND id != :id"));
+    }
+    query.bindValue(QStringLiteral(":n"), name);
+    query.bindValue(QStringLiteral(":id"), excludeId);
+    return query.exec() && query.next();
 }
 
 bool BookmarkManager::isDescendantOf(qint64 childId, qint64 ancestorId) const

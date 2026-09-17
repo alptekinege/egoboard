@@ -28,12 +28,12 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 
-#include "TransformChainDialog.h"
-
 namespace {
 
 QString humanSize(qint64 bytes)
 {
+    if (bytes <= 0)
+        return {}; // unknown/empty payload: nothing to report
     if (bytes < 1024)
         return PreviewPane::tr("%1 B").arg(bytes);
     if (bytes < 1024 * 1024)
@@ -94,7 +94,8 @@ PreviewPane::PreviewPane(QWidget *parent)
 
     m_stack->addWidget(pageText());
     m_stack->addWidget(pageHtml());
-    m_stack->addWidget(pageImage());
+    m_imagePage = pageImage();
+    m_stack->addWidget(m_imagePage);
     m_stack->addWidget(pageFiles());
     layout->addWidget(m_stack, 1);
 
@@ -356,23 +357,13 @@ void PreviewPane::showEmpty(const QString &message)
 
 void PreviewPane::showRecord(const ClipboardRecord &record)
 {
-    // If we're showing a transformed view, stash original first call
-    const bool wasTransformed = m_isTransformed;
-    if (!wasTransformed) {
-        m_current = record;
-        m_originalText = record.textData.isEmpty() ? record.preview : record.textData;
-        m_copyResultBtn->setVisible(false);
-        m_revertBtn->setVisible(false);
-        m_transformStatus->clear();
-    } else {
-        // User navigated while transformed — reset transform state for new record
-        m_isTransformed = false;
-        m_current = record;
-        m_originalText = record.textData.isEmpty() ? record.preview : record.textData;
-        m_copyResultBtn->setVisible(false);
-        m_revertBtn->setVisible(false);
-        m_transformStatus->clear();
-    }
+    // Showing another entry abandons any transformed view of the previous one.
+    m_isTransformed = false;
+    m_current = record;
+    m_originalText = record.textData.isEmpty() ? record.preview : record.textData;
+    m_copyResultBtn->setVisible(false);
+    m_revertBtn->setVisible(false);
+    m_transformStatus->clear();
 
     const QDateTime timestamp = QDateTime::fromMSecsSinceEpoch(record.timestamp);
     QStringList meta;
@@ -381,9 +372,12 @@ void PreviewPane::showRecord(const ClipboardRecord &record)
         meta << record.sourceApp;
     if (!record.sourceWindow.isEmpty())
         meta << tr("from “%1”").arg(record.sourceWindow);
-    meta << humanSize(record.sizeBytes);
+    const QString sizeText = humanSize(record.sizeBytes);
+    if (!sizeText.isEmpty())
+        meta << sizeText;
+    // use_count counts re-copies/pastes after the initial capture.
     if (record.useCount > 0)
-        meta << tr("pasted %1×").arg(record.useCount + 1);
+        meta << tr("used %1×").arg(record.useCount);
     QString extraMeta;
 
     // Transform bar visible only for text-like entries
@@ -451,7 +445,7 @@ void PreviewPane::showRecord(const ClipboardRecord &record)
         } else if (record.hasBlob) {
             extraMeta += QStringLiteral("<br/><i>OCR: processing… or no text found</i>");
         }
-        m_stack->setCurrentIndex(3);
+        m_stack->setCurrentWidget(m_imagePage);
         break;
     }
     case ContentType::Files: {

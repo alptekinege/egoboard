@@ -24,6 +24,7 @@ private slots:
     void groupSubtreePreservesHierarchy();
     void roundTripsOcrTagsSnippetsAndSearches();
     void overwriteClearsAllUserData();
+    void importBatchesSignalsIntoOneReset();
     void rejectsMalformedImportFiles();
     void reportsExportWriteErrors();
 
@@ -355,6 +356,33 @@ void TestExportImport::overwriteClearsAllUserData()
     QCOMPARE(m_storage->allTags(), QStringList());
     QVERIFY(m_snippets->snippets().isEmpty());
     QVERIFY(m_storage->savedSearches().isEmpty());
+}
+
+void TestExportImport::importBatchesSignalsIntoOneReset()
+{
+    seed(m_storage, m_bookmarks);
+
+    const QString path = m_dir.filePath(QStringLiteral("batched.json"));
+    ExportImportManager::ExportRequest request;
+    request.path = path;
+    QVERIFY(m_io->exportToFile(request));
+
+    init();
+    QSignalSpy addedSpy(m_storage, &StorageManager::entryAdded);
+    QSignalSpy touchedSpy(m_storage, &StorageManager::entryTouched);
+    QSignalSpy resetSpy(m_storage, &StorageManager::storageReset);
+
+    const auto result = m_io->importFromFile(path, ExportImportManager::ImportMode::Merge);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.entriesImported, 3);
+
+    // Bulk mode: the whole import is one transaction and one refresh instead
+    // of a signal storm per row.
+    QCOMPARE(addedSpy.count(), 0);
+    QCOMPARE(touchedSpy.count(), 0);
+    QCOMPARE(resetSpy.count(), 1);
+    QCOMPARE(m_storage->stats().entryCount, qint64(3));
+    QCOMPARE(m_storage->savedSearches().size(), 0); // nothing pending from the bulk
 }
 
 void TestExportImport::rejectsMalformedImportFiles()

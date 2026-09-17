@@ -47,6 +47,7 @@ private:
     QLabel *m_emptyLabel = nullptr;
     QPlainTextEdit *m_textEdit = nullptr;
     QTextBrowser *m_htmlView = nullptr;
+    QWidget *m_imagePage = nullptr;
     QLabel *m_imageLabel = nullptr;
     QListWidget *m_filesList = nullptr;
     QLabel *m_metaLabel = nullptr;

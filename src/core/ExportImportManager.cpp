@@ -262,6 +262,10 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode)
         return result;
     }
 
+    // One transaction and no per-row signals for the whole import: the single
+    // storageReset() at the end tells every view to reload.
+    const bool bulk = m_storage->beginBulk();
+
     if (mode == ImportMode::Overwrite) {
         // A self-contained backup replaces every piece of user data it carries.
         m_storage->clearHistory(true);
@@ -498,7 +502,10 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode)
             ++result.savedSearchesImported;
     }
 
-    emit m_storage->storageReset(); // coarser but correct: let views reload
+    if (bulk)
+        m_storage->endBulk(true);
+
+    emit m_storage->storageReset(); // one reload for the whole import
     result.ok = true;
     return result;
 }

@@ -31,6 +31,8 @@ constexpr qint64 kDefaultMaxItemBytes = 5 * 1024 * 1024; // 5 MiB
 constexpr qint64 kDefaultMaxImageBytes = 8 * 1024 * 1024; // 8 MiB
 constexpr qint64 kDefaultDiskCapBytes = 0; // unlimited
 constexpr int kDefaultOcrMaxChars = 8192;
+// Bump when a migration step is added below; the file records this number.
+constexpr int kCurrentConfigVersion = 1;
 
 constexpr SettingsManager::SensitiveMode kDefaultSensitiveMode =
     SettingsManager::SensitiveMode::Exclude;
@@ -86,6 +88,50 @@ SettingsManager::SettingsManager(QObject *parent)
     : QObject(parent)
     , m_config(new KConfig(QStringLiteral("egoboardrc"), KConfig::NoGlobals))
 {
+    migrateConfig();
+}
+
+int SettingsManager::currentConfigVersion()
+{
+    return kCurrentConfigVersion;
+}
+
+int SettingsManager::configVersion() const
+{
+    return m_config->group(kGroupGeneral).readEntry("ConfigVersion", 0);
+}
+
+void SettingsManager::migrateConfig()
+{
+    KConfigGroup general = m_config->group(kGroupGeneral);
+    const int stored = general.readEntry("ConfigVersion", 0);
+    if (stored >= kCurrentConfigVersion)
+        return; // current, or written by a newer build (never downgrade)
+
+    if (stored < 1) {
+        // v0 -> v1: values written before the version existed were never
+        // validated, so bring them into the ranges the UI accepts.
+        KConfigGroup history = m_config->group(kGroupHistory);
+        const int debounce = history.readEntry("DebounceMs", kDefaultDebounceMs);
+        if (debounce < 50 || debounce > 5000)
+            history.writeEntry("DebounceMs", qBound(50, debounce, 5000));
+        const char *const byteCaps[] = {"MaxItemBytes", "MaxImageBytes", "DiskCapBytes", "MaxEntries"};
+        for (const char *key : byteCaps) {
+            const qint64 value = history.readEntry<qint64>(key, qint64(0));
+            if (value < 0)
+                history.writeEntry<qint64>(key, qint64(0));
+        }
+        const int quickPaste = general.readEntry("QuickPasteCount", kDefaultQuickPasteCount);
+        if (quickPaste < 1 || quickPaste > 9)
+            general.writeEntry("QuickPasteCount", qBound(1, quickPaste, 9));
+        KConfigGroup ocr = m_config->group(kGroupOcr);
+        const int maxChars = ocr.readEntry("MaxChars", kDefaultOcrMaxChars);
+        if (maxChars < 512 || maxChars > 65536)
+            ocr.writeEntry("MaxChars", qBound(512, maxChars, 65536));
+    }
+
+    general.writeEntry("ConfigVersion", kCurrentConfigVersion);
+    m_config->sync();
 }
 
 SettingsManager::~SettingsManager()

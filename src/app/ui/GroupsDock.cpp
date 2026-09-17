@@ -170,9 +170,13 @@ void GroupsDock::newGroup()
     GroupDialog dialog(this, tr("New group"), QString(), QColor(), QString());
     if (dialog.exec() != QDialog::Accepted)
         return;
-    m_bookmarks->createGroup(dialog.groupName(), parentId,
-                             dialog.color().isValid() ? dialog.color().name() : QString(),
-                             dialog.iconName());
+    if (m_bookmarks->createGroup(dialog.groupName(), parentId,
+                                 dialog.color().isValid() ? dialog.color().name() : QString(),
+                                 dialog.iconName())
+        == 0) {
+        QMessageBox::warning(this, tr("New group"),
+                             tr("A group named “%1” already exists here.").arg(dialog.groupName()));
+    }
 }
 
 void GroupsDock::editSelected()
@@ -185,9 +189,12 @@ void GroupsDock::editSelected()
     GroupDialog dialog(this, tr("Edit group"), group->name, QColor(group->color), group->icon);
     if (dialog.exec() != QDialog::Accepted)
         return;
-    m_bookmarks->updateGroup(group->id, dialog.groupName(),
-                             dialog.color().isValid() ? dialog.color().name() : QString(),
-                             dialog.iconName());
+    if (!m_bookmarks->updateGroup(group->id, dialog.groupName(),
+                                  dialog.color().isValid() ? dialog.color().name() : QString(),
+                                  dialog.iconName())) {
+        QMessageBox::warning(this, tr("Edit group"),
+                             tr("A group named “%1” already exists here.").arg(dialog.groupName()));
+    }
 }
 
 void GroupsDock::deleteSelected()

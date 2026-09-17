@@ -38,6 +38,10 @@ private:
 
     void load();
     void save();
+    // Applies a changed encryption checkbox: rekeys the open database to
+    // encrypt it (generating a KWallet key when needed) or decrypt it in place.
+    // On failure the checkbox is reverted and the setting is left unchanged.
+    void applyEncryptionSetting();
     // Live preview of the theme combos: applies without saving, so the user sees
     // the palette/icon theme before committing; Cancel puts the stored pair back.
     void previewThemes();

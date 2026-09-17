@@ -16,6 +16,7 @@ class AutoPaster : public QObject {
     Q_OBJECT
 public:
     explicit AutoPaster(ClipboardWatcher *watcher, QObject *parent = nullptr);
+    ~AutoPaster() override;
 
     // Restores the record to the clipboard without hiding a window or
     // simulating a paste keystroke.
@@ -36,4 +37,7 @@ private:
     ClipboardWatcher *m_watcher = nullptr;
     bool m_xdotoolAvailable = false;
     bool m_xdotoolChecked = false;
+    // Reused X connection (XOpenDisplay is a round trip; pasting is frequent).
+    // Stored as void* so Xlib stays out of this header.
+    void *m_x11Display = nullptr;
 };

@@ -46,5 +46,8 @@ signals:
     void membershipChanged(qint64 entryId);
 
 private:
+    // Case-insensitive sibling check used to keep group names unique.
+    bool groupNameExists(const QString &name, qint64 parentId, qint64 excludeId) const;
+
     QSqlDatabase m_db;
 };

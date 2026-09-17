@@ -185,9 +185,11 @@ void EntryDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
     const QString sizeText = humanSize(sizeBytes);
     if (!sizeText.isEmpty())
         metaParts << sizeText;
+    // use_count counts re-copies/pastes after the initial capture, so the
+    // badge shows the stored value rather than fudging it by one.
     const int useCount = index.data(ClipboardListModel::UseCountRole).toInt();
     if (useCount > 0)
-        metaParts << tr("used %1×").arg(useCount + 1);
+        metaParts << tr("used %1×").arg(useCount);
     const QString meta = painter->fontMetrics().elidedText(metaParts.join(QStringLiteral(" · ")),
                                                            Qt::ElideRight, textWidth);
     painter->drawText(

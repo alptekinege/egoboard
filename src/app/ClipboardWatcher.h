@@ -22,8 +22,10 @@ public:
     void start();
     void setDebounceInterval(int ms) { m_debounce.setInterval(qBound(50, ms, 5000)); }
 
-    // Suppress the next clipboard change(s) for a short while; used when
-    // egoboard itself re-sets the clipboard for paste-back.
+    // Marks one upcoming clipboard write as egoboard's own (paste-back), so
+    // the change event it causes is not recorded as a new history entry.
+    // A token is consumed by the next change event, bounded by a short grace
+    // window, and emitting suppressedOwnChange() when it is.
     void suppressOwnSets();
 
 signals:
@@ -44,5 +46,6 @@ private:
     IActiveWindowTracker *m_activeWindow = nullptr;
     QTimer m_debounce;
     QClipboard::Mode m_pendingMode = QClipboard::Clipboard;
-    qint64 m_suppressUntilEpochMs = 0;
+    int m_pendingSelfSets = 0;
+    qint64 m_selfSetDeadlineMs = 0;
 };

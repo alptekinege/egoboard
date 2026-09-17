@@ -75,6 +75,14 @@ AutoPaster::AutoPaster(ClipboardWatcher *watcher, QObject *parent)
 {
 }
 
+AutoPaster::~AutoPaster()
+{
+#ifdef EGOBOARD_HAVE_XTEST
+    if (m_x11Display)
+        XCloseDisplay(static_cast<Display *>(m_x11Display));
+#endif
+}
+
 bool AutoPaster::copyToClipboard(const ClipboardRecord &record)
 {
     auto mime = buildMimeData(record);
@@ -100,15 +108,9 @@ bool AutoPaster::canSimulateKeys()
 
 void AutoPaster::paste(const ClipboardRecord &record, QWidget *windowToHide)
 {
-    auto mime = buildMimeData(record);
-    if (!mime) {
-        emit failed(QObject::tr("This entry has no stored payload (it exceeded the size limit)."));
+    // Same clipboard-set path as copyToClipboard(); failure already notified.
+    if (!copyToClipboard(record))
         return;
-    }
-
-    if (m_watcher)
-        m_watcher->suppressOwnSets();
-    QGuiApplication::clipboard()->setMimeData(mime.release(), QClipboard::Clipboard);
 
     // Give the focus back to the user's app before injecting keys.
     if (windowToHide)
@@ -151,20 +153,21 @@ void AutoPaster::simulateCtrlV()
 bool AutoPaster::xtestPaste()
 {
 #ifdef EGOBOARD_HAVE_XTEST
-    Display *display = XOpenDisplay(nullptr);
+    if (!m_x11Display)
+        m_x11Display = XOpenDisplay(nullptr);
+    Display *display = static_cast<Display *>(m_x11Display);
     if (!display)
         return false;
     const KeyCode control = XKeysymToKeycode(display, XK_Control_L);
     const KeyCode v = XKeysymToKeycode(display, XK_V);
-    if (control != 0 && v != 0) {
-        XTestFakeKeyEvent(display, control, True, CurrentTime);
-        XTestFakeKeyEvent(display, v, True, CurrentTime);
-        XTestFakeKeyEvent(display, v, False, CurrentTime);
-        XTestFakeKeyEvent(display, control, False, CurrentTime);
-        XFlush(display);
-    }
-    XCloseDisplay(display);
-    return control != 0 && v != 0;
+    if (control == 0 || v == 0)
+        return false;
+    XTestFakeKeyEvent(display, control, True, CurrentTime);
+    XTestFakeKeyEvent(display, v, True, CurrentTime);
+    XTestFakeKeyEvent(display, v, False, CurrentTime);
+    XTestFakeKeyEvent(display, control, False, CurrentTime);
+    XFlush(display);
+    return true;
 #else
     return false;
 #endif

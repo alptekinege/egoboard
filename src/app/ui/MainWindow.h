@@ -91,5 +91,4 @@ private:
     ExportImportDialogs::DateRange m_lastRange;
     CommandPalette *m_palette = nullptr;
     TimelineStrip *m_timeline = nullptr;
-    bool m_ignoreHideOnFocusOut = false;
 };

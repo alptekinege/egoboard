@@ -17,7 +17,11 @@
 namespace {
 
 constexpr int kMaxPathCount = 64; // beyond this, treat as plain text
-constexpr qint64 kSuppressOwnSetMs = 2000;
+// Upper bound for a self-set token: if our clipboard write produced no change
+// event (the payload was already on the clipboard), the token must not swallow
+// an unrelated user copy for long.
+constexpr qint64 kSelfSetTokenGraceMs = 1500;
+constexpr qint64 kSelfSetTokenMaxMs = 3000;
 
 QByteArray hashPayload(ContentType type, const QByteArray &payload)
 {
@@ -202,7 +206,14 @@ void ClipboardWatcher::start()
 
 void ClipboardWatcher::suppressOwnSets()
 {
-    m_suppressUntilEpochMs = QDateTime::currentMSecsSinceEpoch() + kSuppressOwnSetMs;
+    // One token per clipboard write, consumed by the next processing run. The
+    // deadline is tied to the debounce window (not a flat 2 s), so a genuine
+    // copy that follows a paste is no longer swallowed for long.
+    ++m_pendingSelfSets;
+    const qint64 graceMs = qBound(kSelfSetTokenGraceMs,
+                                  qint64(m_debounce.interval()) * 2 + 100,
+                                  kSelfSetTokenMaxMs);
+    m_selfSetDeadlineMs = QDateTime::currentMSecsSinceEpoch() + graceMs;
 }
 
 void ClipboardWatcher::onClipboardChanged(QClipboard::Mode mode)
@@ -216,8 +227,15 @@ void ClipboardWatcher::onClipboardChanged(QClipboard::Mode mode)
 
 void ClipboardWatcher::processPending()
 {
-    if (QDateTime::currentMSecsSinceEpoch() < m_suppressUntilEpochMs)
-        return; // our own paste-back; not a user capture
+    if (m_pendingSelfSets > 0) {
+        if (QDateTime::currentMSecsSinceEpoch() <= m_selfSetDeadlineMs) {
+            // Our own paste-back write; consume its token and stop.
+            --m_pendingSelfSets;
+            emit suppressedOwnChange();
+            return;
+        }
+        m_pendingSelfSets = 0; // token expired unused
+    }
 
     const QMimeData *mimeData = m_clipboard->mimeData(m_pendingMode);
     if (!mimeData)

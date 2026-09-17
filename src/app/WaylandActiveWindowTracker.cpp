@@ -38,6 +38,21 @@ protected:
         m_handles.append(new Handle(this, toplevel));
     }
 
+public:
+    // The compositor withdrew the global (session teardown, compositor
+    // restart): every handle is dead, and keeping them would report a stale
+    // active window forever. The Qt wrapper does not expose the protocol's
+    // finished event, so this runs from the extension's activeChanged(false).
+    void reset()
+    {
+        qDeleteAll(m_handles);
+        m_handles.clear();
+        if (!m_active.appIdentifier.isEmpty() || !m_active.windowTitle.isEmpty()) {
+            m_active = ActiveWindowInfo{};
+            emit activeChanged();
+        }
+    }
+
 private:
     // One opened window. Not a QObject; owned by this manager.
     class Handle : public QtWayland::zwlr_foreign_toplevel_handle_v1
@@ -129,6 +144,10 @@ WaylandActiveWindowTracker::WaylandActiveWindowTracker(QObject *parent)
         m_manager->setParent(this);
         connect(m_manager, &Manager::activeChanged, this,
                 &WaylandActiveWindowTracker::activeWindowChanged);
+        connect(m_manager, &QWaylandClientExtension::activeChanged, this, [this] {
+            if (!m_manager->isActive())
+                m_manager->reset(); // global withdrawn: drop stale toplevels
+        });
     }
 }
 

@@ -15,6 +15,7 @@ constexpr auto kGroupMime = "application/x-egoboard-group-ids";
 
 struct GroupTreeModel::Node {
     BookmarkGroup group;
+    Node *parent = nullptr; // m_root for top-level groups
     std::vector<std::unique_ptr<Node>> children; // stable pointers across growth
 };
 
@@ -52,6 +53,7 @@ void GroupTreeModel::rebuild()
         if (group.parentId == 0) {
             auto node = std::make_unique<Node>();
             node->group = group;
+            node->parent = m_root.get();
             m_root->children.push_back(std::move(node));
             byId.insert(group.id, m_root->children.back().get());
         }
@@ -72,6 +74,7 @@ void GroupTreeModel::rebuild()
             if (it != byId.constEnd()) {
                 auto node = std::make_unique<Node>();
                 node->group = group;
+                node->parent = it.value();
                 Node *raw = node.get();
                 it.value()->children.push_back(std::move(node));
                 byId.insert(group.id, raw);
@@ -100,22 +103,17 @@ QModelIndex GroupTreeModel::parent(const QModelIndex &child) const
     const Node *childNode = static_cast<const Node *>(child.internalPointer());
     if (!childNode)
         return {};
-
-    std::function<QModelIndex(const Node *)> find = [&](const Node *candidate) -> QModelIndex {
-        for (size_t i = 0; i < candidate->children.size(); ++i) {
-            const Node *descendant = candidate->children.at(i).get();
-            if (descendant == childNode) {
-                if (candidate == m_root.get())
-                    return {};
-                return indexForGroup(candidate->group.id);
-            }
-            const QModelIndex deeper = find(descendant);
-            if (deeper.isValid())
-                return deeper;
-        }
-        return {};
-    };
-    return find(m_root.get());
+    const Node *parentNode = childNode->parent;
+    if (!parentNode || parentNode == m_root.get())
+        return {}; // top level
+    // The parent pointer makes this walk-free: only the parent's row within its
+    // own siblings has to be found (the old version scanned the whole tree).
+    const Node *grandParent = parentNode->parent ? parentNode->parent : m_root.get();
+    for (size_t row = 0; row < grandParent->children.size(); ++row) {
+        if (grandParent->children.at(row).get() == parentNode)
+            return createIndex(int(row), 0, const_cast<Node *>(parentNode));
+    }
+    return {};
 }
 
 int GroupTreeModel::rowCount(const QModelIndex &parent) const

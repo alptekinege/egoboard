@@ -195,6 +195,11 @@ ctest --test-dir build --output-on-failure
 QT_QPA_PLATFORM=offscreen ./build/egoboard --smoke
 ```
 
+Changes to the storage/query layer should also stay within the scale budgets:
+```bash
+QT_QPA_PLATFORM=offscreen ./build/egoboard --bench=100000
+```
+
 ---
 
 ## 8. Prohibited Practices & Anti-Patterns

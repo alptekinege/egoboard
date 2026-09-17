@@ -10,6 +10,22 @@
 
 #include <atomic>
 
+namespace {
+
+// SQLCipher databases begin with a random salt, not SQLite's plaintext magic;
+// a file without that header can only be read after PRAGMA key.
+bool fileLooksEncrypted(const QString &path)
+{
+    QFile file(path);
+    if (!file.exists() || file.size() < 16)
+        return false;
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    const QByteArray header = file.read(16);
+    return header.size() == 16 && !header.startsWith(QByteArrayLiteral("SQLite format 3"));
+}
+
+} // namespace
 
 StorageManager::StorageManager(const QString &databasePath, QObject *parent)
     : IClipboardStorage(parent)
@@ -23,6 +39,11 @@ StorageManager::StorageManager(const QString &databasePath, QObject *parent)
     if (!m_db.open()) {
         qWarning("egoboard: cannot open database %s: %s", qPrintable(databasePath),
                  qPrintable(m_db.lastError().text()));
+        return;
+    }
+    if (fileLooksEncrypted(databasePath)) {
+        // The schema cannot be touched before the key is applied; setEncryptionKey()
+        // runs it once the database is readable.
         return;
     }
     DatabaseSchema::ensure(m_db);
@@ -42,6 +63,60 @@ qint64 StorageManager::databaseFileSize() const
     return QFile::exists(m_path) ? QFile(m_path).size() : 0;
 }
 
+bool StorageManager::beginTransaction()
+{
+    if (m_transactionDepth > 0) {
+        ++m_transactionDepth; // join the open transaction (SQLite does not nest)
+        return true;
+    }
+    if (!m_db.transaction())
+        return false;
+    m_transactionDepth = 1;
+    return true;
+}
+
+bool StorageManager::commitTransaction()
+{
+    if (m_transactionDepth <= 0)
+        return false;
+    if (--m_transactionDepth > 0)
+        return true; // the outermost scope still owns the transaction
+    return m_db.commit();
+}
+
+void StorageManager::rollbackTransaction()
+{
+    if (m_transactionDepth <= 0)
+        return;
+    m_transactionDepth = 0; // a failure discards the whole (possibly nested) unit
+    m_db.rollback();
+}
+
+bool StorageManager::beginBulk()
+{
+    if (m_bulkDepth > 0) {
+        ++m_bulkDepth;
+        return true;
+    }
+    if (!beginTransaction())
+        return false;
+    m_bulkDepth = 1;
+    return true;
+}
+
+bool StorageManager::endBulk(bool commit)
+{
+    if (m_bulkDepth <= 0)
+        return false;
+    if (--m_bulkDepth > 0)
+        return true;
+    if (!commit) {
+        rollbackTransaction();
+        return true;
+    }
+    return commitTransaction();
+}
+
 qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updatedExisting)
 {
     if (updatedExisting)
@@ -49,7 +124,7 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
     if (!m_db.isOpen())
         return 0;
 
-    if (!m_db.transaction()) {
+    if (!beginTransaction()) {
         qWarning("egoboard: cannot begin transaction: %s", qPrintable(m_db.lastError().text()));
         return 0;
     }
@@ -62,7 +137,7 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
         find.bindValue(QStringLiteral(":h"), QString::fromLatin1(record.hash));
         if (!find.exec()) {
             qWarning("egoboard: duplicate lookup failed: %s", qPrintable(find.lastError().text()));
-            m_db.rollback();
+            rollbackTransaction();
             return 0;
         }
         if (find.next()) {
@@ -94,15 +169,16 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
             touch.bindValue(QStringLiteral(":pinned"), record.pinned ? 1 : 0);
             touch.bindValue(QStringLiteral(":ocr"), record.ocrText);
             touch.bindValue(QStringLiteral(":id"), existingId);
-            if (!touch.exec() || !m_db.commit()) {
+            if (!touch.exec() || !commitTransaction()) {
                 qWarning("egoboard: duplicate update failed: %s",
                          qPrintable(touch.lastError().text()));
-                m_db.rollback();
+                rollbackTransaction();
                 return 0;
             }
             if (updatedExisting)
                 *updatedExisting = true;
-            emit entryTouched(existingId);
+            if (!signalsSuppressed())
+                emit entryTouched(existingId);
             return existingId;
         }
     }
@@ -125,17 +201,18 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
     insert.bindValue(QStringLiteral(":win"), record.sourceWindow);
     if (!insert.exec()) {
         qWarning("egoboard: insert failed: %s", qPrintable(insert.lastError().text()));
-        m_db.rollback();
+        rollbackTransaction();
         return 0;
     }
-    if (!m_db.commit()) {
+    if (!commitTransaction()) {
         qWarning("egoboard: insert commit failed: %s", qPrintable(m_db.lastError().text()));
-        m_db.rollback();
+        rollbackTransaction();
         return 0;
     }
 
     const qint64 id = insert.lastInsertId().toLongLong();
-    emit entryAdded(id);
+    if (!signalsSuppressed())
+        emit entryAdded(id);
     return id;
 }
 
@@ -292,13 +369,47 @@ QVector<ClipboardRecord> StorageManager::fetchAll(const FilterSpec &filter) cons
 
 QVector<ClipboardRecord> StorageManager::fetchAllFull(const FilterSpec &filter) const
 {
-    QVector<ClipboardRecord> summaries = fetchAll(filter);
     QVector<ClipboardRecord> full;
-    full.reserve(summaries.size());
-    for (const ClipboardRecord &summary : summaries) {
-        ClipboardRecord record;
-        if (fetchFull(summary.id, &record))
-            full.append(record);
+    PageCursor cursor;
+    static constexpr int kPageSize = 500;
+    while (true) {
+        bool hasMore = false;
+        const auto page = fetchPage(filter, cursor, kPageSize, &hasMore);
+        if (page.isEmpty())
+            break;
+
+        // The payloads of one page are fetched in a single query; doing it per
+        // entry made the export N+1 and dominated its runtime on large histories.
+        QStringList placeholders;
+        placeholders.reserve(page.size());
+        for (int i = 0; i < page.size(); ++i)
+            placeholders << QStringLiteral("?");
+        QSqlQuery query(m_db);
+        query.prepare(QStringLiteral(
+            "SELECT id, timestamp_ms, content_type, content_hash, text_data, blob_data, preview,"
+            " size_bytes, pinned, sensitive, use_count, source_app, source_window, ocr_text"
+            " FROM entries WHERE id IN (%1)").arg(placeholders.join(QLatin1Char(','))));
+        for (int i = 0; i < page.size(); ++i)
+            query.bindValue(i, page.at(i).id);
+        if (!query.exec()) {
+            qWarning("egoboard: fetchAllFull page failed: %s", qPrintable(query.lastError().text()));
+            break;
+        }
+        QHash<qint64, ClipboardRecord> byId;
+        byId.reserve(page.size());
+        while (query.next()) {
+            ClipboardRecord record = recordFromFull(query);
+            byId.insert(record.id, record);
+        }
+        for (const ClipboardRecord &summary : page) {
+            const auto it = byId.constFind(summary.id);
+            if (it != byId.constEnd())
+                full.append(*it);
+        }
+
+        if (!hasMore)
+            break;
+        cursor = PageCursor{true, page.last().timestamp, page.last().id, page.last().useCount};
     }
     return full;
 }
@@ -321,6 +432,27 @@ ClipboardRecord StorageManager::recordFromSummary(const QSqlQuery &query)
     return record;
 }
 
+ClipboardRecord StorageManager::recordFromFull(const QSqlQuery &query)
+{
+    ClipboardRecord record;
+    record.id = query.value(0).toLongLong();
+    record.timestamp = query.value(1).toLongLong();
+    record.type = static_cast<ContentType>(query.value(2).toInt());
+    record.hash = query.value(3).toByteArray();
+    record.textData = query.value(4).toString();
+    record.blobData = query.value(5).toByteArray();
+    record.hasBlob = !record.blobData.isEmpty();
+    record.preview = query.value(6).toString();
+    record.sizeBytes = query.value(7).toLongLong();
+    record.pinned = query.value(8).toInt() != 0;
+    record.sensitive = query.value(9).toInt() != 0;
+    record.useCount = query.value(10).toInt();
+    record.sourceApp = query.value(11).toString();
+    record.sourceWindow = query.value(12).toString();
+    record.ocrText = query.value(13).toString();
+    return record;
+}
+
 bool StorageManager::fetchFull(qint64 id, ClipboardRecord *out) const
 {
     if (!m_db.isOpen() || !out)
@@ -336,21 +468,24 @@ bool StorageManager::fetchFull(qint64 id, ClipboardRecord *out) const
             qWarning("egoboard: fetchFull(%lld) failed: %s", id, qPrintable(query.lastError().text()));
         return false;
     }
-    out->id = query.value(0).toLongLong();
-    out->timestamp = query.value(1).toLongLong();
-    out->type = static_cast<ContentType>(query.value(2).toInt());
-    out->hash = query.value(3).toByteArray();
-    out->textData = query.value(4).toString();
-    out->blobData = query.value(5).toByteArray();
-    out->hasBlob = !out->blobData.isEmpty();
-    out->preview = query.value(6).toString();
-    out->sizeBytes = query.value(7).toLongLong();
-    out->pinned = query.value(8).toInt() != 0;
-    out->sensitive = query.value(9).toInt() != 0;
-    out->useCount = query.value(10).toInt();
-    out->sourceApp = query.value(11).toString();
-    out->sourceWindow = query.value(12).toString();
-    out->ocrText = query.value(13).toString();
+    *out = recordFromFull(query);
+    return true;
+}
+
+bool StorageManager::fetchSummary(qint64 id, ClipboardRecord *out) const
+{
+    if (!m_db.isOpen() || !out || id <= 0)
+        return false;
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral(
+        "SELECT id, timestamp_ms, content_type, content_hash, preview, size_bytes, pinned,"
+        " sensitive, use_count, source_app, source_window,"
+        " (blob_data IS NOT NULL AND LENGTH(blob_data) > 0) AS has_blob"
+        " FROM entries WHERE id = :id"));
+    query.bindValue(QStringLiteral(":id"), id);
+    if (!query.exec() || !query.next())
+        return false;
+    *out = recordFromSummary(query);
     return true;
 }
 
@@ -364,7 +499,7 @@ bool StorageManager::remove(qint64 id)
     if (!query.exec())
         return false;
     const int removed = query.numRowsAffected();
-    if (removed > 0)
+    if (removed > 0 && !signalsSuppressed())
         emit entriesRemoved({id});
     return removed > 0;
 }
@@ -373,7 +508,7 @@ int StorageManager::removeEntries(const QList<qint64> &ids)
 {
     if (!m_db.isOpen() || ids.isEmpty())
         return 0;
-    if (!m_db.transaction()) {
+    if (!beginTransaction()) {
         qWarning("egoboard: cannot begin transaction: %s", qPrintable(m_db.lastError().text()));
         return 0;
     }
@@ -386,13 +521,13 @@ int StorageManager::removeEntries(const QList<qint64> &ids)
         if (query.exec() && query.numRowsAffected() > 0)
             removedIds.append(id); // only rows that actually existed
     }
-    if (!m_db.commit()) {
+    if (!commitTransaction()) {
         qWarning("egoboard: removeEntries commit failed: %s",
                  qPrintable(m_db.lastError().text()));
-        m_db.rollback();
+        rollbackTransaction();
         return 0;
     }
-    if (!removedIds.isEmpty())
+    if (!removedIds.isEmpty() && !signalsSuppressed())
         emit entriesRemoved(removedIds);
     return removedIds.size();
 }
@@ -423,8 +558,10 @@ int StorageManager::clearHistory(bool includePinned)
         qWarning("egoboard: clearHistory failed: %s", qPrintable(query.lastError().text()));
         return 0;
     }
-    emit entriesRemoved(removedIds);
-    emit storageReset();
+    if (!signalsSuppressed()) {
+        emit entriesRemoved(removedIds);
+        emit storageReset();
+    }
     return removedIds.size();
 }
 
@@ -438,7 +575,8 @@ bool StorageManager::setPinned(qint64 id, bool pinned)
     query.bindValue(QStringLiteral(":id"), id);
     if (!query.exec() || query.numRowsAffected() == 0)
         return false;
-    emit pinnedChanged(id, pinned);
+    if (!signalsSuppressed())
+        emit pinnedChanged(id, pinned);
     return true;
 }
 
@@ -466,7 +604,8 @@ bool StorageManager::touchEntry(qint64 id)
         qWarning("egoboard: touchEntry failed: %s", qPrintable(query.lastError().text()));
         return false;
     }
-    emit entryTouched(id);
+    if (!signalsSuppressed())
+        emit entryTouched(id);
     return true;
 }
 
@@ -506,14 +645,14 @@ bool StorageManager::addTag(qint64 entryId, const QString &tag)
         return false;
     const QString name = tag.trimmed();
 
-    if (!m_db.transaction())
+    if (!beginTransaction())
         return false;
     QSqlQuery insertTag(m_db);
     insertTag.prepare(QStringLiteral("INSERT OR IGNORE INTO tags (name) VALUES (:name)"));
     insertTag.bindValue(QStringLiteral(":name"), name);
     if (!insertTag.exec()) {
         qWarning("egoboard: addTag failed: %s", qPrintable(insertTag.lastError().text()));
-        m_db.rollback();
+        rollbackTransaction();
         return false;
     }
     QSqlQuery link(m_db);
@@ -522,9 +661,9 @@ bool StorageManager::addTag(qint64 entryId, const QString &tag)
         " VALUES (:id, (SELECT id FROM tags WHERE name = :name COLLATE NOCASE))"));
     link.bindValue(QStringLiteral(":id"), entryId);
     link.bindValue(QStringLiteral(":name"), name);
-    if (!link.exec() || !m_db.commit()) {
+    if (!link.exec() || !commitTransaction()) {
         qWarning("egoboard: addTag link failed: %s", qPrintable(link.lastError().text()));
-        m_db.rollback();
+        rollbackTransaction();
         return false;
     }
     return true;
@@ -760,23 +899,54 @@ bool StorageManager::setEncryptionKey(const QString &key)
 {
     if (key.isEmpty())
         return false;
-    const bool ok = DatabaseSchema::setKey(m_db, key);
-    m_encrypted = ok;
-    return ok;
+    if (!isSqlCipherAvailable()) {
+        qWarning("egoboard: cannot unlock the database: SQLCipher is not available in this build");
+        return false;
+    }
+    if (!DatabaseSchema::setKey(m_db, key)) {
+        qWarning("egoboard: the database key was rejected");
+        return false;
+    }
+    m_encrypted = true;
+    // Schema setup was skipped while the file was locked; do it now that it reads.
+    return DatabaseSchema::ensure(m_db);
 }
 
 bool StorageManager::changeEncryptionKey(const QString &newKey)
 {
-    const bool ok = DatabaseSchema::rekey(m_db, newKey);
-    if (ok)
-        m_encrypted = !newKey.isEmpty();
-    return ok;
+    if (newKey.isEmpty()) {
+        if (!m_encrypted)
+            return true; // already plaintext, nothing to decrypt
+        if (!DatabaseSchema::rekey(m_db, QString())) {
+            qWarning("egoboard: could not decrypt the database");
+            return false;
+        }
+        m_encrypted = false;
+        return true;
+    }
+    if (!isSqlCipherAvailable()) {
+        // Plain SQLite ignores PRAGMA rekey and reports success; refuse instead
+        // of claiming the database is encrypted when it is not.
+        qWarning("egoboard: cannot encrypt the database: SQLCipher is not available in this build");
+        return false;
+    }
+    if (!DatabaseSchema::rekey(m_db, newKey)) {
+        qWarning("egoboard: could not encrypt the database");
+        return false;
+    }
+    m_encrypted = true;
+    return true;
 }
 
 bool StorageManager::verifyEncryptionKey() const
 {
     QSqlDatabase db = m_db;
     return DatabaseSchema::probeKey(db);
+}
+
+bool StorageManager::requiresEncryptionKey() const
+{
+    return !m_encrypted && fileLooksEncrypted(m_path);
 }
 
 bool StorageManager::isSqlCipherAvailable() const

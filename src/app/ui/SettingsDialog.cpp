@@ -18,6 +18,7 @@
 #include "../../core/ExpirePolicy.h"
 #include "ExportImportDialogs.h"
 #include "ExportImportManager.h"
+#include "SearchEngine.h"
 
 #include <QClipboard>
 #include <QFileDialog>
@@ -61,6 +62,8 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QtConcurrent>
+
+#include <limits>
 
 namespace {
 QString humanSize(qint64 bytes)
@@ -654,16 +657,29 @@ QWidget *SettingsDialog::buildPrivacyPage()
     encryptLayout->addWidget(makeHint(tr("Key loss = data loss. The app never writes the key to egoboardrc. Build without SQLCipher keeps history as before."), encryptBox));
     connect(m_encryptionSetupBtn, &QPushButton::clicked, this, [this]{
         EncryptionManager enc;
+        QString existing;
+        if (enc.readKey(&existing) == EncryptionManager::Status::Ok && !existing.isEmpty()) {
+            QMessageBox::information(this, tr("Encryption"),
+                                     tr("A key is already stored in KWallet (folder egoboard / dbKey). "
+                                        "Tick the checkbox and press Apply to encrypt the database with it."));
+            return;
+        }
         const QString key = EncryptionManager::generateKey();
         const auto st = enc.writeKey(key);
         if (st == EncryptionManager::Status::Ok)
-            QMessageBox::information(this, tr("Encryption"), tr("New key stored in KWallet (folder egoboard / dbKey). Enable the checkbox and restart to encrypt on next open."));
+            QMessageBox::information(this, tr("Encryption"), tr("New key stored in KWallet (folder egoboard / dbKey). Tick the checkbox and press Apply to encrypt the existing database with it."));
         else
             QMessageBox::warning(this, tr("Encryption"), tr("Could not store key: %1").arg(enc.walletStatusText()));
         refreshDiagnostics();
     });
     connect(m_encryptionRemoveBtn, &QPushButton::clicked, this, [this]{
-        if (QMessageBox::question(this, tr("Encryption"), tr("Remove the KWallet key? You must also uncheck encryption and re-open the DB.")) != QMessageBox::Yes) return;
+        if (m_ctx.storage()->isEncrypted() || m_ctx.storage()->requiresEncryptionKey()) {
+            QMessageBox::warning(this, tr("Encryption"),
+                                 tr("Decrypt the database first (untick encryption and press Apply). "
+                                    "Removing the key now would make the history unreadable."));
+            return;
+        }
+        if (QMessageBox::question(this, tr("Encryption"), tr("Remove the KWallet key?")) != QMessageBox::Yes) return;
         EncryptionManager enc;
         if (enc.removeKey() != EncryptionManager::Status::Ok)
             QMessageBox::warning(this, tr("Encryption"), tr("Could not remove key: %1").arg(enc.walletStatusText()));
@@ -820,11 +836,25 @@ QWidget *SettingsDialog::buildSearchPreviewPage()
     ftsLayout->addLayout(testerRow);
     connect(testerEdit, &QLineEdit::textChanged, this, [this, testerResult](const QString &t){
         if (t.trimmed().isEmpty()) { testerResult->clear(); return; }
-        QStringList toks = t.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
-        QStringList quoted;
-        for (auto &tok : toks) quoted << QStringLiteral("\"%1\"*").arg(tok);
-        // show tokenization, hit count would need FTS query — keep simple
-        testerResult->setText(tr("FTS: <code>%1</code>").arg(quoted.join(QStringLiteral(" AND ")).toHtmlEscaped()));
+        QSqlDatabase db = m_ctx.storage()->database();
+        if (!SearchEngine::isFtsAvailable(db)) {
+            testerResult->setText(tr("<b>FTS5 unavailable</b> — substring (LIKE) search is used instead"));
+            return;
+        }
+        // Same query the list uses, plus how many entries it matches.
+        const QString ftsQuery = SearchEngine::buildFtsQuery(t.trimmed());
+        if (ftsQuery.isEmpty()) { testerResult->clear(); return; }
+        QSqlQuery q(db);
+        q.prepare(QStringLiteral("SELECT COUNT(*) FROM entries_fts WHERE entries_fts MATCH :q"));
+        q.bindValue(QStringLiteral(":q"), ftsQuery);
+        if (!q.exec() || !q.next()) {
+            testerResult->setText(tr("FTS: <code>%1</code> — <b>invalid query</b>")
+                                      .arg(ftsQuery.toHtmlEscaped()));
+            return;
+        }
+        const qint64 hits = qMin<qint64>(q.value(0).toLongLong(), std::numeric_limits<int>::max());
+        testerResult->setText(tr("FTS: <code>%1</code> — %n hit(s)", nullptr, int(hits))
+                                  .arg(ftsQuery.toHtmlEscaped()));
     });
     layout->addWidget(ftsBox);
 
@@ -993,7 +1023,11 @@ QWidget *SettingsDialog::buildStoragePage()
             break;
         }
         QString error;
-        if (!m_ctx.io()->exportToFile(request, &error))
+        // A full-history export can take seconds; show that the app is working.
+        QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+        const bool exported = m_ctx.io()->exportToFile(request, &error);
+        QGuiApplication::restoreOverrideCursor();
+        if (!exported)
             QMessageBox::warning(this, tr("Export failed"), error);
         else
             QMessageBox::information(this, tr("Export finished"),
@@ -1004,7 +1038,9 @@ QWidget *SettingsDialog::buildStoragePage()
         ExportImportDialogs::ImportDialog dialog(this);
         if (dialog.exec() != QDialog::Accepted)
             return;
+        QGuiApplication::setOverrideCursor(Qt::WaitCursor);
         const auto result = m_ctx.io()->importFromFile(dialog.filePath(), dialog.mode());
+        QGuiApplication::restoreOverrideCursor();
         if (!result.ok) {
             QMessageBox::warning(this, tr("Import failed"), result.error);
             return;
@@ -1237,7 +1273,7 @@ QWidget *SettingsDialog::buildHotkeysPage()
     hotkeyForm->addRow(QString(), hotkeyHint);
     hotkeyLayout->addWidget(hotkeyBox);
     hotkeyLayout->addStretch(1);
-    return hotkeyPage;
+    return makeScrollable(hotkeyPage); // scrolls like every other page
 }
 
 // --- Platform & diagnostics (read-only status + bug report helper) -----------
@@ -1438,9 +1474,13 @@ void SettingsDialog::refreshDiagnostics()
         const QString cipher = m_ctx.storage()->cipherVersion();
         const bool avail = m_ctx.storage()->isSqlCipherAvailable();
         const bool enabled = m_ctx.settings()->encryptionEnabled();
-        QString txt = tr("KWallet: %1 · SQLCipher: %2 · cipher: %3 · enabled: %4")
-                          .arg(enc.walletStatusText(), avail ? tr("yes") : tr("no"), cipher.isEmpty() ? tr("n/a") : cipher, enabled ? tr("yes") : tr("no"));
+        const bool locked = m_ctx.storage()->requiresEncryptionKey();
+        const bool encrypted = m_ctx.storage()->isEncrypted() || locked;
+        QString txt = tr("KWallet: %1 · SQLCipher: %2 · cipher: %3 · enabled: %4 · database: %5")
+                          .arg(enc.walletStatusText(), avail ? tr("yes") : tr("no"), cipher.isEmpty() ? tr("n/a") : cipher, enabled ? tr("yes") : tr("no"),
+                               encrypted ? (locked ? tr("encrypted, locked") : tr("encrypted")) : tr("plaintext"));
         if (enabled && !avail) txt += tr(" — rebuild with -DEGOBOARD_USE_SQLCIPHER=ON + sqlcipher");
+        else if (locked && !enabled) txt += tr(" — re-enable encryption to unlock the database");
         m_encryptionStatus->setText(txt);
     }
     if (m_platformDetails) {
@@ -1736,7 +1776,7 @@ void SettingsDialog::save()
     if (m_ocrEnabled) m_ctx.settings()->setOcrEnabled(m_ocrEnabled->isChecked());
     if (m_ocrLang) m_ctx.settings()->setOcrLanguage(m_ocrLang->currentText());
     if (m_ocrMaxChars) m_ctx.settings()->setOcrMaxChars(m_ocrMaxChars->value());
-    if (m_encryptionEnabled) m_ctx.settings()->setEncryptionEnabled(m_encryptionEnabled->isChecked());
+    if (m_encryptionEnabled) applyEncryptionSetting();
     if (m_previewCode) m_ctx.settings()->setPreviewCodeHighlight(m_previewCode->isChecked());
     if (m_previewLinks) m_ctx.settings()->setPreviewLinkify(m_previewLinks->isChecked());
     if (m_previewColors) m_ctx.settings()->setPreviewColorSwatches(m_previewColors->isChecked());
@@ -1761,6 +1801,76 @@ void SettingsDialog::save()
         m_ctx.settings()->setToolbarIconOnly(m_toolbarIconOnly->isChecked());
     // transform/script hidden/disabled are saved immediately on toggle, but also save here
     refreshDiagnostics();
+}
+
+void SettingsDialog::applyEncryptionSetting()
+{
+    const bool wanted = m_encryptionEnabled->isChecked();
+    if (wanted == m_ctx.settings()->encryptionEnabled())
+        return;
+
+    if (!wanted) {
+        const bool encryptedOnDisk =
+            m_ctx.storage()->isEncrypted() || m_ctx.storage()->requiresEncryptionKey();
+        if (encryptedOnDisk
+            && QMessageBox::question(
+                   this, tr("Encryption"),
+                   tr("Decrypt the history database? The file becomes readable without KWallet."))
+                   != QMessageBox::Yes) {
+            m_encryptionEnabled->setChecked(true);
+            return;
+        }
+        if (encryptedOnDisk && m_ctx.storage()->requiresEncryptionKey()) {
+            // The file is locked (key not applied yet): unlock it before the rekey.
+            EncryptionManager enc;
+            QString key;
+            if (enc.readKey(&key) != EncryptionManager::Status::Ok
+                || !m_ctx.storage()->setEncryptionKey(key) || !m_ctx.storage()->verifyEncryptionKey()) {
+                QMessageBox::warning(this, tr("Encryption"),
+                                     tr("The database could not be unlocked for decryption; "
+                                        "encryption stays enabled."));
+                m_encryptionEnabled->setChecked(true);
+                return;
+            }
+        }
+        if (encryptedOnDisk && !m_ctx.storage()->changeEncryptionKey(QString())) {
+            QMessageBox::warning(this, tr("Encryption"),
+                                 tr("The database could not be decrypted; encryption stays enabled."));
+            m_encryptionEnabled->setChecked(true);
+            return;
+        }
+        m_ctx.settings()->setEncryptionEnabled(false);
+        return;
+    }
+
+    EncryptionManager enc;
+    QString key;
+    if (enc.readKey(&key) != EncryptionManager::Status::Ok || key.isEmpty()) {
+        // Enabling encryption without a stored key: create one on the spot so
+        // the database is never left encrypted with a key nobody can find.
+        key = EncryptionManager::generateKey();
+        if (enc.writeKey(key) != EncryptionManager::Status::Ok) {
+            QMessageBox::warning(this, tr("Encryption"),
+                                 tr("Could not store a key in KWallet: %1").arg(enc.walletStatusText()));
+            m_encryptionEnabled->setChecked(false);
+            return;
+        }
+    }
+
+    // A locked file only needs the key applied; a plaintext one is rekeyed in place.
+    const bool ok = m_ctx.storage()->requiresEncryptionKey()
+        ? m_ctx.storage()->setEncryptionKey(key) && m_ctx.storage()->verifyEncryptionKey()
+        : m_ctx.storage()->changeEncryptionKey(key);
+    if (!ok) {
+        QMessageBox::warning(this, tr("Encryption"),
+                             tr("The database could not be encrypted. A SQLCipher-enabled build is "
+                                "required (-DEGOBOARD_USE_SQLCIPHER=ON with the sqlcipher package)."));
+        m_encryptionEnabled->setChecked(false);
+        return;
+    }
+    m_ctx.settings()->setEncryptionEnabled(true);
+    QMessageBox::information(this, tr("Encryption"),
+                             tr("The history database is now encrypted; the key is stored in KWallet."));
 }
 
 void SettingsDialog::previewThemes()

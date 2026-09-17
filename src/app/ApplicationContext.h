@@ -43,6 +43,9 @@ public:
 
     void start();
     int smokeTest();
+    // Synthetic scale check (--bench): bulk-loads entries into a scratch
+    // database and reports page/FTS/insert/export timings against budgets.
+    int benchmark(int entryCount);
 
     SettingsManager *settings() const { return m_settings; }
     StorageManager *storage() const { return m_storage; }

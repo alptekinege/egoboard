@@ -4,6 +4,10 @@
 #include <QDateTime>
 #include <QIODevice>
 #include <QMimeData>
+#include <QSet>
+
+#include <algorithm>
+#include <functional>
 
 namespace {
 constexpr auto kEntryMime = "application/x-egoboard-entry-ids";
@@ -18,19 +22,108 @@ ClipboardListModel::ClipboardListModel(IClipboardStorage *storage, QObject *pare
 
 void ClipboardListModel::connectStorage()
 {
-    connect(m_storage, &IClipboardStorage::entryAdded, this, &ClipboardListModel::refresh);
-    connect(m_storage, &IClipboardStorage::entryTouched, this, &ClipboardListModel::refresh);
-    connect(m_storage, &IClipboardStorage::entriesRemoved, this, &ClipboardListModel::refresh);
+    if (!m_storage)
+        return;
+    connect(m_storage, &IClipboardStorage::entryAdded, this, &ClipboardListModel::onEntryAdded);
+    connect(m_storage, &IClipboardStorage::entryTouched, this, &ClipboardListModel::onEntryTouched);
+    connect(m_storage, &IClipboardStorage::entriesRemoved, this, &ClipboardListModel::onEntriesRemoved);
+    // A reset (import, clear) invalidates the whole window; reload from page 1.
     connect(m_storage, &IClipboardStorage::storageReset, this, &ClipboardListModel::refresh);
-    // Pinned toggles only change decoration, not order; repaint instead of reload.
-    connect(m_storage, &IClipboardStorage::pinnedChanged, this,
-            [this](qint64 id, bool pinned) {
-                const int row = rowForId(id);
-                if (row >= 0) {
-                    m_rows[row].pinned = pinned;
-                    emit dataChanged(index(row), index(row), {PinnedRole, Qt::DisplayRole});
-                }
-            });
+    connect(m_storage, &IClipboardStorage::pinnedChanged, this, &ClipboardListModel::onPinnedChanged);
+}
+
+void ClipboardListModel::onEntryAdded(qint64 id)
+{
+    if (!m_storage)
+        return;
+    // A new capture can only be spliced in at the top of an unfiltered Newest
+    // view; anything else may exclude or re-order it, so reload instead.
+    if (!m_filter.isTrivial()) {
+        refresh();
+        return;
+    }
+    ClipboardRecord summary;
+    if (!m_storage->fetchSummary(id, &summary))
+        return;
+    beginInsertRows({}, 0, 0);
+    m_rows.prepend(summary);
+    endInsertRows();
+}
+
+void ClipboardListModel::onEntryTouched(qint64 id)
+{
+    if (!m_storage)
+        return;
+    const int row = rowForId(id);
+    if (row < 0) {
+        // The entry is not in the loaded window; a filtered view may now
+        // include it, so reload there and leave the plain view alone.
+        if (!m_filter.isTrivial())
+            refresh();
+        return;
+    }
+    if (m_filter.sortMode != FilterSpec::SortMode::Newest) {
+        refresh(); // the touch changes the sort key, not just the row
+        return;
+    }
+    ClipboardRecord summary;
+    if (!m_storage->fetchSummary(id, &summary))
+        return;
+    replaceRow(row, summary);
+    if (row > 0) {
+        // A touch bumps the timestamp: it belongs at the top again.
+        beginMoveRows({}, row, row, {}, 0);
+        m_rows.move(row, 0);
+        endMoveRows();
+    }
+}
+
+void ClipboardListModel::onEntriesRemoved(const QList<qint64> &ids)
+{
+    if (ids.isEmpty())
+        return;
+    QSet<qint64> unique(ids.cbegin(), ids.cend());
+    QList<int> rows;
+    rows.reserve(unique.size());
+    for (const qint64 id : unique) {
+        const int row = rowForId(id);
+        if (row >= 0)
+            rows.append(row);
+    }
+    if (rows.isEmpty())
+        return;
+    std::sort(rows.begin(), rows.end(), std::greater<int>()); // descending
+    // Remove contiguous runs bottom-up so the earlier indices stay valid.
+    int i = 0;
+    while (i < rows.size()) {
+        const int last = rows.at(i);
+        int first = last;
+        while (i + 1 < rows.size() && rows.at(i + 1) == first - 1) {
+            ++i;
+            first = rows.at(i);
+        }
+        beginRemoveRows({}, first, last);
+        m_rows.remove(first, last - first + 1);
+        endRemoveRows();
+        ++i;
+    }
+}
+
+void ClipboardListModel::onPinnedChanged(qint64 id, bool pinned)
+{
+    const int row = rowForId(id);
+    if (row < 0)
+        return;
+    m_rows[row].pinned = pinned;
+    emit dataChanged(index(row), index(row), {PinnedRole, Qt::DisplayRole});
+}
+
+void ClipboardListModel::replaceRow(int row, const ClipboardRecord &record)
+{
+    if (row < 0 || row >= m_rows.size())
+        return;
+    m_rows[row] = record;
+    emit dataChanged(index(row), index(row));
 }
 
 int ClipboardListModel::rowCount(const QModelIndex &parent) const

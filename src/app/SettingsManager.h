@@ -26,6 +26,11 @@ public:
     explicit SettingsManager(QObject *parent = nullptr);
     ~SettingsManager() override;
 
+    // Settings schema version: [General] ConfigVersion in egoboardrc.
+    // Migrations are forward-only and run once when the file is loaded.
+    static int currentConfigVersion();
+    int configVersion() const;
+
     SettingsManager(const SettingsManager&) = delete;
     SettingsManager& operator=(const SettingsManager&) = delete;
     SettingsManager(SettingsManager&&) = delete;
@@ -211,6 +216,7 @@ signals:
 
 private:
     void save();
+    void migrateConfig(); // forward-only, runs once when the file is loaded
 
     KConfig *m_config = nullptr; // KConfig is not a QObject; owned manually
 };
