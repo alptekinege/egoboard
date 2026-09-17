@@ -1,5 +1,7 @@
 #include "SettingsManager.h"
 
+#include "ColorSchemeIndex.h"
+#include "IconThemeIndex.h"
 #include "SensitiveDataDetector.h"
 
 #include <KConfig>
@@ -468,18 +470,31 @@ void SettingsManager::setNotificationsEnabled(bool enabled)
 
 QString SettingsManager::theme() const
 {
+    // Theme ids are checked against the color schemes actually installed: a
+    // scheme that was uninstalled since the last run collapses to "system".
     const QString v = m_config->group(kGroupUi).readEntry("Theme", QStringLiteral("system"));
-    if (v == QLatin1String("light") || v == QLatin1String("dark"))
-        return v;
-    return QStringLiteral("system");
+    return ColorSchemeIndex::isValid(v) ? v : QStringLiteral("system");
 }
 
 void SettingsManager::setTheme(const QString &theme)
 {
-    QString v = theme;
-    if (v != QLatin1String("light") && v != QLatin1String("dark"))
-        v = QStringLiteral("system");
+    const QString v = ColorSchemeIndex::isValid(theme) ? theme : QStringLiteral("system");
     m_config->group(kGroupUi).writeEntry("Theme", v);
+    save();
+}
+
+QString SettingsManager::iconTheme() const
+{
+    // Same rule as the color scheme: only icon themes that are actually
+    // installed stay selected, anything else follows the desktop again.
+    const QString v = m_config->group(kGroupUi).readEntry("IconTheme", QStringLiteral("system"));
+    return IconThemeIndex::isValid(v) ? v : QStringLiteral("system");
+}
+
+void SettingsManager::setIconTheme(const QString &theme)
+{
+    const QString v = IconThemeIndex::isValid(theme) ? theme : QStringLiteral("system");
+    m_config->group(kGroupUi).writeEntry("IconTheme", v);
     save();
 }
 

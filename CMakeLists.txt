@@ -14,6 +14,7 @@ set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Sql DBus Concurrent Network WaylandClient Qml)
 find_package(KF6Config 6.0 REQUIRED)
+find_package(KF6ConfigWidgets 6.0 REQUIRED) # KColorScheme: reads *.colors schemes
 find_package(KF6GlobalAccel 6.0 REQUIRED)
 find_package(KF6Notifications 6.0 REQUIRED)
 find_package(KF6StatusNotifierItem 6.0 REQUIRED)
@@ -87,7 +88,10 @@ add_executable(egoboard
     src/app/ApplicationContext.cpp
     src/app/SingleInstanceGuard.cpp
     src/app/SettingsManager.cpp
+    src/app/ColorSchemeIndex.cpp
     src/app/ThemeManager.cpp
+    src/app/IconThemeIndex.cpp
+    src/app/IconThemeManager.cpp
     src/app/LayerShellHelper.cpp
     src/app/KWinCursorTracker.cpp
     src/app/WlrDataControlHelper.cpp
@@ -135,6 +139,7 @@ target_link_libraries(egoboard PRIVATE
     egoboard::core
     Qt6::Gui Qt6::Widgets Qt6::DBus Qt6::Concurrent Qt6::Network Qt6::WaylandClient Qt6::Qml
     KF6::ConfigCore
+    KF6::ConfigWidgets
     KF6::GlobalAccel
     KF6::Notifications
     KF6::StatusNotifierItem

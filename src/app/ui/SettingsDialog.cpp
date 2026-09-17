@@ -1,7 +1,9 @@
 #include "SettingsDialog.h"
 
 #include "../ApplicationContext.h"
+#include "../ColorSchemeIndex.h"
 #include "../HotkeyManager.h"
+#include "../IconThemeIndex.h"
 #include "../LayerShellHelper.h"
 #include "../WlrDataControlHelper.h"
 #include "../EncryptionManager.h"
@@ -261,9 +263,22 @@ QWidget *SettingsDialog::buildGeneralPage()
     appearanceForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     m_themeCombo = new QComboBox(appearanceBox);
     m_themeCombo->addItem(tr("System (follow desktop)"), QStringLiteral("system"));
-    m_themeCombo->addItem(tr("Light"), QStringLiteral("light"));
-    m_themeCombo->addItem(tr("Dark"), QStringLiteral("dark"));
+    // One entry per installed KDE color scheme, discovered from the same XDG
+    // directories Plasma reads — schemes the user installs later show up here
+    // without any change to this dialog.
+    const QVector<ColorSchemeIndex::Entry> schemes = ColorSchemeIndex::scan();
+    for (const ColorSchemeIndex::Entry &scheme : schemes)
+        m_themeCombo->addItem(scheme.name, scheme.id);
     appearanceForm->addRow(tr("Color theme:"), m_themeCombo);
+    m_iconThemeCombo = new QComboBox(appearanceBox);
+    m_iconThemeCombo->addItem(tr("System (follow desktop)"), QStringLiteral("system"));
+    // Same discovery as the color themes: every icon theme installed on the
+    // machine (system-wide or per-user) can be picked, no code change needed.
+    const QVector<IconThemeIndex::Entry> iconThemes = IconThemeIndex::scan();
+    for (const IconThemeIndex::Entry &iconTheme : iconThemes)
+        m_iconThemeCombo->addItem(iconTheme.name, iconTheme.id);
+    m_iconThemeCombo->setToolTip(tr("Icons are drawn from this KDE icon theme — toolbar, menus, list entries and dialogs all follow it."));
+    appearanceForm->addRow(tr("Icon theme:"), m_iconThemeCombo);
     m_densityCombo = new QComboBox(appearanceBox);
     m_densityCombo->addItem(tr("Compact"), QStringLiteral("compact"));
     m_densityCombo->addItem(tr("Comfortable"), QStringLiteral("comfortable"));
@@ -280,7 +295,7 @@ QWidget *SettingsDialog::buildGeneralPage()
     m_toolbarIconOnly = new QCheckBox(tr("Show toolbar buttons as icons only (compact)"), appearanceBox);
     m_toolbarIconOnly->setToolTip(tr("Toolbar buttons appear as logos only — hover for the label. Text+icon otherwise. Takes effect immediately, also while the window is open."));
     appearanceLayout->addWidget(m_toolbarIconOnly);
-    appearanceLayout->addWidget(makeHint(tr("Light and Dark apply a palette on top of the current style; System restores the desktop theme. Applies immediately to the whole app and is remembered across restarts."), appearanceBox));
+    appearanceLayout->addWidget(makeHint(tr("Color themes are the KDE color schemes (<code>color-schemes</code> dirs) and icon themes installed on this system; System follows whichever Plasma has active. Applies immediately to the whole app and is remembered across restarts."), appearanceBox));
     layout->addWidget(appearanceBox);
 
     auto *pastingBox = new QGroupBox(tr("Pasting"), page);
@@ -1491,8 +1506,17 @@ void SettingsDialog::load()
     }
     if (m_clock24h) m_clock24h->setChecked(m_ctx.settings()->clock24h());
     if (m_themeCombo) {
-        const int idx = m_themeCombo->findData(m_ctx.settings()->theme());
+        // A stored legacy "light"/"dark" id has no combo entry; preselect the
+        // scheme it resolves to so the combo shows what is actually applied.
+        const QString stored = m_ctx.settings()->theme();
+        int idx = m_themeCombo->findData(stored);
+        if (idx < 0)
+            idx = m_themeCombo->findData(ColorSchemeIndex::resolvedId(stored));
         if (idx >= 0) m_themeCombo->setCurrentIndex(idx);
+    }
+    if (m_iconThemeCombo) {
+        const int idx = m_iconThemeCombo->findData(m_ctx.settings()->iconTheme());
+        if (idx >= 0) m_iconThemeCombo->setCurrentIndex(idx);
     }
     if (m_toolbarIconOnly)
         m_toolbarIconOnly->setChecked(m_ctx.settings()->toolbarIconOnly());
@@ -1564,6 +1588,8 @@ void SettingsDialog::save()
     if (m_clock24h) m_ctx.settings()->setClock24h(m_clock24h->isChecked());
     if (m_themeCombo)
         m_ctx.settings()->setTheme(m_themeCombo->currentData().toString());
+    if (m_iconThemeCombo)
+        m_ctx.settings()->setIconTheme(m_iconThemeCombo->currentData().toString());
     if (m_toolbarIconOnly)
         m_ctx.settings()->setToolbarIconOnly(m_toolbarIconOnly->isChecked());
     // transform/script hidden/disabled are saved immediately on toggle, but also save here

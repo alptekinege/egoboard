@@ -62,6 +62,7 @@ private:
     QComboBox *m_trayMode = nullptr;
     QCheckBox *m_notifications = nullptr;
     QComboBox *m_themeCombo = nullptr;
+    QComboBox *m_iconThemeCombo = nullptr;
     QComboBox *m_densityCombo = nullptr;
     QCheckBox *m_toolbarIconOnly = nullptr;
     QCheckBox *m_closeAfterPaste = nullptr;

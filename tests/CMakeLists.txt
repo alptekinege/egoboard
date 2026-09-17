@@ -15,21 +15,22 @@ egoboard_add_test(tst_storage)
 egoboard_add_test(tst_schema)
 egoboard_add_test(tst_vacuum)
 # Auto-paste MIME reconstruction is headless-safe with the offscreen platform
-add_executable(tst_autopaster tst_autopaster.cpp ../src/app/AutoPaster.cpp ../src/app/ClipboardWatcher.cpp ../src/app/SettingsManager.cpp)
+add_executable(tst_autopaster tst_autopaster.cpp ../src/app/AutoPaster.cpp ../src/app/ClipboardWatcher.cpp ../src/app/SettingsManager.cpp ../src/app/ColorSchemeIndex.cpp ../src/app/IconThemeIndex.cpp)
 target_include_directories(tst_autopaster PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(tst_autopaster PRIVATE egoboard::core Qt6::Gui Qt6::Widgets Qt6::Test KF6::ConfigCore KF6::Notifications)
 target_compile_options(tst_autopaster PRIVATE -Wall -Wextra)
 add_test(NAME tst_autopaster COMMAND tst_autopaster)
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets)
-add_executable(tst_ui tst_ui.cpp ../src/app/ThemeManager.cpp ../src/app/ui/CodePreviewHighlighter.cpp)
+find_package(KF6ConfigWidgets 6.0 REQUIRED) # KColorScheme, used to build theme expectations
+add_executable(tst_ui tst_ui.cpp ../src/app/ThemeManager.cpp ../src/app/ColorSchemeIndex.cpp ../src/app/IconThemeManager.cpp ../src/app/IconThemeIndex.cpp ../src/app/ui/CodePreviewHighlighter.cpp)
 target_include_directories(tst_ui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/app/ui ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
-target_link_libraries(tst_ui PRIVATE Qt6::Widgets Qt6::Gui Qt6::Test)
+target_link_libraries(tst_ui PRIVATE Qt6::Widgets Qt6::Gui Qt6::Test KF6::ConfigCore KF6::ConfigWidgets)
 target_compile_options(tst_ui PRIVATE -Wall -Wextra)
 add_test(NAME tst_ui COMMAND tst_ui)
 
 # Clipboard classification and privacy-policy tests use the offscreen QClipboard
-add_executable(tst_clipboardwatcher tst_clipboardwatcher.cpp ../src/app/ClipboardWatcher.cpp ../src/app/SettingsManager.cpp)
+add_executable(tst_clipboardwatcher tst_clipboardwatcher.cpp ../src/app/ClipboardWatcher.cpp ../src/app/SettingsManager.cpp ../src/app/ColorSchemeIndex.cpp ../src/app/IconThemeIndex.cpp)
 target_include_directories(tst_clipboardwatcher PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(tst_clipboardwatcher PRIVATE egoboard::core Qt6::Gui Qt6::Test KF6::ConfigCore)
 target_compile_options(tst_clipboardwatcher PRIVATE -Wall -Wextra)
@@ -45,9 +46,9 @@ add_test(NAME tst_ocrworker COMMAND tst_ocrworker)
 
 egoboard_add_test(tst_sensitive)
 egoboard_add_test(tst_expire)
-target_sources(tst_expire PRIVATE ../src/app/ExpireScheduler.cpp ../src/app/SettingsManager.cpp)
+target_sources(tst_expire PRIVATE ../src/app/ExpireScheduler.cpp ../src/app/SettingsManager.cpp ../src/app/ColorSchemeIndex.cpp ../src/app/IconThemeIndex.cpp)
 target_include_directories(tst_expire PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src)
-target_link_libraries(tst_expire PRIVATE KF6::ConfigCore)
+target_link_libraries(tst_expire PRIVATE KF6::ConfigCore Qt6::Gui)
 
 egoboard_add_test(tst_bookmarks)
 egoboard_add_test(tst_exportimport)
@@ -71,9 +72,9 @@ target_link_libraries(tst_singleinstance PRIVATE Qt6::Core Qt6::Network Qt6::Tes
 target_compile_options(tst_singleinstance PRIVATE -Wall -Wextra)
 add_test(NAME tst_singleinstance COMMAND tst_singleinstance)
 
-add_executable(tst_settings tst_settings.cpp ../src/app/SettingsManager.cpp)
+add_executable(tst_settings tst_settings.cpp ../src/app/SettingsManager.cpp ../src/app/ColorSchemeIndex.cpp ../src/app/IconThemeIndex.cpp)
 target_include_directories(tst_settings PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
-target_link_libraries(tst_settings PRIVATE egoboard::core Qt6::Test KF6::ConfigCore)
+target_link_libraries(tst_settings PRIVATE egoboard::core Qt6::Test Qt6::Gui KF6::ConfigCore)
 target_compile_options(tst_settings PRIVATE -Wall -Wextra)
 add_test(NAME tst_settings COMMAND tst_settings)
 
@@ -100,7 +101,7 @@ add_test(NAME tst_layershell COMMAND tst_layershell)
 find_package(Qt6 6.8 REQUIRED COMPONENTS WaylandClient)
 find_package(KF6Config 6.0 QUIET)
 pkg_check_modules(WAYLAND_CLIENT QUIET IMPORTED_TARGET wayland-client)
-add_executable(tst_datacontrol tst_datacontrol.cpp ../src/app/WlrDataControlHelper.cpp ../src/app/SettingsManager.cpp)
+add_executable(tst_datacontrol tst_datacontrol.cpp ../src/app/WlrDataControlHelper.cpp ../src/app/SettingsManager.cpp ../src/app/ColorSchemeIndex.cpp ../src/app/IconThemeIndex.cpp)
 target_include_directories(tst_datacontrol PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/app
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/core

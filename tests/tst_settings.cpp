@@ -1,9 +1,12 @@
 #include <QtTest>
 
+#include "ColorSchemeIndex.h"
+#include "IconThemeIndex.h"
 #include "SettingsManager.h"
 
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QVector>
 
 class TestSettings : public QObject
 {
@@ -21,6 +24,8 @@ private slots:
     void ignoredSourceAppsWildcardMatching();
     void boundsAndLimits();
     void normalizesCollectionsAndUiValues();
+    void themeIdsValidateAgainstInstalledSchemes();
+    void iconThemeIdsValidateAgainstInstalledThemes();
     void persistsAcrossInstances();
 
 private:
@@ -47,6 +52,7 @@ void TestSettings::defaultValues()
     QCOMPARE(settings.diskCapBytes(), qint64(0));
     QCOMPARE(settings.maxEntries(), 0);
     QCOMPARE(settings.theme(), QStringLiteral("system"));
+    QCOMPARE(settings.iconTheme(), QStringLiteral("system"));
     QCOMPARE(settings.toolbarIconOnly(), false);
     QCOMPARE(settings.timelineEnabled(), true);
     QCOMPARE(settings.closeAfterPaste(), true);
@@ -316,6 +322,48 @@ void TestSettings::normalizesCollectionsAndUiValues()
     QCOMPARE(settings.ocrMaxChars(), 512);
     settings.setOcrMaxChars(100000);
     QCOMPARE(settings.ocrMaxChars(), 65536);
+}
+
+void TestSettings::themeIdsValidateAgainstInstalledSchemes()
+{
+    SettingsManager settings;
+
+    // "system" and the legacy presets are always accepted.
+    settings.setTheme(QStringLiteral("system"));
+    QCOMPARE(settings.theme(), QStringLiteral("system"));
+    settings.setTheme(QStringLiteral("light"));
+    QCOMPARE(settings.theme(), QStringLiteral("light"));
+
+    // An installed KDE color scheme round-trips verbatim...
+    const QVector<ColorSchemeIndex::Entry> schemes = ColorSchemeIndex::scan();
+    if (!schemes.isEmpty()) {
+        settings.setTheme(schemes.first().id);
+        QCOMPARE(settings.theme(), schemes.first().id);
+    }
+
+    // ...while an id with no scheme behind it collapses back to "system".
+    settings.setTheme(QStringLiteral("definitely-not-a-color-scheme"));
+    QCOMPARE(settings.theme(), QStringLiteral("system"));
+}
+
+void TestSettings::iconThemeIdsValidateAgainstInstalledThemes()
+{
+    SettingsManager settings;
+
+    // "system" follows the desktop icon theme.
+    settings.setIconTheme(QStringLiteral("system"));
+    QCOMPARE(settings.iconTheme(), QStringLiteral("system"));
+
+    // An installed icon theme round-trips verbatim...
+    const QVector<IconThemeIndex::Entry> themes = IconThemeIndex::scan();
+    if (!themes.isEmpty()) {
+        settings.setIconTheme(themes.first().id);
+        QCOMPARE(settings.iconTheme(), themes.first().id);
+    }
+
+    // ...while an id with no theme behind it collapses back to "system".
+    settings.setIconTheme(QStringLiteral("definitely-not-an-icon-theme"));
+    QCOMPARE(settings.iconTheme(), QStringLiteral("system"));
 }
 
 void TestSettings::persistsAcrossInstances()

@@ -7,6 +7,7 @@
 #include "ExpireScheduler.h"
 #include "ExportImportManager.h"
 #include "HotkeyManager.h"
+#include "IconThemeManager.h"
 #include "KWinCursorTracker.h"
 #include "LayerShellHelper.h"
 #include "WlrDataControlHelper.h"
@@ -27,6 +28,7 @@
 
 #include <KNotification>
 
+#include <QApplication>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -38,6 +40,7 @@
 #include <QStandardPaths>
 #include <QTextDocument>
 #include <QTimer>
+#include <QWidget>
 
 #include <memory>
 
@@ -199,7 +202,13 @@ void ApplicationContext::start()
     m_expire->start();
     connect(m_settings, &SettingsManager::changed, this, [this] {
         m_watcher->setDebounceInterval(m_settings->debounceMs());
-        ThemeManager::apply(m_settings->theme(), m_settings);
+        ThemeManager::apply(m_settings->theme());
+        IconThemeManager::apply(m_settings->iconTheme());
+        // Theme icons are re-resolved on the next paint, so nudge the widgets
+        // that are on screen (settings dialog included) to pick them up now.
+        const auto widgets = QApplication::allWidgets();
+        for (QWidget *widget : widgets)
+            widget->update();
     });
 
     connect(m_hotkeys, &HotkeyManager::toggleRequested, this,
@@ -221,7 +230,8 @@ void ApplicationContext::start()
     m_watcher->start();
     m_dataControl->start();
     // Apply the configured theme before any window is shown.
-    ThemeManager::apply(m_settings->theme(), m_settings);
+    ThemeManager::apply(m_settings->theme());
+    IconThemeManager::apply(m_settings->iconTheme());
     if (m_settings->startVisible())
         m_window->show();
 

@@ -126,8 +126,10 @@ public:
     void setNotificationsEnabled(bool enabled);
 
     // Appearance
-    QString theme() const; // "system" | "light" | "dark"
+    QString theme() const; // "system" | "light" | "dark" | installed color scheme id
     void setTheme(const QString &theme);
+    QString iconTheme() const; // "system" | installed icon theme id
+    void setIconTheme(const QString &theme);
     bool toolbarIconOnly() const; // main-window toolbar buttons show icons only
     void setToolbarIconOnly(bool iconOnly);
 
