@@ -22,6 +22,10 @@ const QString kGroupUi = QStringLiteral("Ui");
 
 constexpr int kDefaultQuickPasteCount = 9;
 constexpr int kDefaultDebounceMs = 250;
+// Text size can be nudged up for readability, but not far enough to wreck the
+// carefully sized list rows and toolbar.
+constexpr int kMinFontPointDelta = -2;
+constexpr int kMaxFontPointDelta = 6;
 constexpr qint64 kDefaultMaxItemBytes = 5 * 1024 * 1024; // 5 MiB
 constexpr qint64 kDefaultMaxImageBytes = 8 * 1024 * 1024; // 8 MiB
 constexpr qint64 kDefaultDiskCapBytes = 0; // unlimited
@@ -29,6 +33,14 @@ constexpr int kDefaultOcrMaxChars = 8192;
 
 constexpr SettingsManager::SensitiveMode kDefaultSensitiveMode =
     SettingsManager::SensitiveMode::Exclude;
+
+// Colors are stored as "#rrggbb". Anything unparsable reads back as "follow the
+// color scheme", so a hand-edited config cannot blank out the UI text.
+QString normalizedColor(const QString &value)
+{
+    const QColor color = QColor::fromString(value);
+    return color.isValid() ? color.name(QColor::HexRgb) : QString();
+}
 } // namespace
 
 SettingsManager::SettingsManager(QObject *parent)
@@ -496,6 +508,52 @@ void SettingsManager::setIconTheme(const QString &theme)
     const QString v = IconThemeIndex::isValid(theme) ? theme : QStringLiteral("system");
     m_config->group(kGroupUi).writeEntry("IconTheme", v);
     save();
+}
+
+int SettingsManager::fontPointDelta() const
+{
+    return qBound(kMinFontPointDelta, m_config->group(kGroupUi).readEntry("FontPointDelta", 0),
+                  kMaxFontPointDelta);
+}
+
+void SettingsManager::setFontPointDelta(int delta)
+{
+    m_config->group(kGroupUi).writeEntry("FontPointDelta",
+                                         qBound(kMinFontPointDelta, delta, kMaxFontPointDelta));
+    save();
+}
+
+QString SettingsManager::textColor() const
+{
+    return normalizedColor(m_config->group(kGroupUi).readEntry("TextColor", QString()));
+}
+
+void SettingsManager::setTextColor(const QString &color)
+{
+    m_config->group(kGroupUi).writeEntry("TextColor", normalizedColor(color));
+    save();
+}
+
+QString SettingsManager::dimTextColor() const
+{
+    return normalizedColor(m_config->group(kGroupUi).readEntry("DimTextColor", QString()));
+}
+
+void SettingsManager::setDimTextColor(const QString &color)
+{
+    m_config->group(kGroupUi).writeEntry("DimTextColor", normalizedColor(color));
+    save();
+}
+
+TextAppearance::Overrides SettingsManager::textAppearance() const
+{
+    TextAppearance::Overrides overrides;
+    overrides.fontPointDelta = fontPointDelta();
+    overrides.textColor = QColor::fromString(textColor());
+    overrides.customText = overrides.textColor.isValid();
+    overrides.dimTextColor = QColor::fromString(dimTextColor());
+    overrides.customDimText = overrides.dimTextColor.isValid();
+    return overrides;
 }
 
 bool SettingsManager::toolbarIconOnly() const

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ExpirePolicy.h"
+#include "TextAppearance.h"
 
 #include <memory>
 #include <QList>
@@ -130,6 +131,15 @@ public:
     void setTheme(const QString &theme);
     QString iconTheme() const; // "system" | installed icon theme id
     void setIconTheme(const QString &theme);
+    // Text readability: size delta plus optional color overrides.
+    int fontPointDelta() const; // -2..+6 pt, 0 = platform default
+    void setFontPointDelta(int delta);
+    QString textColor() const; // "#rrggbb", empty = follow the color scheme
+    void setTextColor(const QString &color);
+    QString dimTextColor() const; // secondary text, empty = follow the color scheme
+    void setDimTextColor(const QString &color);
+    // Everything the theme applier needs to keep the UI readable.
+    TextAppearance::Overrides textAppearance() const;
     bool toolbarIconOnly() const; // main-window toolbar buttons show icons only
     void setToolbarIconOnly(bool iconOnly);
 

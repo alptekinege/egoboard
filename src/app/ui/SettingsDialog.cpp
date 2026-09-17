@@ -10,6 +10,7 @@
 #include "../ScriptActionManager.h"
 #include "../SettingsManager.h"
 #include "../OcrWorker.h"
+#include "AppearancePreview.h"
 #include "SnippetManager.h"
 #include "StorageManager.h"
 #include "TransformEngine.h"
@@ -20,11 +21,14 @@
 
 #include <QClipboard>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QGuiApplication>
+#include <QIcon>
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QPointer>
 
+#include <KColorButton>
 #include <KGlobalAccel>
 #include <KKeySequenceWidget>
 
@@ -182,6 +186,16 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
     layout->addWidget(buttons);
 
     load();
+    // Live preview for the appearance combos; connected after load() so filling
+    // them does not fire a preview. Cancel restores the stored combination.
+    connect(m_themeCombo, &QComboBox::currentIndexChanged, this, [this](int) { previewThemes(); });
+    connect(m_iconThemeCombo, &QComboBox::currentIndexChanged, this, [this](int) { previewThemes(); });
+    connect(this, &QDialog::rejected, this, [this] {
+        // Cancel: put the stored theme pair back (the text controls save as they
+        // are changed, so only the combos need restoring).
+        m_ctx.applyThemes(m_ctx.settings()->theme(), m_ctx.settings()->iconTheme(),
+                          m_ctx.settings()->textAppearance(), /*force=*/true);
+    });
     // Defer heavy work — constructor must not block UI (tesseract/kwin probes + DB)
     QTimer::singleShot(0, this, &SettingsDialog::refreshDiagnostics);
     // Populate dynamic lists after load (also deferred to keep open instant)
@@ -279,6 +293,62 @@ QWidget *SettingsDialog::buildGeneralPage()
         m_iconThemeCombo->addItem(iconTheme.name, iconTheme.id);
     m_iconThemeCombo->setToolTip(tr("Icons are drawn from this KDE icon theme — toolbar, menus, list entries and dialogs all follow it."));
     appearanceForm->addRow(tr("Icon theme:"), m_iconThemeCombo);
+
+    // Text readability: size and color knobs for schemes whose text is hard to
+    // read. These three save as you change them (the preview below updates with
+    // the palette), unlike the theme combos, which preview until OK/Apply.
+    m_fontSize = new QSpinBox(appearanceBox);
+    m_fontSize->setRange(-2, 6);
+    m_fontSize->setSuffix(tr(" pt"));
+    m_fontSize->setSpecialValueText(tr("Default"));
+    m_fontSize->setToolTip(tr("Shifts the whole UI font size — useful when a theme renders text too small to read."));
+    appearanceForm->addRow(tr("Text size:"), m_fontSize);
+
+    const auto makeColorRow = [&](QComboBox **combo, KColorButton **button, const QString &tooltip) {
+        auto *row = new QWidget(appearanceBox);
+        auto *layout = new QHBoxLayout(row);
+        layout->setContentsMargins(0, 0, 0, 0);
+        *combo = new QComboBox(row);
+        (*combo)->addItem(tr("Theme (contrast-checked)"), QStringLiteral("theme"));
+        (*combo)->addItem(tr("Custom…"), QStringLiteral("custom"));
+        (*combo)->setToolTip(tooltip);
+        *button = new KColorButton(row);
+        (*button)->setToolTip(tooltip);
+        layout->addWidget(*combo, 1);
+        layout->addWidget(*button);
+        return row;
+    };
+    appearanceForm->addRow(tr("Text color:"), makeColorRow(&m_textColorCombo, &m_textColorButton,
+        tr("Main text in lists, labels and buttons. \"Theme\" keeps the scheme's color but raises it until it is readable.")));
+    appearanceForm->addRow(tr("Secondary text:"), makeColorRow(&m_dimTextColorCombo, &m_dimTextColorButton,
+        tr("Timestamps, source apps, hints and placeholders — the small print.")));
+
+    connect(m_fontSize, &QSpinBox::valueChanged, this, [this](int delta) {
+        m_ctx.settings()->setFontPointDelta(delta);
+    });
+    connect(m_textColorCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        const bool custom = m_textColorCombo->currentData().toString() == QLatin1String("custom");
+        m_textColorButton->setEnabled(custom);
+        m_ctx.settings()->setTextColor(custom ? m_textColorButton->color().name() : QString());
+    });
+    connect(m_textColorButton, &KColorButton::changed, this, [this](const QColor &color) {
+        if (m_textColorCombo->currentData().toString() == QLatin1String("custom"))
+            m_ctx.settings()->setTextColor(color.name());
+    });
+    connect(m_dimTextColorCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        const bool custom = m_dimTextColorCombo->currentData().toString() == QLatin1String("custom");
+        m_dimTextColorButton->setEnabled(custom);
+        m_ctx.settings()->setDimTextColor(custom ? m_dimTextColorButton->color().name() : QString());
+    });
+    connect(m_dimTextColorButton, &KColorButton::changed, this, [this](const QColor &color) {
+        if (m_dimTextColorCombo->currentData().toString() == QLatin1String("custom"))
+            m_ctx.settings()->setDimTextColor(color.name());
+    });
+
+    auto *previewHint = new QLabel(tr("Preview — the rows, hint and placeholder text as the app draws them:"), appearanceBox);
+    previewHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+    appearanceLayout->addWidget(previewHint);
+    appearanceLayout->addWidget(new AppearancePreview(appearanceBox));
     m_densityCombo = new QComboBox(appearanceBox);
     m_densityCombo->addItem(tr("Compact"), QStringLiteral("compact"));
     m_densityCombo->addItem(tr("Comfortable"), QStringLiteral("comfortable"));
@@ -295,7 +365,7 @@ QWidget *SettingsDialog::buildGeneralPage()
     m_toolbarIconOnly = new QCheckBox(tr("Show toolbar buttons as icons only (compact)"), appearanceBox);
     m_toolbarIconOnly->setToolTip(tr("Toolbar buttons appear as logos only — hover for the label. Text+icon otherwise. Takes effect immediately, also while the window is open."));
     appearanceLayout->addWidget(m_toolbarIconOnly);
-    appearanceLayout->addWidget(makeHint(tr("Color themes are the KDE color schemes (<code>color-schemes</code> dirs) and icon themes installed on this system; System follows whichever Plasma has active. Applies immediately to the whole app and is remembered across restarts."), appearanceBox));
+    appearanceLayout->addWidget(makeHint(tr("Color themes are the KDE color schemes (<code>color-schemes</code> dirs) and icon themes installed on this system; System follows whichever Plasma has active. Themes preview live and apply on OK/Apply; text size and colors take effect as you change them. Text colors marked \"contrast-checked\" keep the scheme's color but raise it until it is readable."), appearanceBox));
     layout->addWidget(appearanceBox);
 
     auto *pastingBox = new QGroupBox(tr("Pasting"), page);
@@ -1373,6 +1443,18 @@ void SettingsDialog::refreshDiagnostics()
         diag += QStringLiteral("OCR: %1 lang=%2 maxChars=%3\n").arg(OcrWorker::isAvailable()?QStringLiteral("available"):QStringLiteral("missing"), m_ctx.settings()->ocrLanguage()).arg(m_ctx.settings()->ocrMaxChars());
         diag += QStringLiteral("Encryption: %1 enabled=%2 sqlcipher=%3 cipher=%4\n").arg(EncryptionManager{}.walletStatusText(), m_ctx.settings()->encryptionEnabled() ? QStringLiteral("yes") : QStringLiteral("no"), m_ctx.storage()->isSqlCipherAvailable() ? QStringLiteral("yes") : QStringLiteral("no"), m_ctx.storage()->cipherVersion());
         diag += QStringLiteral("Preview: codeHighlight=%1 linkify=%2 colorSwatches=%3\n").arg(m_ctx.settings()->previewCodeHighlight() ? QStringLiteral("on") : QStringLiteral("off")).arg(m_ctx.settings()->previewLinkify() ? QStringLiteral("on") : QStringLiteral("off")).arg(m_ctx.settings()->previewColorSwatches() ? QStringLiteral("on") : QStringLiteral("off"));
+        // Which theme is stored, which file it comes from, and which icon theme
+        // Qt actually has active (the fallback covers icons a theme lacks).
+        const QString schemePath = ColorSchemeIndex::filePath(m_ctx.settings()->theme());
+        diag += QStringLiteral("Themes: color=%1 source=%2 icon=%3 active=%4 fallback=%5 text=%6 dim=%7 font=%8pt\n")
+                    .arg(m_ctx.settings()->theme(),
+                         schemePath.isEmpty() ? QStringLiteral("style-palette") : QFileInfo(schemePath).fileName(),
+                         m_ctx.settings()->iconTheme(),
+                         QIcon::themeName().isEmpty() ? QStringLiteral("none") : QIcon::themeName(),
+                         IconThemeIndex::fallbackId().isEmpty() ? QStringLiteral("none") : IconThemeIndex::fallbackId(),
+                         m_ctx.settings()->textColor().isEmpty() ? QStringLiteral("theme") : m_ctx.settings()->textColor(),
+                         m_ctx.settings()->dimTextColor().isEmpty() ? QStringLiteral("theme") : m_ctx.settings()->dimTextColor())
+                    .arg(m_ctx.settings()->fontPointDelta());
         diag += QStringLiteral("Platform: %1\n").arg(LayerShellHelper::diagnostics().remove(QRegularExpression(QStringLiteral("<[^>]*>"))));
         diag += QStringLiteral("DataControl: %1\n").arg(m_ctx.dataControl() ? m_ctx.dataControl()->diagnostics().remove(QRegularExpression(QStringLiteral("<[^>]*>"))) : QStringLiteral("n/a"));
         diag += QStringLiteral("Settings: debounce=%1 quickPaste=%2 maxItem=%3 maxImage=%4 diskCap=%5 maxEntries=%6\n")
@@ -1518,6 +1600,28 @@ void SettingsDialog::load()
         const int idx = m_iconThemeCombo->findData(m_ctx.settings()->iconTheme());
         if (idx >= 0) m_iconThemeCombo->setCurrentIndex(idx);
     }
+    // Text readability controls save on change, so loading them must not emit.
+    if (m_fontSize) {
+        m_fontSize->blockSignals(true);
+        m_fontSize->setValue(m_ctx.settings()->fontPointDelta());
+        m_fontSize->blockSignals(false);
+    }
+    // With no stored color the row follows the scheme; the swatch then shows the
+    // color the theme currently produces, so picking "Custom" starts from it.
+    const auto loadColorRow = [this](QComboBox *combo, KColorButton *button, const QString &stored,
+                                     QPalette::ColorRole themeRole) {
+        if (!combo || !button)
+            return;
+        const bool custom = !stored.isEmpty();
+        combo->blockSignals(true);
+        combo->setCurrentIndex(custom ? 1 : 0);
+        combo->blockSignals(false);
+        button->setColor(custom ? QColor::fromString(stored) : qApp->palette().color(themeRole));
+        button->setEnabled(custom);
+    };
+    loadColorRow(m_textColorCombo, m_textColorButton, m_ctx.settings()->textColor(), QPalette::Text);
+    loadColorRow(m_dimTextColorCombo, m_dimTextColorButton, m_ctx.settings()->dimTextColor(),
+                 QPalette::Mid);
     if (m_toolbarIconOnly)
         m_toolbarIconOnly->setChecked(m_ctx.settings()->toolbarIconOnly());
 }
@@ -1594,6 +1698,17 @@ void SettingsDialog::save()
         m_ctx.settings()->setToolbarIconOnly(m_toolbarIconOnly->isChecked());
     // transform/script hidden/disabled are saved immediately on toggle, but also save here
     refreshDiagnostics();
+}
+
+void SettingsDialog::previewThemes()
+{
+    if (!m_themeCombo || !m_iconThemeCombo)
+        return;
+    // Applied but not saved: OK/Apply persists through save(), Cancel puts the
+    // stored pair back (see the rejected handler in the constructor).
+    m_ctx.applyThemes(m_themeCombo->currentData().toString(),
+                      m_iconThemeCombo->currentData().toString(),
+                      m_ctx.settings()->textAppearance());
 }
 
 void SettingsDialog::updateRedactUi()

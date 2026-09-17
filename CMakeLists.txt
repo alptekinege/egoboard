@@ -15,6 +15,7 @@ set(CMAKE_AUTORCC ON)
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Sql DBus Concurrent Network WaylandClient Qml)
 find_package(KF6Config 6.0 REQUIRED)
 find_package(KF6ConfigWidgets 6.0 REQUIRED) # KColorScheme: reads *.colors schemes
+find_package(KF6WidgetsAddons 6.0 REQUIRED) # KColorButton: text color pickers
 find_package(KF6GlobalAccel 6.0 REQUIRED)
 find_package(KF6Notifications 6.0 REQUIRED)
 find_package(KF6StatusNotifierItem 6.0 REQUIRED)
@@ -92,6 +93,8 @@ add_executable(egoboard
     src/app/ThemeManager.cpp
     src/app/IconThemeIndex.cpp
     src/app/IconThemeManager.cpp
+    src/app/TextAppearance.cpp
+    src/app/SystemThemeWatcher.cpp
     src/app/LayerShellHelper.cpp
     src/app/KWinCursorTracker.cpp
     src/app/WlrDataControlHelper.cpp
@@ -108,6 +111,7 @@ add_executable(egoboard
     src/app/EgoboardDbusAdaptor.cpp
     src/core/GroupTreeModel.cpp # Gui-dependent (QIcon in DecorationRole)
     src/app/ui/MainWindow.cpp
+    src/app/ui/AppearancePreview.cpp
     src/app/ui/EntryDelegate.cpp
     src/app/ui/PreviewPane.cpp
     src/app/ui/QuickPasteMenu.cpp
@@ -140,6 +144,7 @@ target_link_libraries(egoboard PRIVATE
     Qt6::Gui Qt6::Widgets Qt6::DBus Qt6::Concurrent Qt6::Network Qt6::WaylandClient Qt6::Qml
     KF6::ConfigCore
     KF6::ConfigWidgets
+    KF6::WidgetsAddons
     KF6::GlobalAccel
     KF6::Notifications
     KF6::StatusNotifierItem

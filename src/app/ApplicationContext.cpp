@@ -15,6 +15,7 @@
 #include "SettingsManager.h"
 #include "SnippetManager.h"
 #include "StorageManager.h"
+#include "SystemThemeWatcher.h"
 #include "ThemeManager.h"
 #include "TrayController.h"
 #include "VacuumWorker.h"
@@ -202,13 +203,15 @@ void ApplicationContext::start()
     m_expire->start();
     connect(m_settings, &SettingsManager::changed, this, [this] {
         m_watcher->setDebounceInterval(m_settings->debounceMs());
-        ThemeManager::apply(m_settings->theme());
-        IconThemeManager::apply(m_settings->iconTheme());
-        // Theme icons are re-resolved on the next paint, so nudge the widgets
-        // that are on screen (settings dialog included) to pick them up now.
-        const auto widgets = QApplication::allWidgets();
-        for (QWidget *widget : widgets)
-            widget->update();
+        applyThemes(m_settings->theme(), m_settings->iconTheme(), m_settings->textAppearance());
+    });
+
+    // Plasma can switch its color scheme or icon theme while Egoboard runs:
+    // re-read the scheme files when kdeglobals reports that they moved.
+    m_systemTheme = new SystemThemeWatcher(this);
+    connect(m_systemTheme, &SystemThemeWatcher::changed, this, [this] {
+        applyThemes(m_settings->theme(), m_settings->iconTheme(), m_settings->textAppearance(),
+                    /*force=*/true);
     });
 
     connect(m_hotkeys, &HotkeyManager::toggleRequested, this,
@@ -230,12 +233,34 @@ void ApplicationContext::start()
     m_watcher->start();
     m_dataControl->start();
     // Apply the configured theme before any window is shown.
-    ThemeManager::apply(m_settings->theme());
-    IconThemeManager::apply(m_settings->iconTheme());
+    applyThemes(m_settings->theme(), m_settings->iconTheme(), m_settings->textAppearance());
     if (m_settings->startVisible())
         m_window->show();
 
     scheduleVacuumChecks();
+}
+
+void ApplicationContext::applyThemes(const QString &colorTheme, const QString &iconTheme,
+                                     const TextAppearance::Overrides &text, bool force)
+{
+    // The settings dialog saves every key on Apply/OK, so this runs once per
+    // changed setting; skip the ones that did not touch the appearance at all.
+    if (!force && colorTheme == m_appliedColorTheme && iconTheme == m_appliedIconTheme
+        && text == m_appliedText) {
+        return;
+    }
+    m_appliedColorTheme = colorTheme;
+    m_appliedIconTheme = iconTheme;
+    m_appliedText = text;
+
+    ThemeManager::apply(colorTheme, text);
+    IconThemeManager::apply(iconTheme);
+
+    // Theme icons are re-resolved on the next paint, so nudge the widgets that
+    // are on screen (an open settings dialog included) to pick them up now.
+    const auto widgets = QApplication::allWidgets();
+    for (QWidget *widget : widgets)
+        widget->update();
 }
 
 void ApplicationContext::onCaptured(const ClipboardRecord &record)

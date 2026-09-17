@@ -15,7 +15,7 @@ Clipboard history manager for KDE Plasma. Keeps everything you copy, lets you se
 - **Privacy** — auto-detects credit cards, passwords, and API keys; flag, exclude, or redact them.
 - **Auto-cleanup** — rule-based expiry by age and type, plus disk quota.
 - **Export/Import** — backup and restore as JSON.
-- **Themes** — follows your active Plasma color scheme and icon theme, or pick any KDE color scheme / icon theme installed on the system.
+- **Themes** — follows your active Plasma color scheme and icon theme, or pick any installed KDE scheme; text size and colors are adjustable when a theme is hard to read.
 
 ## [Build](./docs/build.md)
 

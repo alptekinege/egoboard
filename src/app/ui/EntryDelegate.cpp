@@ -116,12 +116,11 @@ void EntryDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
     QStyle *style = opt.widget ? opt.widget->style() : QApplication::style();
     style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, opt.widget);
 
-    const bool isDark = option.palette.color(QPalette::Window).lightness() < 128;
-    const QPalette::ColorRole secondaryRole =
-        isDark ? QPalette::PlaceholderText : QPalette::WindowText; // subdued tone
-    QColor metaColor = option.palette.color(secondaryRole);
-    metaColor.setAlphaF(0.75); // Breeze-style muted secondary text
-    const QPen metaPen(metaColor);
+    // Secondary text: the palette's subdued role, which ThemeManager keeps above
+    // a readability floor. On a selected row it switches to the highlighted text
+    // color, otherwise the meta line would be unreadable on the highlight.
+    const bool selected = option.state & QStyle::State_Selected;
+    const QPen metaPen(option.palette.color(selected ? QPalette::HighlightedText : QPalette::Mid));
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
@@ -170,7 +169,7 @@ void EntryDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
     const QString preview =
         painter->fontMetrics().elidedText(index.data().toString(), Qt::ElideRight, textWidth);
     painter->setPen(option.palette.color(
-        option.state & QStyle::State_Selected ? QPalette::HighlightedText : QPalette::Text));
+        selected ? QPalette::HighlightedText : QPalette::Text));
     painter->drawText(QRect(textLeft, top + kMargin, textWidth, painter->fontMetrics().height()),
                       Qt::AlignVCenter | Qt::AlignLeft, preview);
 

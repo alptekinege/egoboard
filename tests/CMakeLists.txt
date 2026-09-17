@@ -23,7 +23,7 @@ add_test(NAME tst_autopaster COMMAND tst_autopaster)
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets)
 find_package(KF6ConfigWidgets 6.0 REQUIRED) # KColorScheme, used to build theme expectations
-add_executable(tst_ui tst_ui.cpp ../src/app/ThemeManager.cpp ../src/app/ColorSchemeIndex.cpp ../src/app/IconThemeManager.cpp ../src/app/IconThemeIndex.cpp ../src/app/ui/CodePreviewHighlighter.cpp)
+add_executable(tst_ui tst_ui.cpp ../src/app/ThemeManager.cpp ../src/app/TextAppearance.cpp ../src/app/ColorSchemeIndex.cpp ../src/app/IconThemeManager.cpp ../src/app/IconThemeIndex.cpp ../src/app/ui/CodePreviewHighlighter.cpp)
 target_include_directories(tst_ui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/app/ui ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(tst_ui PRIVATE Qt6::Widgets Qt6::Gui Qt6::Test KF6::ConfigCore KF6::ConfigWidgets)
 target_compile_options(tst_ui PRIVATE -Wall -Wextra)
@@ -72,7 +72,7 @@ target_link_libraries(tst_singleinstance PRIVATE Qt6::Core Qt6::Network Qt6::Tes
 target_compile_options(tst_singleinstance PRIVATE -Wall -Wextra)
 add_test(NAME tst_singleinstance COMMAND tst_singleinstance)
 
-add_executable(tst_settings tst_settings.cpp ../src/app/SettingsManager.cpp ../src/app/ColorSchemeIndex.cpp ../src/app/IconThemeIndex.cpp)
+add_executable(tst_settings tst_settings.cpp ../src/app/SettingsManager.cpp ../src/app/ColorSchemeIndex.cpp ../src/app/IconThemeIndex.cpp ../src/app/SystemThemeWatcher.cpp)
 target_include_directories(tst_settings PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(tst_settings PRIVATE egoboard::core Qt6::Test Qt6::Gui KF6::ConfigCore)
 target_compile_options(tst_settings PRIVATE -Wall -Wextra)

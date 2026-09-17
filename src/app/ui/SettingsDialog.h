@@ -5,6 +5,7 @@
 #include <QDialog>
 #include <QList>
 class ApplicationContext;
+class KColorButton;
 class QCheckBox;
 class QComboBox;
 class QLabel;
@@ -37,6 +38,9 @@ private:
 
     void load();
     void save();
+    // Live preview of the theme combos: applies without saving, so the user sees
+    // the palette/icon theme before committing; Cancel puts the stored pair back.
+    void previewThemes();
     void refreshDiagnostics();
     void populateSnippetList();
     void populateTransformList();
@@ -63,6 +67,11 @@ private:
     QCheckBox *m_notifications = nullptr;
     QComboBox *m_themeCombo = nullptr;
     QComboBox *m_iconThemeCombo = nullptr;
+    QSpinBox *m_fontSize = nullptr;
+    QComboBox *m_textColorCombo = nullptr;
+    KColorButton *m_textColorButton = nullptr;
+    QComboBox *m_dimTextColorCombo = nullptr;
+    KColorButton *m_dimTextColorButton = nullptr;
     QComboBox *m_densityCombo = nullptr;
     QCheckBox *m_toolbarIconOnly = nullptr;
     QCheckBox *m_closeAfterPaste = nullptr;

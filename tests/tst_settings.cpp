@@ -3,8 +3,12 @@
 #include "ColorSchemeIndex.h"
 #include "IconThemeIndex.h"
 #include "SettingsManager.h"
+#include "SystemThemeWatcher.h"
 
+#include <QDir>
+#include <QFile>
 #include <QSignalSpy>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QVector>
 
@@ -26,6 +30,9 @@ private slots:
     void normalizesCollectionsAndUiValues();
     void themeIdsValidateAgainstInstalledSchemes();
     void iconThemeIdsValidateAgainstInstalledThemes();
+    void themeChangeNotificationsAreFiltered();
+    void detectsPlasmaConfigChange();
+    void textReadabilitySettings();
     void persistsAcrossInstances();
 
 private:
@@ -364,6 +371,76 @@ void TestSettings::iconThemeIdsValidateAgainstInstalledThemes()
     // ...while an id with no theme behind it collapses back to "system".
     settings.setIconTheme(QStringLiteral("definitely-not-an-icon-theme"));
     QCOMPARE(settings.iconTheme(), QStringLiteral("system"));
+}
+
+void TestSettings::themeChangeNotificationsAreFiltered()
+{
+    // Only the two keys Egoboard mirrors count as a Plasma theme change...
+    QVERIFY(SystemThemeWatcher::touchesTheme(QStringLiteral("General"), {QByteArrayLiteral("ColorScheme")}));
+    QVERIFY(SystemThemeWatcher::touchesTheme(QStringLiteral("Icons"), {QByteArrayLiteral("Theme")}));
+    // ...unless the writer did not name its keys at all (assume relevant).
+    QVERIFY(SystemThemeWatcher::touchesTheme(QStringLiteral("General"), {}));
+    QVERIFY(SystemThemeWatcher::touchesTheme(QStringLiteral("Icons"), {}));
+    // Unrelated desktop settings must not repaint the app.
+    QVERIFY(!SystemThemeWatcher::touchesTheme(QStringLiteral("General"), {QByteArrayLiteral("font")}));
+    QVERIFY(!SystemThemeWatcher::touchesTheme(QStringLiteral("KDE"), {QByteArrayLiteral("widgetStyle")}));
+    QVERIFY(!SystemThemeWatcher::touchesTheme(QStringLiteral("Icons"), {QByteArrayLiteral("Theme2")}));
+}
+
+void TestSettings::detectsPlasmaConfigChange()
+{
+    // The file watch is the fallback for writers that do not send KConfig
+    // notifications: an edit to kdeglobals must reach the running app.
+    const QString path = QDir(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation))
+                             .filePath(QStringLiteral("kdeglobals"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Append));
+    file.write("[General]\nColorScheme=BreezeLight\n");
+    file.close();
+
+    SystemThemeWatcher watcher;
+    QSignalSpy changedSpy(&watcher, &SystemThemeWatcher::changed);
+
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Append));
+    file.write("[Icons]\nTheme=breeze-dark\n");
+    file.close();
+
+    QTRY_VERIFY_WITH_TIMEOUT(changedSpy.count() > 0, 5000);
+}
+
+void TestSettings::textReadabilitySettings()
+{
+    SettingsManager settings;
+
+    QCOMPARE(settings.fontPointDelta(), 0);
+    QCOMPARE(settings.textColor(), QString());
+    QCOMPARE(settings.dimTextColor(), QString());
+
+    // The size delta stays within what the row layouts can absorb.
+    settings.setFontPointDelta(3);
+    QCOMPARE(settings.fontPointDelta(), 3);
+    settings.setFontPointDelta(99);
+    QCOMPARE(settings.fontPointDelta(), 6);
+    settings.setFontPointDelta(-99);
+    QCOMPARE(settings.fontPointDelta(), -2);
+
+    // Colors are stored as "#rrggbb"; anything else reads back as "follow the
+    // color scheme", so a bad value cannot blank out the UI text.
+    settings.setTextColor(QStringLiteral("#123456"));
+    QCOMPARE(settings.textColor(), QStringLiteral("#123456"));
+    settings.setDimTextColor(QStringLiteral("not-a-color"));
+    QCOMPARE(settings.dimTextColor(), QString());
+
+    // The struct handed to the theme applier mirrors the stored values.
+    const TextAppearance::Overrides overrides = settings.textAppearance();
+    QCOMPARE(overrides.fontPointDelta, -2);
+    QVERIFY(overrides.customText);
+    QCOMPARE(overrides.textColor, QColor(0x12, 0x34, 0x56));
+    QVERIFY(!overrides.customDimText);
+
+    // Clearing a color goes back to following the scheme.
+    settings.setTextColor(QString());
+    QVERIFY(!settings.textAppearance().customText);
 }
 
 void TestSettings::persistsAcrossInstances()

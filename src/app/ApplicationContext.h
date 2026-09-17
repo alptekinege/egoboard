@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ClipboardRecord.h"
+#include "TextAppearance.h"
 
 #include <QObject>
 #include <QThread>
@@ -23,6 +24,7 @@ class ScriptActionManager;
 class SettingsManager;
 class SnippetManager;
 class StorageManager;
+class SystemThemeWatcher;
 class TrayController;
 class EncryptionManager;
 class VacuumWorker;
@@ -69,6 +71,14 @@ public:
     void deleteLastEntry(); // drop the newest capture (global hotkey)
     void vacuumNow();
 
+    // Installs a color scheme, an icon theme and the text appearance into the
+    // running app (palette, icon search paths, UI font, repaint nudge). Startup,
+    // settings changes and Plasma's own theme changes all go through here; the
+    // settings dialog calls it for live preview. force re-applies values that did
+    // not change, for when Plasma rewrote a scheme file behind them.
+    void applyThemes(const QString &colorTheme, const QString &iconTheme,
+                     const TextAppearance::Overrides &text, bool force = false);
+
 private:
     void onCaptured(const ClipboardRecord &record);
     void scheduleVacuumChecks();
@@ -97,5 +107,11 @@ private:
     QTimer *m_vacuumTimer = nullptr;
     OcrWorker *m_ocr = nullptr;
     EncryptionManager *m_encryption = nullptr;
+    SystemThemeWatcher *m_systemTheme = nullptr;
+    // Memoized so saving the settings dialog (one write per key) does not
+    // re-apply the appearance once per changed setting.
+    QString m_appliedColorTheme;
+    QString m_appliedIconTheme;
+    TextAppearance::Overrides m_appliedText;
     int m_captureCounter = 0;
 };

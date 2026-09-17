@@ -4,6 +4,7 @@
 #include "ColorSchemeIndex.h"
 #include "IconThemeIndex.h"
 #include "IconThemeManager.h"
+#include "TextAppearance.h"
 #include "ThemeManager.h"
 
 #include <KColorScheme>
@@ -88,6 +89,10 @@ private slots:
     void discoversInstalledIconThemes();
     void appliesIconThemeFromDisk();
     void iconThemeSwitchUpdatesExistingIcons();
+    void computesContrastRatios();
+    void raisesUnreadableTextToTheContrastFloor();
+    void keepsEveryInstalledSchemeReadable();
+    void appliesTextOverridesAndFontSize();
 };
 
 void TestUiLogic::detectsPreviewModes()
@@ -192,8 +197,10 @@ void TestUiLogic::themePaletteSwitchesAndRestores()
         QVERIFY2(!path.isEmpty(), qPrintable(QStringLiteral("scheme not installed: %1").arg(id)));
 
         ThemeManager::apply(id);
-        const QPalette expected =
-            KColorScheme::createApplicationPalette(KSharedConfig::openConfig(path));
+        // Installed palettes always go through the readability layer, so that is
+        // what the result has to match.
+        const QPalette expected = TextAppearance::applyOverrides(
+            KColorScheme::createApplicationPalette(KSharedConfig::openConfig(path)), {});
         QCOMPARE(qApp->palette().color(QPalette::Window), expected.color(QPalette::Window));
         QCOMPARE(qApp->palette().color(QPalette::Base), expected.color(QPalette::Base));
         QCOMPARE(qApp->palette().color(QPalette::Highlight), expected.color(QPalette::Highlight));
@@ -201,7 +208,8 @@ void TestUiLogic::themePaletteSwitchesAndRestores()
 
     // An id with no scheme behind it restores the style's own palette.
     ThemeManager::apply(QStringLiteral("invalid"));
-    QCOMPARE(qApp->palette(), QApplication::style()->standardPalette());
+    QCOMPARE(qApp->palette(),
+             TextAppearance::applyOverrides(QApplication::style()->standardPalette(), {}));
     qApp->setPalette(original);
 }
 
@@ -237,9 +245,10 @@ void TestUiLogic::appliesSchemeFromDisk()
     const QPalette original = qApp->palette();
     for (const ColorSchemeIndex::Entry &scheme : schemes) {
         ThemeManager::apply(scheme.id);
-        // Whatever the scheme says wins — no built-in palette gets in the way.
-        const QPalette expected =
-            KColorScheme::createApplicationPalette(KSharedConfig::openConfig(scheme.path));
+        // Whatever the scheme says wins - no built-in palette gets in the way,
+        // and the text roles come out of the readability layer.
+        const QPalette expected = TextAppearance::applyOverrides(
+            KColorScheme::createApplicationPalette(KSharedConfig::openConfig(scheme.path)), {});
         QCOMPARE(qApp->palette().color(QPalette::Window), expected.color(QPalette::Window));
         QCOMPARE(qApp->palette().color(QPalette::Base), expected.color(QPalette::Base));
         QCOMPARE(qApp->palette().color(QPalette::Text), expected.color(QPalette::Text));
@@ -389,6 +398,170 @@ void TestUiLogic::iconThemeSwitchUpdatesExistingIcons()
     QVERIFY(pinned.pixmap(22, 22).toImage() != beforeSwitch);
 
     QIcon::setThemeName(previousTheme);
+}
+
+void TestUiLogic::computesContrastRatios()
+{
+    // WCAG 2.1 reference values.
+    QCOMPARE(TextAppearance::contrastRatio(Qt::black, Qt::white), 21.0);
+    QCOMPARE(TextAppearance::contrastRatio(Qt::white, Qt::black), 21.0);
+    QCOMPARE(TextAppearance::contrastRatio(Qt::black, Qt::black), 1.0);
+    QVERIFY(TextAppearance::contrastRatio(QColor(0x77, 0x77, 0x77), Qt::white) > 4.4);
+    QVERIFY(TextAppearance::contrastRatio(QColor(0x77, 0x77, 0x77), Qt::white) < 4.6);
+    // Invalid colors cannot be measured, so they must not look "readable".
+    QCOMPARE(TextAppearance::contrastRatio(QColor(), Qt::white), 1.0);
+}
+
+void TestUiLogic::raisesUnreadableTextToTheContrastFloor()
+{
+    // Dark gray on a dark surface: the classic "cannot read this" case.
+    const QColor background(0x2a, 0x2e, 0x32);
+    const QColor unreadable(0x33, 0x36, 0x3a);
+    QVERIFY(TextAppearance::contrastRatio(unreadable, background)
+            < TextAppearance::kTextContrastRatio);
+
+    const QColor fixed =
+        TextAppearance::ensureContrast(unreadable, background, TextAppearance::kTextContrastRatio);
+    QVERIFY(TextAppearance::contrastRatio(fixed, background) >= TextAppearance::kTextContrastRatio);
+    // Pushed toward the lighter end of the scale (stays light-on-dark), not inverted.
+    QVERIFY(fixed.lightness() > background.lightness());
+
+    // A color that already reads well is returned untouched.
+    const QColor readable(0xcf, 0xd7, 0xe1);
+    QVERIFY(TextAppearance::contrastRatio(readable, background)
+            >= TextAppearance::kTextContrastRatio);
+    QCOMPARE(TextAppearance::ensureContrast(readable, background,
+                                            TextAppearance::kTextContrastRatio),
+             readable);
+
+    // Palettes get the same treatment: a near-invisible one becomes usable.
+    QPalette hostile;
+    hostile.setColor(QPalette::Window, background);
+    hostile.setColor(QPalette::Base, QColor(0x25, 0x28, 0x2c));
+    hostile.setColor(QPalette::AlternateBase, QColor(0x28, 0x2b, 0x2f));
+    hostile.setColor(QPalette::Button, background);
+    hostile.setColor(QPalette::WindowText, unreadable);
+    hostile.setColor(QPalette::Text, unreadable);
+    hostile.setColor(QPalette::ButtonText, unreadable);
+    hostile.setColor(QPalette::Mid, unreadable);
+    hostile.setColor(QPalette::PlaceholderText, unreadable);
+
+    const QPalette fixedPalette = TextAppearance::applyOverrides(hostile, {});
+    QVERIFY(TextAppearance::contrastRatio(fixedPalette.color(QPalette::Text),
+                                          fixedPalette.color(QPalette::Base))
+            >= TextAppearance::kTextContrastRatio);
+    QVERIFY(TextAppearance::contrastRatio(fixedPalette.color(QPalette::WindowText),
+                                          fixedPalette.color(QPalette::Window))
+            >= TextAppearance::kTextContrastRatio);
+    QVERIFY(TextAppearance::contrastRatio(fixedPalette.color(QPalette::Mid),
+                                          fixedPalette.color(QPalette::Window))
+            >= TextAppearance::kDimTextContrastRatio);
+    QVERIFY(TextAppearance::contrastRatio(fixedPalette.color(QPalette::PlaceholderText),
+                                          fixedPalette.color(QPalette::Base))
+            >= TextAppearance::kDimTextContrastRatio);
+
+    // Custom colors are honored, and still raised to the floor.
+    TextAppearance::Overrides overrides;
+    overrides.customText = true;
+    overrides.textColor = QColor(0x10, 0x12, 0x14);
+    overrides.customDimText = true;
+    overrides.dimTextColor = QColor(0x60, 0x64, 0x6a);
+    const QPalette custom = TextAppearance::applyOverrides(hostile, overrides);
+    QVERIFY(TextAppearance::contrastRatio(custom.color(QPalette::Text), custom.color(QPalette::Base))
+            >= TextAppearance::kTextContrastRatio);
+    QVERIFY(TextAppearance::contrastRatio(custom.color(QPalette::Mid), custom.color(QPalette::Window))
+            >= TextAppearance::kDimTextContrastRatio);
+    QVERIFY(TextAppearance::contrastRatio(custom.color(QPalette::Mid), custom.color(QPalette::Base))
+            >= TextAppearance::kDimTextContrastRatio);
+}
+
+void TestUiLogic::keepsEveryInstalledSchemeReadable()
+{
+    const QVector<ColorSchemeIndex::Entry> schemes = ColorSchemeIndex::scan();
+    QVERIFY2(!schemes.isEmpty(), "no KDE color schemes installed to discover");
+
+    for (const ColorSchemeIndex::Entry &scheme : schemes) {
+        const QPalette schemePalette =
+            KColorScheme::createApplicationPalette(KSharedConfig::openConfig(scheme.path));
+        const QPalette fixed = TextAppearance::applyOverrides(schemePalette, {});
+
+        const QColor window = fixed.color(QPalette::Window);
+        const QColor base = fixed.color(QPalette::Base);
+        const QColor alternateBase = fixed.color(QPalette::AlternateBase);
+
+        // Body text and the subdued small print must read on every surface the
+        // app paints them on, whatever the scheme says.
+        QVERIFY2(TextAppearance::contrastRatio(fixed.color(QPalette::Text), base)
+                     >= TextAppearance::kTextContrastRatio, qPrintable(scheme.id));
+        QVERIFY2(TextAppearance::contrastRatio(fixed.color(QPalette::Text), alternateBase)
+                     >= TextAppearance::kTextContrastRatio, qPrintable(scheme.id));
+        QVERIFY2(TextAppearance::contrastRatio(fixed.color(QPalette::WindowText), window)
+                     >= TextAppearance::kTextContrastRatio, qPrintable(scheme.id));
+        QVERIFY2(TextAppearance::contrastRatio(fixed.color(QPalette::Mid), window)
+                     >= TextAppearance::kDimTextContrastRatio, qPrintable(scheme.id));
+        QVERIFY2(TextAppearance::contrastRatio(fixed.color(QPalette::Mid), base)
+                     >= TextAppearance::kDimTextContrastRatio, qPrintable(scheme.id));
+        QVERIFY2(TextAppearance::contrastRatio(fixed.color(QPalette::PlaceholderText), base)
+                     >= TextAppearance::kDimTextContrastRatio, qPrintable(scheme.id));
+
+        // Colors that were already readable stay exactly as the theme defined them.
+        const auto untouched = [&](QPalette::ColorRole role, const QColor &surface) {
+            const QColor original = schemePalette.color(role);
+            if (TextAppearance::contrastRatio(original, surface)
+                < TextAppearance::kTextContrastRatio) {
+                return;
+            }
+            QCOMPARE(fixed.color(role), original);
+        };
+        untouched(QPalette::Text, base);
+        untouched(QPalette::WindowText, window);
+    }
+}
+
+void TestUiLogic::appliesTextOverridesAndFontSize()
+{
+    const QFont originalFont = QApplication::font();
+    const int originalSize = originalFont.pointSize();
+
+    TextAppearance::Overrides overrides;
+    overrides.fontPointDelta = 3;
+    overrides.customText = true;
+    overrides.textColor = QColor(0x11, 0x22, 0x33);
+    overrides.customDimText = true;
+    overrides.dimTextColor = QColor(0x44, 0x55, 0x66);
+
+    ThemeManager::apply(QStringLiteral("dark"), overrides);
+    // The installed text color reads on the surface it is drawn on, whether it
+    // matched the requested color or had to be raised to the floor.
+    const QColor applied = qApp->palette().color(QPalette::Text);
+    QVERIFY(TextAppearance::contrastRatio(applied, qApp->palette().color(QPalette::Base))
+            >= TextAppearance::kTextContrastRatio);
+    if (applied != QColor(0x11, 0x22, 0x33)) {
+        // Raised, so the requested color must have been unreadable to begin with.
+        QVERIFY(TextAppearance::contrastRatio(QColor(0x11, 0x22, 0x33),
+                                              qApp->palette().color(QPalette::Base))
+                < TextAppearance::kTextContrastRatio);
+    }
+    if (originalSize > 0)
+        QCOMPARE(QApplication::font().pointSize(), originalSize + 3);
+
+    // A custom color that already reads well is installed exactly as picked.
+    overrides.textColor = QColor(0xff, 0xff, 0xff);
+    ThemeManager::apply(QStringLiteral("dark"), overrides);
+    if (TextAppearance::contrastRatio(overrides.textColor, qApp->palette().color(QPalette::Base))
+        >= TextAppearance::kTextContrastRatio) {
+        QCOMPARE(qApp->palette().color(QPalette::Text), overrides.textColor);
+    }
+
+    // Back to the theme's own colors and size.
+    ThemeManager::apply(QStringLiteral("dark"), {});
+    QCOMPARE(QApplication::font(), originalFont);
+    QCOMPARE(qApp->palette().color(QPalette::Text),
+             TextAppearance::applyOverrides(
+                 KColorScheme::createApplicationPalette(KSharedConfig::openConfig(
+                     ColorSchemeIndex::filePath(QStringLiteral("dark")))),
+                 {})
+                 .color(QPalette::Text));
 }
 
 QTEST_MAIN(TestUiLogic)
