@@ -18,7 +18,8 @@ struct FilterSpec {
         MostUsed = 2, // use count descending, newest first on ties
     };
 
-    QString searchText; // case-insensitive substring over preview/text
+    QString searchText; // free text (quoted phrases kept); case-insensitive over preview/text/OCR
+    QString excludeText; // "-term" / -"phrase": entries matching any of these are dropped
     int contentType = -1; // -1 = all, else ContentType value
     qint64 fromMs = 0; // 0 = unbounded
     qint64 toMs = 0; // 0 = unbounded
@@ -26,14 +27,15 @@ struct FilterSpec {
     std::optional<qint64> groupId; // entries assigned to this group
     bool pinnedOnly = false;
     bool sensitiveOnly = false; // audit view: only entries flagged sensitive
+    bool hasOcrOnly = false; // only entries with OCR text
     QStringList tags; // entry must carry ALL of these tags
     SortMode sortMode = SortMode::Newest;
 
     bool isTrivial() const
     {
-        return searchText.isEmpty() && contentType == -1 && fromMs == 0 && toMs == 0
-            && sourceApp.isEmpty() && !groupId.has_value() && !pinnedOnly && !sensitiveOnly
-            && tags.isEmpty() && sortMode == SortMode::Newest;
+        return searchText.isEmpty() && excludeText.isEmpty() && contentType == -1 && fromMs == 0
+            && toMs == 0 && sourceApp.isEmpty() && !groupId.has_value() && !pinnedOnly
+            && !sensitiveOnly && !hasOcrOnly && tags.isEmpty() && sortMode == SortMode::Newest;
     }
 
     // JSON codec (used to persist saved searches). Unknown keys are ignored so
@@ -43,6 +45,8 @@ struct FilterSpec {
         QJsonObject json;
         if (!searchText.isEmpty())
             json.insert(QStringLiteral("searchText"), searchText);
+        if (!excludeText.isEmpty())
+            json.insert(QStringLiteral("excludeText"), excludeText);
         if (contentType >= 0)
             json.insert(QStringLiteral("contentType"), contentType);
         if (fromMs > 0)
@@ -57,6 +61,8 @@ struct FilterSpec {
             json.insert(QStringLiteral("pinnedOnly"), true);
         if (sensitiveOnly)
             json.insert(QStringLiteral("sensitiveOnly"), true);
+        if (hasOcrOnly)
+            json.insert(QStringLiteral("hasOcrOnly"), true);
         if (!tags.isEmpty()) {
             QJsonArray tagArray;
             for (const QString &tag : tags)
@@ -72,6 +78,7 @@ struct FilterSpec {
     {
         FilterSpec filter;
         filter.searchText = json.value(QLatin1String("searchText")).toString();
+        filter.excludeText = json.value(QLatin1String("excludeText")).toString();
         filter.contentType = json.value(QLatin1String("contentType")).toInt(-1);
         filter.fromMs = json.value(QLatin1String("fromMs")).toInteger();
         filter.toMs = json.value(QLatin1String("toMs")).toInteger();
@@ -80,6 +87,7 @@ struct FilterSpec {
             filter.groupId = json.value(QLatin1String("groupId")).toInteger();
         filter.pinnedOnly = json.value(QLatin1String("pinnedOnly")).toBool();
         filter.sensitiveOnly = json.value(QLatin1String("sensitiveOnly")).toBool();
+        filter.hasOcrOnly = json.value(QLatin1String("hasOcrOnly")).toBool();
         const QJsonArray tagArray = json.value(QLatin1String("tags")).toArray();
         for (const QJsonValue &value : tagArray) {
             const QString tag = value.toString();

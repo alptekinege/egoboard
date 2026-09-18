@@ -265,18 +265,18 @@ void CommandPalette::refreshResults(const QString &query)
 
     // History mode
     m_mode = Mode::History;
-    FilterSpec filter;
-    if (!trimmed.isEmpty())
-        filter.searchText = trimmed;
+    // The palette accepts the same query syntax as the main search box.
+    m_parsed = SearchEngine::parseQuery(trimmed);
 
     // Palette shows top 30, ordered by recency (StorageManager handles FTS5).
-    const auto page = m_storage->fetchPage(filter, {}, 30);
+    const auto page = m_storage->fetchPage(m_parsed.filter, {}, 30);
     QVector<ClipboardRecord> scored = page;
 
     // Light secondary fuzzy re-rank when query is short (typo tolerance).
-    if (trimmed.size() >= 2 && trimmed.size() <= 6 && !scored.isEmpty()) {
+    const QString freeText = m_parsed.text;
+    if (freeText.size() >= 2 && freeText.size() <= 6 && !scored.isEmpty()) {
         std::stable_sort(scored.begin(), scored.end(), [&](const ClipboardRecord &a, const ClipboardRecord &b){
-            return fuzzyScore(trimmed, a.preview) > fuzzyScore(trimmed, b.preview);
+            return fuzzyScore(freeText, a.preview) > fuzzyScore(freeText, b.preview);
         });
     }
 
@@ -309,15 +309,26 @@ void CommandPalette::updateHint()
             m_hint->setText(tr("%1 snippet(s) — ⏎ expand with selected entry / clipboard  •  Esc close  •  Type >transform to switch").arg(m_snippetItems.size()));
         return;
     }
+    // History mode: mirror any typed field filters / rejected values.
+    QStringList details;
+    if (!m_parsed.applied.isEmpty())
+        details << tr("filters: %1").arg(m_parsed.applied.join(QStringLiteral(" · ")));
+    details += m_parsed.problems;
+    const QString detailSuffix = details.isEmpty()
+        ? QString()
+        : QStringLiteral("  •  ") + details.join(QStringLiteral("  •  "));
+
     if (m_results.isEmpty()) {
         if (m_currentQuery.trimmed().startsWith(QLatin1Char('>')))
             m_hint->setText(tr("Commands:  >transform [filter]  >snippet [filter]  >pin  >copy  •  Esc close"));
         else if (m_currentQuery.trimmed().isEmpty())
             m_hint->setText(tr("Showing recent entries  •  ⏎ paste  •  Esc close  •  Type > for commands (>transform, >snippet)"));
         else
-            m_hint->setText(tr("No matches — try fewer words or check spelling (prefix search)"));
+            m_hint->setText(tr("No matches — try fewer words, or use app: type: tag: pinned: has:ocr before:/after: and -exclude"));
     } else {
-        m_hint->setText(tr("%1 result(s)  •  ⏎ paste  •  Esc close  •  >transform / >snippet for actions").arg(m_results.size()));
+        m_hint->setText(tr("%1 result(s)  •  ⏎ paste  •  Esc close  •  >transform / >snippet for actions")
+                            .arg(m_results.size())
+                        + detailSuffix);
     }
 }
 

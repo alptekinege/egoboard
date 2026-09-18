@@ -234,17 +234,43 @@ QVector<ClipboardRecord> StorageManager::fetchPage(const FilterSpec &filter, con
         return name;
     };
 
+    const bool hasTextQuery = !filter.searchText.isEmpty() || !filter.excludeText.isEmpty();
+    const bool ftsAvailable = hasTextQuery && SearchEngine::isFtsAvailable(m_db);
+
     if (!filter.searchText.isEmpty()) {
         const QString ftsQuery = SearchEngine::buildFtsQuery(filter.searchText);
-        if (!ftsQuery.isEmpty() && SearchEngine::isFtsAvailable(m_db)) {
+        if (!ftsQuery.isEmpty() && ftsAvailable) {
             const QString placeholder = addBind(ftsQuery);
             where << QStringLiteral("id IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH %1)")
                          .arg(placeholder);
         } else {
             const QString needle =
-                QStringLiteral("%") + SearchEngine::likeEscape(filter.searchText) + QStringLiteral("%");
+                QStringLiteral("%")
+                + SearchEngine::likeEscape(SearchEngine::stripQueryQuotes(filter.searchText))
+                + QStringLiteral("%");
             const QString placeholder = addBind(needle);
             where << QStringLiteral("(preview LIKE %1 ESCAPE '\\' OR text_data LIKE %1 ESCAPE '\\' OR ocr_text LIKE %1 ESCAPE '\\')")
+                         .arg(placeholder);
+        }
+    }
+    if (!filter.excludeText.isEmpty()) {
+        // "-term" / -"phrase": drop every entry the excluded expression matches.
+        const QString ftsQuery = SearchEngine::buildFtsQuery(filter.excludeText);
+        if (!ftsQuery.isEmpty() && ftsAvailable) {
+            const QString placeholder = addBind(ftsQuery);
+            where << QStringLiteral("id NOT IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH %1)")
+                         .arg(placeholder);
+        } else {
+            const QString needle =
+                QStringLiteral("%")
+                + SearchEngine::likeEscape(SearchEngine::stripQueryQuotes(filter.excludeText))
+                + QStringLiteral("%");
+            const QString placeholder = addBind(needle);
+            // COALESCE: NULL NOT LIKE x is NULL, which would drop every row.
+            where << QStringLiteral(
+                         "(COALESCE(preview, '') NOT LIKE %1 ESCAPE '\\'"
+                         " AND COALESCE(text_data, '') NOT LIKE %1 ESCAPE '\\'"
+                         " AND COALESCE(ocr_text, '') NOT LIKE %1 ESCAPE '\\')")
                          .arg(placeholder);
         }
     }
@@ -263,6 +289,8 @@ QVector<ClipboardRecord> StorageManager::fetchPage(const FilterSpec &filter, con
         where << QStringLiteral("pinned = 1");
     if (filter.sensitiveOnly)
         where << QStringLiteral("sensitive = 1");
+    if (filter.hasOcrOnly)
+        where << QStringLiteral("(ocr_text IS NOT NULL AND ocr_text <> '')");
     // Entry must carry EVERY tag in the filter (AND semantics via subqueries).
     for (const QString &tag : filter.tags) {
         const QString placeholder = addBind(tag);

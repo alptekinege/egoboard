@@ -4,6 +4,8 @@
 #include "SearchEngine.h"
 #include "StorageManager.h"
 
+#include <QDate>
+#include <QDateTime>
 #include <QRandomGenerator>
 #include <QSqlQuery>
 #include <QTemporaryDir>
@@ -26,6 +28,13 @@ private slots:
     void ftsTriggersOnUpdateAndDelete();
     void ftsUpdatesWhenOcrTextChanges();
     void combinesSearchWithMetadataFilters();
+    void parsesFieldFilters();
+    void parsesFreeTextPhrasesAndExclusions();
+    void reportsUnusableFieldValues();
+    void buildFtsQueryKeepsPhrases();
+    void stripQueryQuotesRemovesOnlyQuoting();
+    void negatedTermsRoundTrip();
+    void appliesExclusionsAndOcrFilter();
 
 private:
     QTemporaryDir m_dir;
@@ -255,6 +264,162 @@ void TestSearchEngine::combinesSearchWithMetadataFilters()
     const auto results = m_storage->fetchPage(filter, {}, 10);
     QCOMPARE(results.size(), 1);
     QCOMPARE(results.first().hash, QByteArrayLiteral("combined-match"));
+}
+
+void TestSearchEngine::parsesFieldFilters()
+{
+    FilterSpec base;
+    base.sortMode = FilterSpec::SortMode::MostUsed;
+    const auto parsed = SearchEngine::parseQuery(
+        QStringLiteral("app:firefox type:image tag:work tag:urgent pinned:yes has:ocr report"),
+        base);
+
+    QCOMPARE(parsed.filter.sourceApp, QStringLiteral("firefox"));
+    QCOMPARE(parsed.filter.contentType, int(ContentType::Image));
+    QCOMPARE(parsed.filter.tags,
+             QStringList({QStringLiteral("work"), QStringLiteral("urgent")}));
+    QVERIFY(parsed.filter.pinnedOnly);
+    QVERIFY(parsed.filter.hasOcrOnly);
+    QCOMPARE(parsed.filter.searchText, QStringLiteral("report"));
+    QCOMPARE(parsed.filter.sortMode, FilterSpec::SortMode::MostUsed); // untouched base field
+    QVERIFY(parsed.problems.isEmpty());
+    QCOMPARE(parsed.applied.size(), 6);
+
+    // Quoted field values keep their spaces; dates become bounds.
+    const auto dated = SearchEngine::parseQuery(
+        QStringLiteral("app:\"Visual Studio Code\" before:2024-01-31 after:7d"));
+    QCOMPARE(dated.filter.sourceApp, QStringLiteral("Visual Studio Code"));
+    // before: a date is the end of that day; after: a relative value is now - n.
+    QCOMPARE(QDateTime::fromMSecsSinceEpoch(dated.filter.toMs).date(), QDate(2024, 1, 31));
+    const qint64 sevenDaysAgo = QDateTime::currentMSecsSinceEpoch() - 7 * 24 * 60 * 60 * 1000;
+    QVERIFY(qAbs(dated.filter.fromMs - sevenDaysAgo) < 60 * 1000);
+    QCOMPARE(dated.filter.searchText, QString());
+
+    // pinned:no clears a toolbar preset rather than being ignored.
+    FilterSpec pinnedBase;
+    pinnedBase.pinnedOnly = true;
+    const auto unpinned = SearchEngine::parseQuery(QStringLiteral("pinned:no"), pinnedBase);
+    QVERIFY(!unpinned.filter.pinnedOnly);
+}
+
+void TestSearchEngine::parsesFreeTextPhrasesAndExclusions()
+{
+    const auto parsed = SearchEngine::parseQuery(
+        QStringLiteral("\"exact phrase\" invoice -draft -\"not wanted\" https://example.com"));
+    QCOMPARE(parsed.text, QStringLiteral("\"exact phrase\" invoice https://example.com"));
+    QCOMPARE(parsed.filter.searchText, parsed.text);
+    QCOMPARE(parsed.filter.excludeText, QStringLiteral("draft \"not wanted\""));
+    QVERIFY(parsed.problems.isEmpty());
+
+    // A lone dash is ordinary text, not an exclusion.
+    const auto dash = SearchEngine::parseQuery(QStringLiteral("-"));
+    QCOMPARE(dash.text, QStringLiteral("-"));
+    QCOMPARE(dash.filter.excludeText, QString());
+}
+
+void TestSearchEngine::reportsUnusableFieldValues()
+{
+    const auto parsed = SearchEngine::parseQuery(
+        QStringLiteral("type:video pinned:maybe has:image before:nonsense keep"));
+    QCOMPARE(parsed.filter.contentType, -1);
+    QVERIFY(!parsed.filter.hasOcrOnly);
+    QVERIFY(!parsed.filter.pinnedOnly);
+    QCOMPARE(parsed.filter.toMs, qint64(0));
+    QCOMPARE(parsed.problems.size(), 4);
+    QCOMPARE(parsed.text, QStringLiteral("keep"));
+}
+
+void TestSearchEngine::buildFtsQueryKeepsPhrases()
+{
+    QCOMPARE(SearchEngine::buildFtsQuery(QStringLiteral("\"one two\"")),
+             QStringLiteral("\"one two\"*"));
+    QCOMPARE(SearchEngine::buildFtsQuery(QStringLiteral("alpha \"one two\" beta")),
+             QStringLiteral("\"alpha\"* AND \"one two\"* AND \"beta\"*"));
+    // Inner quotes are escaped, inner whitespace collapses.
+    QCOMPARE(SearchEngine::buildFtsQuery(QStringLiteral("\"say \"hi\"  now\"")),
+             QStringLiteral("\"say \"\"hi\"\" now\"*"));
+}
+
+void TestSearchEngine::stripQueryQuotesRemovesOnlyQuoting()
+{
+    QCOMPARE(SearchEngine::stripQueryQuotes(QStringLiteral("\"exact phrase\" word")),
+             QStringLiteral("exact phrase word"));
+    QCOMPARE(SearchEngine::stripQueryQuotes(QStringLiteral("no quotes here")),
+             QStringLiteral("no quotes here"));
+    QCOMPARE(SearchEngine::stripQueryQuotes(QStringLiteral("  spaced   out  ")),
+             QStringLiteral("spaced out"));
+}
+
+void TestSearchEngine::negatedTermsRoundTrip()
+{
+    // A saved search restores its non-widget fields through the search box;
+    // negatedTerms() and parseQuery() must round-trip them.
+    QCOMPARE(SearchEngine::negatedTerms(QStringLiteral("draft \"not now\"")),
+             QStringLiteral("-draft -\"not now\""));
+
+    const auto parsed = SearchEngine::parseQuery(
+        QStringLiteral("report has:ocr ")
+        + SearchEngine::negatedTerms(QStringLiteral("draft \"not now\"")));
+    QVERIFY(parsed.filter.hasOcrOnly);
+    QCOMPARE(parsed.filter.searchText, QStringLiteral("report"));
+    QCOMPARE(parsed.filter.excludeText, QStringLiteral("draft \"not now\""));
+}
+
+void TestSearchEngine::appliesExclusionsAndOcrFilter()
+{
+    ClipboardRecord keep;
+    keep.hash = QByteArrayLiteral("keep");
+    keep.type = ContentType::Text;
+    keep.textData = QStringLiteral("invoice 42 paid");
+    keep.preview = keep.textData;
+    keep.timestamp = 1000;
+    const qint64 keepId = m_storage->insertOrUpdate(keep);
+
+    ClipboardRecord drop;
+    drop.hash = QByteArrayLiteral("drop");
+    drop.type = ContentType::Text;
+    drop.textData = QStringLiteral("invoice 43 draft");
+    drop.preview = drop.textData;
+    drop.timestamp = 2000;
+    m_storage->insertOrUpdate(drop);
+
+    // An entry with no text at all must survive an exclusion (NULL NOT LIKE).
+    ClipboardRecord image;
+    image.hash = QByteArrayLiteral("image");
+    image.type = ContentType::Image;
+    image.blobData = QByteArrayLiteral("png");
+    image.hasBlob = true;
+    image.preview = QStringLiteral("Screenshot");
+    image.timestamp = 3000;
+    m_storage->insertOrUpdate(image);
+
+    FilterSpec exclude;
+    exclude.searchText = QStringLiteral("invoice");
+    exclude.excludeText = QStringLiteral("draft");
+    const auto excluded = m_storage->fetchPage(exclude, {}, 10);
+    QCOMPARE(excluded.size(), 1);
+    QCOMPARE(excluded.first().hash, QByteArrayLiteral("keep"));
+
+    FilterSpec excludeOnly;
+    excludeOnly.excludeText = QStringLiteral("draft");
+    QCOMPARE(m_storage->fetchPage(excludeOnly, {}, 10).size(), 2);
+
+    // Phrase search requires the words to be adjacent.
+    FilterSpec phrase;
+    phrase.searchText = QStringLiteral("\"42 paid\"");
+    QCOMPARE(m_storage->fetchPage(phrase, {}, 10).size(), 1);
+    FilterSpec notAdjacent;
+    notAdjacent.searchText = QStringLiteral("\"paid 42\"");
+    QCOMPARE(m_storage->fetchPage(notAdjacent, {}, 10).size(), 0);
+
+    // has:ocr only matches entries carrying OCR text.
+    FilterSpec ocr;
+    ocr.hasOcrOnly = true;
+    QCOMPARE(m_storage->fetchPage(ocr, {}, 10).size(), 0);
+    QVERIFY(m_storage->setOcrText(keepId, QStringLiteral("recognized")));
+    const auto withOcr = m_storage->fetchPage(ocr, {}, 10);
+    QCOMPARE(withOcr.size(), 1);
+    QCOMPARE(withOcr.first().id, keepId);
 }
 
 QTEST_GUILESS_MAIN(TestSearchEngine)

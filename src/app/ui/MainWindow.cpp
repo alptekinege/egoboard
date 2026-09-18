@@ -12,6 +12,7 @@
 #include "ExportImportDialogs.h"
 #include "GroupsDock.h"
 #include "PreviewPane.h"
+#include "SearchEngine.h"
 #include "SettingsDialog.h"
 #include "SnippetDialog.h"
 #include "StorageManager.h"
@@ -97,10 +98,14 @@ void MainWindow::buildUi()
     auto *filterRow = new QHBoxLayout();
 
     m_search = new QLineEdit(central);
-    m_search->setPlaceholderText(tr("Search history…"));
+    m_search->setPlaceholderText(tr("Search history…  •  app:firefox  type:image  has:ocr  before:7d  -word"));
     m_search->setClearButtonEnabled(true);
     m_search->setAccessibleName(tr("Search history"));
-    m_search->setAccessibleDescription(tr("Full-text search over previews, stored text and OCR output"));
+    m_search->setAccessibleDescription(
+        tr("Full-text search over previews, stored text and OCR output. Field filters: "
+           "app:, type:, tag:, pinned:, sensitive:, has:ocr, before:, after:; quote phrases "
+           "and prefix a word with - to exclude it."));
+    m_search->setToolTip(m_search->accessibleDescription());
     filterRow->addWidget(m_search, 3);
 
     m_typeCombo = new QComboBox(central);
@@ -160,6 +165,14 @@ void MainWindow::buildUi()
     filterRow->addWidget(m_savedSearchesButton);
 
     layout->addLayout(filterRow);
+
+    // Typed field filters (app:, type:, …) and rejected values, mirrored from
+    // the search box so the effective query is visible while typing.
+    m_queryHint = new QLabel(central);
+    m_queryHint->setWordWrap(true);
+    m_queryHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+    m_queryHint->setVisible(false);
+    layout->addWidget(m_queryHint);
 
     // Timeline strip: 14-day histogram, click to filter by day
     m_timeline = new TimelineStrip(m_ctx.storage(), central);
@@ -432,7 +445,14 @@ void MainWindow::applySavedSearch(const FilterSpec &filter)
 {
     // Mirror the saved filter onto the widgets so the UI stays the source of
     // truth; anything not representable in the presets lands in "Custom range…".
-    m_search->setText(filter.searchText);
+    // has:ocr and -exclusions have no widget, so they go back into the search
+    // box in query syntax — dropping them would silently change the search.
+    QString queryText = filter.searchText;
+    if (filter.hasOcrOnly)
+        queryText += QStringLiteral(" has:ocr");
+    if (!filter.excludeText.isEmpty())
+        queryText += QLatin1Char(' ') + SearchEngine::negatedTerms(filter.excludeText);
+    m_search->setText(queryText.trimmed());
     const int typeIndex = m_typeCombo->findData(filter.contentType);
     m_typeCombo->setCurrentIndex(typeIndex >= 0 ? typeIndex : 0);
     const int appIndex = m_appCombo->findData(filter.sourceApp);
@@ -525,52 +545,69 @@ void MainWindow::buildSavedSearchesMenu()
 
 void MainWindow::applyCurrentFilter()
 {
-    FilterSpec filter;
-    filter.searchText = m_search->text().trimmed();
-    filter.contentType = m_typeCombo->currentData().toInt();
+    FilterSpec base;
+    base.contentType = m_typeCombo->currentData().toInt();
     if (m_groupFilter != 0)
-        filter.groupId = m_groupFilter;
+        base.groupId = m_groupFilter;
     if (m_sensitiveAction && m_sensitiveAction->isChecked())
-        filter.sensitiveOnly = true;
+        base.sensitiveOnly = true;
     if (m_pinnedOnlyAction && m_pinnedOnlyAction->isChecked())
-        filter.pinnedOnly = true;
+        base.pinnedOnly = true;
     const QString tagFilter = m_tagCombo ? m_tagCombo->currentData().toString() : QString();
     if (!tagFilter.isEmpty())
-        filter.tags << tagFilter;
+        base.tags << tagFilter;
     if (m_sortCombo)
-        filter.sortMode = static_cast<FilterSpec::SortMode>(m_sortCombo->currentData().toInt());
+        base.sortMode = static_cast<FilterSpec::SortMode>(m_sortCombo->currentData().toInt());
 
     const int datePreset = m_dateCombo->currentData().toInt();
     const QDateTime now = QDateTime::currentDateTime();
     const QDateTime startOfToday(now.date(), QTime(0, 0));
     switch (datePreset) {
     case 1:
-        filter.fromMs = startOfToday.toMSecsSinceEpoch();
+        base.fromMs = startOfToday.toMSecsSinceEpoch();
         break;
     case 2: {
         const QDateTime startOfYesterday(startOfToday.date().addDays(-1), QTime(0, 0));
-        filter.fromMs = startOfYesterday.toMSecsSinceEpoch();
-        filter.toMs = startOfToday.toMSecsSinceEpoch() - 1;
+        base.fromMs = startOfYesterday.toMSecsSinceEpoch();
+        base.toMs = startOfToday.toMSecsSinceEpoch() - 1;
         break;
     }
     case 3:
-        filter.fromMs = now.addDays(-7).toMSecsSinceEpoch();
+        base.fromMs = now.addDays(-7).toMSecsSinceEpoch();
         break;
     case 4:
-        filter.fromMs = now.addMonths(-1).toMSecsSinceEpoch();
+        base.fromMs = now.addMonths(-1).toMSecsSinceEpoch();
         break;
     case 99:
         if (m_lastRange.isValid) {
-            filter.fromMs = m_lastRange.fromMs;
-            filter.toMs = m_lastRange.toMs;
+            base.fromMs = m_lastRange.fromMs;
+            base.toMs = m_lastRange.toMs;
         }
         break;
     default:
         break;
     }
-    filter.sourceApp = m_appCombo->currentData().toString();
+    base.sourceApp = m_appCombo->currentData().toString();
+
+    // The search box carries free text plus field filters (app:, type:, …);
+    // typed fields override the matching toolbar presets.
+    const SearchEngine::ParsedQuery parsed = SearchEngine::parseQuery(m_search->text(), base);
+    const FilterSpec filter = parsed.filter;
     m_model->setFilter(filter);
     if (m_timeline) m_timeline->setFilter(filter);
+
+    if (m_queryHint) {
+        QString hint;
+        if (!parsed.applied.isEmpty())
+            hint = tr("Filtering by %1").arg(parsed.applied.join(QStringLiteral(" · ")));
+        if (!parsed.problems.isEmpty()) {
+            if (!hint.isEmpty())
+                hint += QStringLiteral("  •  ");
+            hint += parsed.problems.join(QStringLiteral(" · "));
+        }
+        m_queryHint->setText(hint);
+        m_queryHint->setVisible(!hint.isEmpty());
+    }
     updateActionStates();
 }
 

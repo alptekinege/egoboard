@@ -11,6 +11,7 @@ class EntryDelegate;
 class GroupsDock;
 class PreviewPane;
 class QComboBox;
+class QLabel;
 class QLineEdit;
 class QListView;
 class QSplitter;
@@ -66,6 +67,7 @@ private:
     GroupsDock *m_groupsDock = nullptr;
     QListView *m_list = nullptr;
     QLineEdit *m_search = nullptr;
+    QLabel *m_queryHint = nullptr;
     QComboBox *m_typeCombo = nullptr;
     QComboBox *m_dateCombo = nullptr;
     QComboBox *m_appCombo = nullptr;

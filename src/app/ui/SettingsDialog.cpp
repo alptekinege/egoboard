@@ -38,6 +38,7 @@
 #include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -828,7 +829,7 @@ QWidget *SettingsDialog::buildSearchPreviewPage()
     // query tester
     auto *testerRow = new QHBoxLayout();
     auto *testerEdit = new QLineEdit(ftsBox);
-    testerEdit->setPlaceholderText(tr("Test query, e.g. hello world"));
+    testerEdit->setPlaceholderText(tr("Test query, e.g. app:firefox invoice -draft"));
     auto *testerResult = new QLabel(ftsBox);
     testerResult->setTextFormat(Qt::RichText);
     testerRow->addWidget(testerEdit, 1);
@@ -836,25 +837,42 @@ QWidget *SettingsDialog::buildSearchPreviewPage()
     ftsLayout->addLayout(testerRow);
     connect(testerEdit, &QLineEdit::textChanged, this, [this, testerResult](const QString &t){
         if (t.trimmed().isEmpty()) { testerResult->clear(); return; }
+        // Explain the typed query: field filters, rejected values, the FTS5
+        // expression it becomes, the hit count and how long the match took.
+        const SearchEngine::ParsedQuery parsed = SearchEngine::parseQuery(t.trimmed());
+        QStringList lines;
+        if (!parsed.applied.isEmpty())
+            lines << tr("filters: %1").arg(parsed.applied.join(QStringLiteral(" · ")).toHtmlEscaped());
+        if (!parsed.problems.isEmpty())
+            lines << QStringLiteral("<b>%1</b>").arg(parsed.problems.join(QStringLiteral(" · ")).toHtmlEscaped());
+        if (!parsed.filter.excludeText.isEmpty())
+            lines << tr("excluding: <code>%1</code>").arg(parsed.filter.excludeText.toHtmlEscaped());
+
         QSqlDatabase db = m_ctx.storage()->database();
-        if (!SearchEngine::isFtsAvailable(db)) {
-            testerResult->setText(tr("<b>FTS5 unavailable</b> — substring (LIKE) search is used instead"));
-            return;
+        const QString ftsQuery = SearchEngine::buildFtsQuery(parsed.filter.searchText);
+        if (!ftsQuery.isEmpty()) {
+            if (!SearchEngine::isFtsAvailable(db)) {
+                lines << tr("<b>FTS5 unavailable</b> — substring (LIKE) search is used instead");
+            } else {
+                // Same query the list uses, plus how many entries it matches.
+                QElapsedTimer timer;
+                timer.start();
+                QSqlQuery q(db);
+                q.prepare(QStringLiteral("SELECT COUNT(*) FROM entries_fts WHERE entries_fts MATCH :q"));
+                q.bindValue(QStringLiteral(":q"), ftsQuery);
+                if (!q.exec() || !q.next()) {
+                    lines << tr("FTS: <code>%1</code> — <b>invalid query</b>")
+                                 .arg(ftsQuery.toHtmlEscaped());
+                } else {
+                    const qint64 hits =
+                        qMin<qint64>(q.value(0).toLongLong(), std::numeric_limits<int>::max());
+                    lines << tr("FTS: <code>%1</code> — %n hit(s) · %2 ms", nullptr, int(hits))
+                                 .arg(ftsQuery.toHtmlEscaped())
+                                 .arg(timer.elapsed());
+                }
+            }
         }
-        // Same query the list uses, plus how many entries it matches.
-        const QString ftsQuery = SearchEngine::buildFtsQuery(t.trimmed());
-        if (ftsQuery.isEmpty()) { testerResult->clear(); return; }
-        QSqlQuery q(db);
-        q.prepare(QStringLiteral("SELECT COUNT(*) FROM entries_fts WHERE entries_fts MATCH :q"));
-        q.bindValue(QStringLiteral(":q"), ftsQuery);
-        if (!q.exec() || !q.next()) {
-            testerResult->setText(tr("FTS: <code>%1</code> — <b>invalid query</b>")
-                                      .arg(ftsQuery.toHtmlEscaped()));
-            return;
-        }
-        const qint64 hits = qMin<qint64>(q.value(0).toLongLong(), std::numeric_limits<int>::max());
-        testerResult->setText(tr("FTS: <code>%1</code> — %n hit(s)", nullptr, int(hits))
-                                  .arg(ftsQuery.toHtmlEscaped()));
+        testerResult->setText(lines.join(QStringLiteral("<br/>")));
     });
     layout->addWidget(ftsBox);
 

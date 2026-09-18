@@ -2,6 +2,7 @@
 
 #include "ClipboardRecord.h"
 #include "FilterSpec.h"
+#include "SearchEngine.h"
 
 #include <QDialog>
 #include <QVector>
@@ -65,4 +66,6 @@ private:
     struct SnippetItem { qint64 id; QString name; QString templateText; };
     QVector<SnippetItem> m_snippetItems;
     QString m_currentQuery;
+    // Parsed query (field filters, free text, problems) behind the last search.
+    SearchEngine::ParsedQuery m_parsed;
 };
