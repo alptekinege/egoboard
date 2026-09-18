@@ -152,6 +152,7 @@ private:
     QListWidget *m_transformList = nullptr;
     QLabel *m_snippetStatus = nullptr;
     QListWidget *m_snippetList = nullptr;
+    QLabel *m_snippetShortcutProblems = nullptr;
     QLabel *m_scriptStatus = nullptr;
     QListWidget *m_scriptList = nullptr;
 

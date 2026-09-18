@@ -81,6 +81,14 @@ public:
     void setCapturePaused(bool paused, bool fromLock = false);
     bool isCapturePaused() const { return m_capturePaused; }
 
+    // Expands a snippet with the current clipboard text and pastes it into the
+    // focused window (global snippet shortcut).
+    void pasteSnippet(qint64 snippetId);
+
+    // Snippet shortcuts that could not be bound (invalid, reserved or shared
+    // with another snippet) — shown in Settings rather than failing silently.
+    QStringList snippetShortcutProblems() const { return m_snippetShortcutProblems; }
+
     // Installs a color scheme, an icon theme and the text appearance into the
     // running app (palette, icon search paths, UI font, repaint nudge). Startup,
     // settings changes and Plasma's own theme changes all go through here; the
@@ -95,6 +103,9 @@ private slots:
 
 private:
     void onCaptured(const ClipboardRecord &record);
+    // Re-registers the snippet hotkeys from the database and records the ones
+    // that could not be bound.
+    void bindSnippetShortcuts();
     void scheduleVacuumChecks();
     // One-shot background PRAGMA quick_check; notifies only when it fails.
     void scheduleIntegrityCheck();
@@ -137,4 +148,5 @@ private:
     bool m_capturePaused = false;
     bool m_manualPause = false; // set by tray/hotkey, survives lock pauses
     bool m_lockPause = false;
+    QStringList m_snippetShortcutProblems;
 };

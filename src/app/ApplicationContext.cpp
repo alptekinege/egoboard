@@ -364,6 +364,18 @@ void ApplicationContext::start()
             [this](bool paused) { setCapturePaused(paused); });
     watchSessionLock();
 
+    // Snippet hotkeys mirror the database: bind at startup and after every
+    // snippet change, reporting whatever could not be bound.
+    connect(m_hotkeys, &HotkeyManager::snippetRequested, this, &ApplicationContext::pasteSnippet);
+    connect(m_snippets, &SnippetManager::snippetsChanged, this, [this] {
+        bindSnippetShortcuts();
+    });
+    // Imports and restores rewrite the snippets table behind the manager's back.
+    connect(m_storage, &StorageManager::storageReset, this, [this] {
+        bindSnippetShortcuts();
+    });
+    bindSnippetShortcuts();
+
     scheduleVacuumChecks();
     scheduleIntegrityCheck();
 
@@ -601,6 +613,42 @@ void ApplicationContext::setCapturePaused(bool paused, bool fromLock)
                                                     "global shortcut."),
                              QStringLiteral("edit-paste"), KNotification::CloseOnTimeout);
     }
+}
+
+void ApplicationContext::bindSnippetShortcuts()
+{
+    if (!m_hotkeys || !m_snippets)
+        return;
+    m_snippetShortcutProblems = m_hotkeys->setSnippetShortcuts(m_snippets->snippets());
+}
+
+void ApplicationContext::pasteSnippet(qint64 snippetId)
+{
+    if (!m_snippets)
+        return;
+    const std::optional<Snippet> snippet = m_snippets->snippet(snippetId);
+    if (!snippet)
+        return;
+
+    // The shortcut expands against whatever is on the clipboard right now and
+    // pastes the result like a history entry would be pasted.
+    const QString expanded = SnippetManager::expand(snippet->templateText,
+                                                    QGuiApplication::clipboard()->text());
+    if (expanded.isEmpty())
+        return;
+
+    ClipboardRecord record;
+    record.type = ContentType::Text;
+    record.textData = expanded;
+    record.preview = expanded.left(120);
+    record.sizeBytes = expanded.toUtf8().size();
+
+    if (m_dataControl)
+        m_dataControl->suppressOwnSets();
+    QWidget *hideTarget = nullptr;
+    if (m_settings->closeAfterPaste() && m_window->isVisible())
+        hideTarget = m_window.get();
+    m_paster->paste(record, hideTarget);
 }
 
 void ApplicationContext::watchSessionLock()

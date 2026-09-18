@@ -1289,7 +1289,13 @@ QWidget *SettingsDialog::buildAutomationPage()
     m_snippetList = new QListWidget(snippetBox);
     m_snippetList->setMaximumHeight(120);
     snippetLayout->addWidget(m_snippetList);
-    auto *snippetHint = new QLabel(tr("Placeholders: <code>{{clipboard}}</code> / <code>{{text}}</code>, <code>{{date}}</code> YYYY-MM-DD, <code>{{time}}</code> HH:mm, <code>{{datetime}}</code>, <code>{{timestamp}}</code>. Expand via palette <code>&gt;snippet</code> or context menu."), snippetBox);
+    m_snippetShortcutProblems = new QLabel(snippetBox);
+    m_snippetShortcutProblems->setWordWrap(true);
+    m_snippetShortcutProblems->setTextFormat(Qt::RichText);
+    m_snippetShortcutProblems->setStyleSheet(QStringLiteral("color: palette(bright-text); font-size: 11px;"));
+    m_snippetShortcutProblems->setVisible(false);
+    snippetLayout->addWidget(m_snippetShortcutProblems);
+    auto *snippetHint = new QLabel(tr("Placeholders: <code>{{clipboard}}</code> / <code>{{text}}</code>, <code>{{date}}</code> YYYY-MM-DD, <code>{{time}}</code> HH:mm, <code>{{datetime}}</code>, <code>{{timestamp}}</code>. Expand via palette <code>&gt;snippet</code>, context menu, or a global shortcut set in Tools ▸ Snippets."), snippetBox);
     snippetHint->setWordWrap(true);
     snippetHint->setTextFormat(Qt::RichText);
     snippetHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
@@ -1323,7 +1329,9 @@ QWidget *SettingsDialog::buildAutomationPage()
         bool ok=false;
         QString tmpl = QInputDialog::getText(this, tr("Edit snippet"), tr("Template:"), QLineEdit::Normal, sn.templateText, &ok);
         if (!ok) return;
-        m_ctx.snippets()->updateSnippet(id, sn.name, tmpl, {});
+        // Keep the snippet's global shortcut: this inline editor only edits
+        // the template (shortcuts are set in Tools ▸ Snippets).
+        m_ctx.snippets()->updateSnippet(id, sn.name, tmpl, sn.shortcut);
         populateSnippetList();
     });
     connect(delSnippetBtn, &QPushButton::clicked, this, [this]{
@@ -1576,9 +1584,23 @@ void SettingsDialog::populateSnippetList()
     m_snippetList->clear();
     const auto sns = m_ctx.snippets()->snippets();
     for (const auto &s : sns) {
-        auto *it = new QListWidgetItem(QStringLiteral("%1 — %2").arg(s.name, s.templateText.left(40)), m_snippetList);
+        const QString shortcut = s.shortcut.trimmed().isEmpty()
+            ? QString()
+            : QStringLiteral("  [%1]").arg(QKeySequence::fromString(s.shortcut, QKeySequence::PortableText)
+                                               .toString(QKeySequence::NativeText));
+        auto *it = new QListWidgetItem(QStringLiteral("%1%2 — %3").arg(s.name, shortcut, s.templateText.left(40)), m_snippetList);
         it->setData(Qt::UserRole, s.id);
         it->setToolTip(s.templateText);
+    }
+    // Snippet shortcuts that could not be bound (invalid, reserved, duplicated)
+    // are reported instead of failing silently.
+    if (m_snippetShortcutProblems) {
+        const QStringList problems = m_ctx.snippetShortcutProblems();
+        m_snippetShortcutProblems->setVisible(!problems.isEmpty());
+        if (!problems.isEmpty()) {
+            m_snippetShortcutProblems->setText(tr("<b>Unbound snippet shortcuts:</b><br>%1")
+                                                   .arg(problems.join(QStringLiteral("<br>"))));
+        }
     }
 }
 

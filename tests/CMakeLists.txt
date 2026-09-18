@@ -135,3 +135,12 @@ target_include_directories(tst_krunner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sr
 target_link_libraries(tst_krunner PRIVATE egoboard::core Qt6::Test Qt6::Sql Qt6::DBus)
 target_compile_options(tst_krunner PRIVATE -Wall -Wextra)
 add_test(NAME tst_krunner COMMAND tst_krunner)
+
+# Snippet shortcut resolution: pure logic, no KGlobalAccel instance is created
+find_package(KF6GlobalAccel 6.0 REQUIRED)
+find_package(KF6XmlGui 6.0 REQUIRED) # KActionCollection
+add_executable(tst_hotkeys tst_hotkeys.cpp ../src/app/HotkeyManager.cpp)
+target_include_directories(tst_hotkeys PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(tst_hotkeys PRIVATE egoboard::core Qt6::Test Qt6::Gui KF6::GlobalAccel KF6::XmlGui)
+target_compile_options(tst_hotkeys PRIVATE -Wall -Wextra)
+add_test(NAME tst_hotkeys COMMAND tst_hotkeys)

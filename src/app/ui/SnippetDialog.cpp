@@ -1,6 +1,9 @@
 #include "SnippetDialog.h"
 
+#include "HotkeyManager.h"
 #include "SnippetManager.h"
+
+#include <KKeySequenceWidget>
 
 #include <QDialogButtonBox>
 #include <QHBoxLayout>
@@ -12,6 +15,8 @@
 #include <QPushButton>
 #include <QSplitter>
 #include <QVBoxLayout>
+
+#include <limits>
 
 SnippetDialog::SnippetDialog(SnippetManager *manager, const QString &clipboardText, QWidget *parent)
     : QDialog(parent)
@@ -34,10 +39,14 @@ SnippetDialog::SnippetDialog(SnippetManager *manager, const QString &clipboardTe
     m_name->setPlaceholderText(tr("e.g. git commit"));
     form->addWidget(m_name);
 
-    form->addWidget(new QLabel(tr("Shortcut (optional, not yet bound):"), right));
-    m_shortcut = new QLineEdit(right);
-    m_shortcut->setPlaceholderText(tr("e.g. gcm"));
+    form->addWidget(new QLabel(tr("Global shortcut (optional):"), right));
+    m_shortcut = new KKeySequenceWidget(right);
+    m_shortcut->setToolTip(tr("Pressed anywhere: the snippet is expanded with the current "
+                              "clipboard text and pasted into the focused window."));
     form->addWidget(m_shortcut);
+    m_shortcutNote = new QLabel(right);
+    m_shortcutNote->setWordWrap(true);
+    form->addWidget(m_shortcutNote);
 
     form->addWidget(new QLabel(tr("Template (use {{clipboard}}, {{date}}, {{time}}, {{datetime}}):"), right));
     m_template = new QPlainTextEdit(right);
@@ -91,6 +100,8 @@ SnippetDialog::SnippetDialog(SnippetManager *manager, const QString &clipboardTe
     connect(insertBtn, &QPushButton::clicked, this, &SnippetDialog::onInsert);
     connect(m_template, &QPlainTextEdit::textChanged, this, &SnippetDialog::updatePreview);
     connect(m_name, &QLineEdit::textChanged, this, &SnippetDialog::updatePreview);
+    connect(m_shortcut, &KKeySequenceWidget::keySequenceChanged, this,
+            &SnippetDialog::updateShortcutNote);
 
     reload();
     if (m_list->count() > 0) m_list->setCurrentRow(0);
@@ -114,8 +125,9 @@ void SnippetDialog::onSelectionChanged()
         m_currentId = 0;
         m_name->clear();
         m_template->clear();
-        m_shortcut->clear();
+        m_shortcut->setKeySequence(QKeySequence());
         updatePreview();
+        updateShortcutNote();
         return;
     }
     const qint64 id = it->data(Qt::UserRole).toLongLong();
@@ -124,9 +136,61 @@ void SnippetDialog::onSelectionChanged()
         QSignalBlocker b1(m_name), b2(m_template), b3(m_shortcut);
         m_name->setText(s->name);
         m_template->setPlainText(s->templateText);
-        m_shortcut->setText(s->shortcut);
+        m_shortcut->setKeySequence(QKeySequence::fromString(s->shortcut, QKeySequence::PortableText));
     }
     updatePreview();
+    updateShortcutNote();
+}
+
+void SnippetDialog::updateShortcutNote()
+{
+    if (!m_shortcutNote)
+        return;
+    const QKeySequence sequence = m_shortcut->keySequence();
+    if (sequence.isEmpty()) {
+        m_shortcutNote->setText(tr("Not bound — the snippet is only reachable from the menu."));
+        m_shortcutNote->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+        return;
+    }
+
+    // Check the editor's sequence against the stored snippets (this one
+    // replaced), so duplicates, reserved keys and unusable sequences are
+    // reported before saving.
+    QVector<Snippet> snapshot = m_manager ? m_manager->snippets() : QVector<Snippet>{};
+    const QString portable = sequence.toString(QKeySequence::PortableText);
+    bool replaced = false;
+    for (Snippet &snippet : snapshot) {
+        if (snippet.id == m_currentId) {
+            snippet.shortcut = portable;
+            replaced = true;
+        }
+    }
+    if (!replaced) {
+        // Unsaved snippet: entered last, so a stored snippet keeps the sequence.
+        Snippet draft;
+        draft.id = std::numeric_limits<qint64>::max();
+        draft.name = m_name->text().trimmed().isEmpty() ? tr("New snippet") : m_name->text().trimmed();
+        draft.shortcut = portable;
+        snapshot.append(draft);
+    }
+    const QVector<HotkeyManager::SnippetBinding> bindings =
+        HotkeyManager::resolveSnippetShortcuts(snapshot, HotkeyManager::reservedSequences());
+    QString problem;
+    for (const HotkeyManager::SnippetBinding &binding : bindings) {
+        if (binding.sequence.toString(QKeySequence::PortableText) != portable)
+            continue;
+        if (!binding.problem.isEmpty()) {
+            problem = binding.problem;
+            break;
+        }
+    }
+    if (problem.isEmpty()) {
+        m_shortcutNote->setText(tr("Pastes the expanded snippet into the focused window."));
+        m_shortcutNote->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+    } else {
+        m_shortcutNote->setText(problem);
+        m_shortcutNote->setStyleSheet(QStringLiteral("color: palette(bright-text); font-size: 11px;"));
+    }
 }
 
 void SnippetDialog::updatePreview()
@@ -134,6 +198,11 @@ void SnippetDialog::updatePreview()
     const QString tmpl = m_template->toPlainText();
     const QString expanded = SnippetManager::expand(tmpl, m_clipboard);
     m_preview->setPlainText(expanded);
+}
+
+QString SnippetDialog::shortcutText() const
+{
+    return m_shortcut->keySequence().toString(QKeySequence::PortableText).trimmed();
 }
 
 void SnippetDialog::onCreate()
@@ -144,7 +213,7 @@ void SnippetDialog::onCreate()
         QMessageBox::warning(this, tr("Snippet"), tr("Name and template are required."));
         return;
     }
-    const qint64 id = m_manager->createSnippet(name, tmpl, m_shortcut->text().trimmed());
+    const qint64 id = m_manager->createSnippet(name, tmpl, shortcutText());
     if (id == 0) {
         QMessageBox::warning(this, tr("Snippet"), tr("Failed to create snippet."));
         return;
@@ -170,7 +239,7 @@ void SnippetDialog::onUpdate()
         QMessageBox::warning(this, tr("Snippet"), tr("Name and template are required."));
         return;
     }
-    if (!m_manager->updateSnippet(m_currentId, name, tmpl, m_shortcut->text().trimmed())) {
+    if (!m_manager->updateSnippet(m_currentId, name, tmpl, shortcutText())) {
         QMessageBox::warning(this, tr("Snippet"), tr("Update failed."));
         return;
     }
@@ -195,7 +264,7 @@ void SnippetDialog::onDelete()
     m_currentId = 0;
     reload();
     if (m_list->count() > 0) m_list->setCurrentRow(0);
-    else { m_name->clear(); m_template->clear(); m_shortcut->clear(); updatePreview(); }
+    else { m_name->clear(); m_template->clear(); m_shortcut->setKeySequence(QKeySequence()); updatePreview(); updateShortcutNote(); }
 }
 
 void SnippetDialog::onInsert()
