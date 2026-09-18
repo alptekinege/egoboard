@@ -68,6 +68,9 @@ private:
     QCheckBox *m_hideOnFocusOut = nullptr;
     QCheckBox *m_autostart = nullptr;
     QComboBox *m_trayMode = nullptr;
+    QComboBox *m_trayPrimaryClick = nullptr;
+    QComboBox *m_traySecondaryClick = nullptr;
+    QCheckBox *m_trayWheelCycles = nullptr;
     QCheckBox *m_notifications = nullptr;
     QLineEdit *m_autostartCommand = nullptr;
     QComboBox *m_themeCombo = nullptr;

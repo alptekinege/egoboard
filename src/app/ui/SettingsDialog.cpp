@@ -311,6 +311,26 @@ QWidget *SettingsDialog::buildGeneralPage()
     m_trayMode->addItem(tr("Always show"), QStringLiteral("always"));
     m_trayMode->addItem(tr("Hidden (no tray icon)"), QStringLiteral("hidden"));
     trayLayout->addRow(tr("Tray icon:"), m_trayMode);
+
+    // What the clicks do. Both combos share the same options; the wheel below
+    // walks the recent entries like Klipper does.
+    const auto addClickOptions = [this](QComboBox *combo) {
+        combo->addItem(tr("Show/hide history"), int(SettingsManager::TrayClick::ShowWindow));
+        combo->addItem(tr("Quick paste menu"), int(SettingsManager::TrayClick::QuickPaste));
+        combo->addItem(tr("Pause/resume capture"), int(SettingsManager::TrayClick::TogglePause));
+        combo->addItem(tr("Do nothing"), int(SettingsManager::TrayClick::Nothing));
+    };
+    m_trayPrimaryClick = new QComboBox(trayBox);
+    addClickOptions(m_trayPrimaryClick);
+    m_trayPrimaryClick->setToolTip(tr("Middle click is the secondary button; left click is the usual activation."));
+    trayLayout->addRow(tr("Left click:"), m_trayPrimaryClick);
+    m_traySecondaryClick = new QComboBox(trayBox);
+    addClickOptions(m_traySecondaryClick);
+    trayLayout->addRow(tr("Middle click:"), m_traySecondaryClick);
+    m_trayWheelCycles = new QCheckBox(tr("Scroll wheel walks the recent entries"), trayBox);
+    m_trayWheelCycles->setToolTip(tr("Wheel up copies the next older entry to the clipboard, wheel down comes back. A new copy starts over."));
+    trayLayout->addRow(QString(), m_trayWheelCycles);
+
     m_notifications = new QCheckBox(tr("Show notification when sensitive content is skipped"), trayBox);
     trayLayout->addRow(QString(), m_notifications);
     trayLayout->addRow(QString(), makeHint(tr("Tray uses <code>KStatusNotifierItem</code> (Plasma). Hidden still keeps the app running — show via hotkey."), trayBox));
@@ -1858,6 +1878,16 @@ void SettingsDialog::load()
     };
     for (int i = 0; i < m_captureTypeBoxes.size() && i < 4; ++i)
         m_captureTypeBoxes[i]->setChecked(captureTypes[i]);
+    if (m_trayPrimaryClick) {
+        const int idx = m_trayPrimaryClick->findData(int(m_ctx.settings()->trayPrimaryClick()));
+        if (idx >= 0) m_trayPrimaryClick->setCurrentIndex(idx);
+    }
+    if (m_traySecondaryClick) {
+        const int idx = m_traySecondaryClick->findData(int(m_ctx.settings()->traySecondaryClick()));
+        if (idx >= 0) m_traySecondaryClick->setCurrentIndex(idx);
+    }
+    if (m_trayWheelCycles) m_trayWheelCycles->setChecked(m_ctx.settings()->trayWheelCycles());
+
     if (m_trayMode) {
         const QString m = m_ctx.settings()->trayMode();
         int idx = m_trayMode->findData(m);
@@ -1991,6 +2021,13 @@ void SettingsDialog::save()
         m_ctx.settings()->setCaptureFiles(m_captureTypeBoxes[3]->isChecked());
     }
     if (m_trayMode) m_ctx.settings()->setTrayMode(m_trayMode->currentData().toString());
+    if (m_trayPrimaryClick)
+        m_ctx.settings()->setTrayPrimaryClick(
+            static_cast<SettingsManager::TrayClick>(m_trayPrimaryClick->currentData().toInt()));
+    if (m_traySecondaryClick)
+        m_ctx.settings()->setTraySecondaryClick(
+            static_cast<SettingsManager::TrayClick>(m_traySecondaryClick->currentData().toInt()));
+    if (m_trayWheelCycles) m_ctx.settings()->setTrayWheelCycles(m_trayWheelCycles->isChecked());
     if (m_notifications) m_ctx.settings()->setNotificationsEnabled(m_notifications->isChecked());
 
     m_ctx.settings()->setDebounceMs(m_debounce->value());

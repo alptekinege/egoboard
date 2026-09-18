@@ -162,3 +162,10 @@ target_include_directories(tst_paletteui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../
 target_link_libraries(tst_paletteui PRIVATE egoboard::core Qt6::Widgets Qt6::Test Qt6::Qml)
 target_compile_options(tst_paletteui PRIVATE -Wall -Wextra)
 add_test(NAME tst_paletteui COMMAND tst_paletteui)
+
+# Wheel-over-tray-icon state machine (header-only, so no extra sources)
+add_executable(tst_traycycle tst_traycycle.cpp)
+target_include_directories(tst_traycycle PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app)
+target_link_libraries(tst_traycycle PRIVATE Qt6::Core Qt6::Test)
+target_compile_options(tst_traycycle PRIVATE -Wall -Wextra)
+add_test(NAME tst_traycycle COMMAND tst_traycycle)

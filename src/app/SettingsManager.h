@@ -53,6 +53,22 @@ public:
     bool pauseOnLock() const;
     void setPauseOnLock(bool pause);
 
+    // What a tray click does. Values are stable (stored in the config).
+    enum class TrayClick {
+        ShowWindow = 0,
+        QuickPaste = 1,
+        TogglePause = 2,
+        Nothing = 3,
+    };
+    TrayClick trayPrimaryClick() const; // left click
+    void setTrayPrimaryClick(TrayClick action);
+    TrayClick traySecondaryClick() const; // middle click
+    void setTraySecondaryClick(TrayClick action);
+
+    // Scrolling over the tray icon walks the recent entries (Klipper-like).
+    bool trayWheelCycles() const;
+    void setTrayWheelCycles(bool enabled);
+
     // General
     bool startVisible() const;
     void setStartVisible(bool visible);

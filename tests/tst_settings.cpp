@@ -41,6 +41,7 @@ private slots:
     void persistsAcrossInstances();
     void searchScopeAndRecentsPersist();
     void recentPaletteCommandsPersist();
+    void trayBehaviourPersists();
     void pauseOnLockSettingPersists();
     void backupSettingsPersist();
     void configMigrationsAreForwardOnly();
@@ -651,6 +652,34 @@ void TestSettings::recentPaletteCommandsPersist()
     loaded.addRecentPaletteCommand(QStringLiteral("tag"));
     QCOMPARE(loaded.recentPaletteCommands().first(), QStringLiteral("tag"));
     QCOMPARE(loaded.recentPaletteCommands().size(), 10);
+}
+
+void TestSettings::trayBehaviourPersists()
+{
+    {
+        SettingsManager settings;
+        // Defaults match what the tray did before these settings existed.
+        QCOMPARE(settings.trayPrimaryClick(), SettingsManager::TrayClick::ShowWindow);
+        QCOMPARE(settings.traySecondaryClick(), SettingsManager::TrayClick::QuickPaste);
+        QCOMPARE(settings.trayWheelCycles(), true);
+
+        settings.setTrayPrimaryClick(SettingsManager::TrayClick::TogglePause);
+        settings.setTraySecondaryClick(SettingsManager::TrayClick::Nothing);
+        settings.setTrayWheelCycles(false);
+    }
+    SettingsManager loaded;
+    QCOMPARE(loaded.trayPrimaryClick(), SettingsManager::TrayClick::TogglePause);
+    QCOMPARE(loaded.traySecondaryClick(), SettingsManager::TrayClick::Nothing);
+    QCOMPARE(loaded.trayWheelCycles(), false);
+
+    // Every value survives, and a hand-edited out-of-range value falls back to
+    // that key's default instead of becoming an undefined enum.
+    for (int value = 0; value <= int(SettingsManager::TrayClick::Nothing); ++value)
+        loaded.setTrayPrimaryClick(static_cast<SettingsManager::TrayClick>(value));
+    loaded.setTrayPrimaryClick(static_cast<SettingsManager::TrayClick>(99));
+    QCOMPARE(loaded.trayPrimaryClick(), SettingsManager::TrayClick::ShowWindow);
+    loaded.setTraySecondaryClick(static_cast<SettingsManager::TrayClick>(-1));
+    QCOMPARE(loaded.traySecondaryClick(), SettingsManager::TrayClick::QuickPaste);
 }
 
 void TestSettings::pauseOnLockSettingPersists()

@@ -1,5 +1,6 @@
 #include "TrayController.h"
 
+#include "SettingsManager.h"
 #include "StorageManager.h"
 
 #include <KStatusNotifierItem>
@@ -10,6 +11,7 @@
 #include <QIcon>
 #include <QMenu>
 #include <QSystemTrayIcon>
+
 bool TrayController::statusNotifierHostAvailable()
 {
     const QDBusConnection bus = QDBusConnection::sessionBus();
@@ -17,9 +19,10 @@ bool TrayController::statusNotifierHostAvailable()
         && bus.interface()->isServiceRegistered(QStringLiteral("org.kde.StatusNotifierWatcher"));
 }
 
-TrayController::TrayController(StorageManager *storage, QObject *parent)
+TrayController::TrayController(StorageManager *storage, SettingsManager *settings, QObject *parent)
     : QObject(parent)
     , m_storage(storage)
+    , m_settings(settings)
 {
     m_menu = new QMenu();
     m_menu->setSeparatorsCollapsible(false);
@@ -40,10 +43,21 @@ TrayController::TrayController(StorageManager *storage, QObject *parent)
         connect(m_sni, &KStatusNotifierItem::activateRequested, this,
                 [this](bool active, const QPoint &) {
                     if (active)
-                        emit toggleRequested();
+                        runClickAction(false);
                 });
         connect(m_sni, &KStatusNotifierItem::secondaryActivateRequested, this,
-                [this](const QPoint &) { emit quickPasteRequested(); });
+                [this](const QPoint &) { runClickAction(true); });
+        // The wheel needs an SNI host; the QSystemTrayIcon fallback has no
+        // equivalent signal at all.
+        connect(m_sni, &KStatusNotifierItem::scrollRequested, this,
+                [this](int delta, Qt::Orientation orientation) {
+                    if (!m_settings || !m_settings->trayWheelCycles())
+                        return;
+                    if (orientation != Qt::Vertical || delta == 0)
+                        return;
+                    // Wheel up walks back in history, like Klipper.
+                    emit wheelSteps(delta > 0 ? 1 : -1);
+                });
     } else if (QSystemTrayIcon::isSystemTrayAvailable()) {
         m_fallbackIcon = new QSystemTrayIcon(QIcon::fromTheme(QStringLiteral("egoboard"),
                                                              QIcon(QStringLiteral(":/icons/egoboard.svg"))),
@@ -53,12 +67,39 @@ TrayController::TrayController(StorageManager *storage, QObject *parent)
         connect(m_fallbackIcon, &QSystemTrayIcon::activated, this,
                 [this](QSystemTrayIcon::ActivationReason reason) {
                     if (reason == QSystemTrayIcon::Trigger)
-                        emit toggleRequested();
+                        runClickAction(false);
                     else if (reason == QSystemTrayIcon::MiddleClick)
-                        emit quickPasteRequested();
+                        runClickAction(true);
                 });
     } else {
         qWarning("egoboard: no system tray available");
+    }
+}
+
+void TrayController::runClickAction(bool secondary)
+{
+    if (!m_settings) {
+        // No settings (tests, early shutdown): keep the historical behaviour.
+        if (secondary)
+            emit quickPasteRequested();
+        else
+            emit toggleRequested();
+        return;
+    }
+    const SettingsManager::TrayClick action = secondary ? m_settings->traySecondaryClick()
+                                                        : m_settings->trayPrimaryClick();
+    switch (action) {
+    case SettingsManager::TrayClick::ShowWindow:
+        emit toggleRequested();
+        break;
+    case SettingsManager::TrayClick::QuickPaste:
+        emit quickPasteRequested();
+        break;
+    case SettingsManager::TrayClick::TogglePause:
+        emit pauseToggled(!m_paused);
+        break;
+    case SettingsManager::TrayClick::Nothing:
+        break;
     }
 }
 

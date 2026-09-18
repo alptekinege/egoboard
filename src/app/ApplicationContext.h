@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ClipboardRecord.h"
+#include "TrayCycle.h"
 #include "TextAppearance.h"
 
 #include <QObject>
@@ -85,6 +86,10 @@ public:
     // focused window (global snippet shortcut).
     void pasteSnippet(qint64 snippetId);
 
+    // Wheel over the tray icon: puts the entry `steps` further into the recent
+    // history on the clipboard (positive = older) and says which one it is.
+    void cycleRecentClipboard(int steps);
+
     // Snippet shortcuts that could not be bound (invalid, reserved or shared
     // with another snippet) — shown in Settings rather than failing silently.
     QStringList snippetShortcutProblems() const { return m_snippetShortcutProblems; }
@@ -149,4 +154,5 @@ private:
     bool m_manualPause = false; // set by tray/hotkey, survives lock pauses
     bool m_lockPause = false;
     QStringList m_snippetShortcutProblems;
+    TrayCycle m_trayCycle; // wheel-over-icon position in the recent entries
 };

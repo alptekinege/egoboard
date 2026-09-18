@@ -190,7 +190,7 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
     m_paster = new AutoPaster(m_watcher, this);
     m_expire = new ExpireScheduler(m_storage, m_settings, this);
     m_hotkeys = new HotkeyManager(this);
-    m_tray = new TrayController(m_storage, this);
+    m_tray = new TrayController(m_storage, m_settings, this);
     m_window = std::make_unique<MainWindow>(*this);
     m_quickPaste = new QuickPasteMenu(m_storage, m_settings->quickPasteCount());
     m_ocr = new OcrWorker(m_storage, this);
@@ -373,6 +373,8 @@ void ApplicationContext::start()
     // lock all funnel into one state.
     connect(m_tray, &TrayController::pauseToggled, this,
             [this](bool paused) { setCapturePaused(paused); });
+    connect(m_tray, &TrayController::wheelSteps, this,
+            &ApplicationContext::cycleRecentClipboard);
     connect(m_hotkeys, &HotkeyManager::pauseToggleRequested, this,
             [this](bool paused) { setCapturePaused(paused); });
     watchSessionLock();
@@ -432,6 +434,9 @@ void ApplicationContext::applyThemes(const QString &colorTheme, const QString &i
 
 void ApplicationContext::onCaptured(const ClipboardRecord &record)
 {
+    // A new copy moves the top of the history, so a wheel walk starts over.
+    m_trayCycle.reset();
+
     bool updatedExisting = false;
     const qint64 id = m_storage->insertOrUpdate(record, &updatedExisting);
     if (id == 0)
@@ -662,6 +667,41 @@ void ApplicationContext::pasteSnippet(qint64 snippetId)
     if (m_settings->closeAfterPaste() && m_window->isVisible())
         hideTarget = m_window.get();
     m_paster->paste(record, hideTarget);
+}
+
+void ApplicationContext::cycleRecentClipboard(int steps)
+{
+    // The tray menu shows the newest handful of entries; walking the same window
+    // keeps the wheel and the menu consistent.
+    constexpr int kCycleWindow = 10;
+    const auto recent = m_storage->fetchPage(FilterSpec{}, PageCursor{}, kCycleWindow);
+    if (recent.isEmpty()) {
+        m_trayCycle.reset();
+        return;
+    }
+
+    const int index = m_trayCycle.advance(steps, recent.size());
+    if (index < 0)
+        return;
+    const ClipboardRecord &record = recent.at(index);
+    ClipboardRecord full;
+    if (!m_storage->fetchFull(record.id, &full))
+        full = record;
+
+    if (m_dataControl)
+        m_dataControl->suppressOwnSets();
+    if (!m_paster->copyToClipboard(full))
+        return;
+
+    // Say what is on the clipboard now: without it a wheel scroll looks like it
+    // did nothing (the paste target is the user's next Ctrl+V).
+    const QString preview = record.preview.isEmpty() ? record.textData : record.preview;
+    KNotification::event(QStringLiteral("trayCycle"),
+                         tr("Copied from history (%1 of %2)")
+                             .arg(m_trayCycle.position())
+                             .arg(recent.size()),
+                         preview.left(120), QStringLiteral("edit-copy"),
+                         KNotification::CloseOnTimeout);
 }
 
 void ApplicationContext::watchSessionLock()

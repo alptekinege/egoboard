@@ -198,6 +198,20 @@ void SettingsManager::setCaptureFiles(bool enabled)
     save();
 }
 
+namespace {
+// Reads a TrayClick from the config, falling back to `fallback` for values that
+// are out of range (a hand-edited or future config).
+SettingsManager::TrayClick readTrayClick(const KConfigGroup &group, const char *key,
+                                         SettingsManager::TrayClick fallback)
+{
+    const int value = group.readEntry(key, int(fallback));
+    if (value < int(SettingsManager::TrayClick::ShowWindow)
+        || value > int(SettingsManager::TrayClick::Nothing))
+        return fallback;
+    return static_cast<SettingsManager::TrayClick>(value);
+}
+} // namespace
+
 bool SettingsManager::pauseOnLock() const
 {
     return m_config->group(kGroupCapture).readEntry("PauseOnLock", true);
@@ -206,6 +220,41 @@ bool SettingsManager::pauseOnLock() const
 void SettingsManager::setPauseOnLock(bool pause)
 {
     m_config->group(kGroupCapture).writeEntry("PauseOnLock", pause);
+    save();
+}
+
+SettingsManager::TrayClick SettingsManager::trayPrimaryClick() const
+{
+    // A left click has always toggled the window: keep that as the default.
+    return readTrayClick(m_config->group(kGroupUi), "TrayPrimaryClick", TrayClick::ShowWindow);
+}
+
+void SettingsManager::setTrayPrimaryClick(TrayClick action)
+{
+    m_config->group(kGroupUi).writeEntry("TrayPrimaryClick", int(action));
+    save();
+}
+
+SettingsManager::TrayClick SettingsManager::traySecondaryClick() const
+{
+    // Middle click opened quick paste before this setting existed.
+    return readTrayClick(m_config->group(kGroupUi), "TraySecondaryClick", TrayClick::QuickPaste);
+}
+
+void SettingsManager::setTraySecondaryClick(TrayClick action)
+{
+    m_config->group(kGroupUi).writeEntry("TraySecondaryClick", int(action));
+    save();
+}
+
+bool SettingsManager::trayWheelCycles() const
+{
+    return m_config->group(kGroupUi).readEntry("TrayWheelCycles", true);
+}
+
+void SettingsManager::setTrayWheelCycles(bool enabled)
+{
+    m_config->group(kGroupUi).writeEntry("TrayWheelCycles", enabled);
     save();
 }
 
