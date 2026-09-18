@@ -68,6 +68,8 @@ src/
 │   ├── SystemThemeWatcher.{h,cpp}# Re-applies themes when Plasma changes them
 │   └── ui/                       # Qt Widgets presentation layer
 │       ├── MainWindow.{h,cpp}          # Main two-pane browser window
+│       ├── DesignTokens.h              # Spacing/radii/icons, row + timeline metrics, colors
+│       ├── UiHelpers.{h,cpp}           # Hint labels, humanSize, search-field style, motion
 │       ├── EntryDelegate.{h,cpp}       # High-performance custom item delegate
 │       ├── PreviewPane.{h,cpp}         # Multi-format preview stack
 │       ├── QuickPasteMenu.{h,cpp}      # Frameless overlay with numeric shortcuts

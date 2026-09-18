@@ -186,6 +186,9 @@ public:
     TextAppearance::Overrides textAppearance() const;
     bool toolbarIconOnly() const; // main-window toolbar buttons show icons only
     void setToolbarIconOnly(bool iconOnly);
+    // Skips the (already capped) popup fades and the timeline hover transition.
+    bool reduceMotion() const;
+    void setReduceMotion(bool reduce);
 
     // Timeline strip (14-day histogram) above the history list
     bool timelineEnabled() const;

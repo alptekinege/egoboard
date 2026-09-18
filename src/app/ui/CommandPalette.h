@@ -12,6 +12,7 @@ class IClipboardStorage;
 class QListView;
 class QLineEdit;
 class QLabel;
+class QFrame;
 class QAbstractListModel;
 class SnippetManager;
 class ScriptActionManager;
@@ -82,6 +83,7 @@ private:
     QLineEdit *m_input = nullptr;
     QListView *m_list = nullptr;
     QLabel *m_hint = nullptr;
+    QFrame *m_card = nullptr; // rounded, shadowed panel inside the frameless window
 
     // Lightweight model for palette rows (keeps ClipboardRecord vector).
     class PaletteModel;

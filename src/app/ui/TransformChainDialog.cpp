@@ -1,6 +1,7 @@
 #include "TransformChainDialog.h"
 
 #include "ScriptActionManager.h"
+#include "UiHelpers.h"
 
 #include <QDialogButtonBox>
 #include <QHBoxLayout>
@@ -63,17 +64,14 @@ TransformChainDialog::TransformChainDialog(const QString &inputText, ScriptActio
     layout->addWidget(m_preview);
 
     m_error = new QLabel(this);
-    m_error->setStyleSheet(QStringLiteral("color: palette(highlight);"));
+    m_error->setStyleSheet(UiHelpers::warningStyle());
     m_error->setWordWrap(true);
     layout->addWidget(m_error);
 
-    auto *hint = new QLabel(
+    auto *hint = UiHelpers::makeHint(
         tr("Chain is applied left→right. JSON transforms, Base64, URL encode etc. Scripts from "
            "<code>~/.local/share/egoboard/actions/*.js</code> are listed under <i>Scripts</i> if present."),
         this);
-    hint->setTextFormat(Qt::RichText);
-    hint->setWordWrap(true);
-    hint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
     layout->addWidget(hint);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);

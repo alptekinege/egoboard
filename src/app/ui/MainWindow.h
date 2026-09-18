@@ -44,10 +44,13 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
     void changeEvent(QEvent *event) override;
     void hideEvent(QHideEvent *event) override;
+    // Keeps the empty-list hint the size of the list viewport.
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void buildUi();
     void connectSignals();
+    void updateEmptyState(); // "no entries yet" vs "nothing matches this filter"
     void onSelectionChanged();
     void onActivated(const QModelIndex &index);
     void pasteCurrent();
@@ -78,6 +81,7 @@ private:
     QAction *m_recentSearchAction = nullptr;
     int m_searchScope = 0; // FilterSpec::SearchScope value
     QLabel *m_queryHint = nullptr;
+    QLabel *m_emptyHint = nullptr; // over the list viewport while it has no rows
     QComboBox *m_typeCombo = nullptr;
     QComboBox *m_dateCombo = nullptr;
     QComboBox *m_appCombo = nullptr;

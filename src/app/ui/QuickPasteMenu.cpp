@@ -1,10 +1,14 @@
 #include "QuickPasteMenu.h"
 
 #include "ClipboardListModel.h"
+#include "DesignTokens.h"
 #include "StorageManager.h"
+#include "UiHelpers.h"
 #include "../KWinCursorTracker.h"
 #include "../LayerShellHelper.h"
 
+#include <QFrame>
+#include <QGraphicsDropShadowEffect>
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QLabel>
@@ -19,25 +23,55 @@ QuickPasteMenu::QuickPasteMenu(StorageManager *storage, int itemCount, QWidget *
     , m_itemCount(qBound(1, itemCount, 9))
 {
     setAttribute(Qt::WA_ShowWithoutActivating, false);
+    // Frameless and rounded: the card below carries the frame, the margin
+    // around it holds the shadow.
+    setAttribute(Qt::WA_TranslucentBackground, true);
     setFocusPolicy(Qt::StrongFocus);
-    setWindowOpacity(0.98);
 
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(6, 6, 6, 6);
+    auto *outer = new QVBoxLayout(this);
+    outer->setContentsMargins(DesignTokens::SpaceM, DesignTokens::SpaceM, DesignTokens::SpaceM,
+                              DesignTokens::SpaceM);
 
-    auto *header = new QLabel(tr("Quick paste"), this);
+    auto *card = new QFrame(this);
+    card->setObjectName(QStringLiteral("quickPasteCard"));
+    card->setStyleSheet(QStringLiteral("#quickPasteCard { background: palette(window); "
+                                       "border: 1px solid palette(mid); border-radius: %1px; }")
+                            .arg(DesignTokens::RadiusL));
+    auto *shadow = new QGraphicsDropShadowEffect(card);
+    shadow->setBlurRadius(DesignTokens::SpaceL * 2);
+    shadow->setOffset(0, DesignTokens::SpaceXs);
+    shadow->setColor(QColor(0, 0, 0, 140));
+    card->setGraphicsEffect(shadow);
+    outer->addWidget(card);
+
+    auto *layout = new QVBoxLayout(card);
+    layout->setContentsMargins(DesignTokens::SpaceL, DesignTokens::SpaceM, DesignTokens::SpaceL,
+                               DesignTokens::SpaceM);
+    layout->setSpacing(DesignTokens::SpaceS);
+
+    auto *header = new QLabel(tr("Quick paste"), card);
+    QFont headerFont = header->font();
+    headerFont.setWeight(QFont::DemiBold);
+    header->setFont(headerFont);
     layout->addWidget(header);
 
-    m_list = new QListWidget(this);
+    m_list = new QListWidget(card);
     m_list->setWordWrap(false);
     m_list->setUniformItemSizes(true);
     m_list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_list->setAccessibleName(tr("Quick paste entries"));
     m_list->setAccessibleDescription(tr("Recent entries; press 1-9 or Enter to paste"));
+    // Rounded rows, the same look the settings sidebar uses.
+    m_list->setStyleSheet(
+        QStringLiteral("QListWidget { border: none; background: transparent; }"
+                       "QListWidget::item { padding: %1px 2px; border-radius: %2px; }"
+                       "QListWidget::item:selected { background: palette(highlight); "
+                       "color: palette(highlighted-text); }")
+            .arg(DesignTokens::SpaceXs)
+            .arg(DesignTokens::RadiusL));
     layout->addWidget(m_list, 1);
 
-    auto *footer = new QLabel(tr("1–9 paste · Esc close"), this);
-    layout->addWidget(footer);
+    layout->addWidget(UiHelpers::makeHint(tr("1–9 paste · Esc close"), card));
 
     m_autoHide = new QTimer(this);
     m_autoHide->setSingleShot(true);
@@ -123,6 +157,7 @@ void QuickPasteMenu::popupAtCursor()
             m_layerShellConfigured = false;
         }
 
+        UiHelpers::fadeIn(this); // capped, skippable (Settings ▸ Appearance)
         show();
         raise();
         activateWindow();

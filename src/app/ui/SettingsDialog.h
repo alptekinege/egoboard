@@ -82,6 +82,7 @@ private:
     KColorButton *m_dimTextColorButton = nullptr;
     QComboBox *m_densityCombo = nullptr;
     QCheckBox *m_toolbarIconOnly = nullptr;
+    QCheckBox *m_reduceMotion = nullptr;
     QCheckBox *m_closeAfterPaste = nullptr;
     QCheckBox *m_bumpOnPaste = nullptr;
     QCheckBox *m_pasteAsPlainText = nullptr;

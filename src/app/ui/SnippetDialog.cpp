@@ -2,9 +2,11 @@
 
 #include "HotkeyManager.h"
 #include "SnippetManager.h"
+#include "UiHelpers.h"
 
 #include <KKeySequenceWidget>
 
+#include <QApplication>
 #include <QDialogButtonBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -44,8 +46,7 @@ SnippetDialog::SnippetDialog(SnippetManager *manager, const QString &clipboardTe
     m_shortcut->setToolTip(tr("Pressed anywhere: the snippet is expanded with the current "
                               "clipboard text and pasted into the focused window."));
     form->addWidget(m_shortcut);
-    m_shortcutNote = new QLabel(right);
-    m_shortcutNote->setWordWrap(true);
+    m_shortcutNote = UiHelpers::makeHint(QString(), right);
     form->addWidget(m_shortcutNote);
 
     form->addWidget(new QLabel(tr("Template (use {{clipboard}}, {{date}}, {{time}}, {{datetime}}):"), right));
@@ -78,15 +79,12 @@ SnippetDialog::SnippetDialog(SnippetManager *manager, const QString &clipboardTe
     splitter->setStretchFactor(1, 1);
     layout->addWidget(splitter, 1);
 
-    auto *hint = new QLabel(
+    auto *hint = UiHelpers::makeHint(
         tr("Placeholders: <code>{{clipboard}}</code> (current text, also {{text}}/{{selection}}), "
            "<code>{{date}}</code> YYYY-MM-DD, <code>{{time}}</code> HH:mm, "
            "<code>{{datetime}}</code> YYYY-MM-DD HH:mm:ss, <code>{{timestamp}}</code> ms. "
            "All local — no network."),
         this);
-    hint->setTextFormat(Qt::RichText);
-    hint->setWordWrap(true);
-    hint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
     layout->addWidget(hint);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
@@ -115,6 +113,13 @@ void SnippetDialog::reload()
         auto *it = new QListWidgetItem(s.name, m_list);
         it->setData(Qt::UserRole, s.id);
         it->setToolTip(s.templateText);
+    }
+    if (m_list->count() == 0) {
+        // First-run hint in the list itself, where the missing snippets would be.
+        auto *placeholder =
+            new QListWidgetItem(tr("No snippets yet — fill the form and press Create."), m_list);
+        placeholder->setFlags(Qt::NoItemFlags);
+        placeholder->setForeground(QApplication::palette().color(QPalette::Mid));
     }
 }
 
@@ -149,7 +154,7 @@ void SnippetDialog::updateShortcutNote()
     const QKeySequence sequence = m_shortcut->keySequence();
     if (sequence.isEmpty()) {
         m_shortcutNote->setText(tr("Not bound — the snippet is only reachable from the menu."));
-        m_shortcutNote->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+        m_shortcutNote->setStyleSheet(QString()); // back to the hint role
         return;
     }
 
@@ -186,10 +191,10 @@ void SnippetDialog::updateShortcutNote()
     }
     if (problem.isEmpty()) {
         m_shortcutNote->setText(tr("Pastes the expanded snippet into the focused window."));
-        m_shortcutNote->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+        m_shortcutNote->setStyleSheet(QString()); // back to the hint role
     } else {
         m_shortcutNote->setText(problem);
-        m_shortcutNote->setStyleSheet(QStringLiteral("color: palette(bright-text); font-size: 11px;"));
+        m_shortcutNote->setStyleSheet(UiHelpers::warningStyle());
     }
 }
 

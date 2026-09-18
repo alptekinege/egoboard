@@ -8,6 +8,7 @@
 #include "TransformEngine.h"
 #include "BookmarkManager.h"
 #include "ClipboardListModel.h"
+#include "DesignTokens.h"
 #include "EntryDelegate.h"
 #include "ExportImportDialogs.h"
 #include "GroupsDock.h"
@@ -19,12 +20,14 @@
 #include "CommandPalette.h"
 #include "TimelineStrip.h"
 #include "TransformChainDialog.h"
+#include "UiHelpers.h"
 
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
 #include <QDateTime>
+#include <QDrag>
 #include <QFileDialog>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -37,6 +40,8 @@
 #include <QListView>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMimeData>
+#include <QPainter>
 #include <QRegularExpression>
 #include <QScreen>
 #include <QSplitter>
@@ -49,16 +54,6 @@
 using DateRange = ExportImportDialogs::DateRange;
 
 namespace {
-// Vertical row padding for the history list, from the listDensity setting.
-int densityPadding(const QString &density)
-{
-    if (density == QLatin1String("compact"))
-        return 4;
-    if (density == QLatin1String("spacious"))
-        return 12;
-    return 8;
-}
-
 // Search scope values come from the settings file as plain ints.
 QString scopeLabel(int scope)
 {
@@ -74,6 +69,53 @@ QString scopeLabel(int scope)
         return MainWindow::tr("All text");
     }
 }
+
+// The history list keeps the standard drag-out to the Groups dock, but hands
+// the drag a compact badge instead of the default full-row snapshot.
+class HistoryListView : public QListView {
+public:
+    using QListView::QListView;
+
+protected:
+    void startDrag(Qt::DropActions supportedActions) override
+    {
+        const QModelIndexList indexes = selectedIndexes();
+        if (indexes.isEmpty())
+            return;
+        QMimeData *data = model()->mimeData(indexes);
+        if (!data)
+            return;
+        auto *drag = new QDrag(this);
+        drag->setMimeData(data);
+        const QPixmap badge = dragBadge(indexes.size());
+        drag->setPixmap(badge);
+        // The hotspot is in logical pixels; the pixmap may be scaled for HiDPI.
+        const QSize logical = badge.deviceIndependentSize().toSize();
+        drag->setHotSpot(QPoint(logical.width() / 2, logical.height() / 2));
+        drag->exec(supportedActions, Qt::CopyAction);
+    }
+
+private:
+    QPixmap dragBadge(int count) const
+    {
+        const int size = DesignTokens::IconL + 2 * DesignTokens::SpaceS;
+        const qreal ratio = devicePixelRatioF();
+        QPixmap pixmap(QSize(size, size) * ratio);
+        pixmap.setDevicePixelRatio(ratio);
+        pixmap.fill(Qt::transparent);
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        QColor background = palette().color(QPalette::Highlight);
+        background.setAlpha(230);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(background);
+        painter.drawRoundedRect(QRect(0, 0, size, size), DesignTokens::RadiusL,
+                                DesignTokens::RadiusL);
+        painter.setPen(palette().color(QPalette::HighlightedText));
+        painter.drawText(QRect(0, 0, size, size), Qt::AlignCenter, QString::number(count));
+        return pixmap;
+    }
+};
 } // namespace
 
 MainWindow::MainWindow(ApplicationContext &context, QWidget *parent)
@@ -124,6 +166,7 @@ void MainWindow::buildUi()
            "-term or NOT term excludes; uppercase OR gives alternatives; /pattern/ matches a "
            "regular expression."));
     m_search->setToolTip(m_search->accessibleDescription());
+    UiHelpers::styleSearchField(m_search);
     filterRow->addWidget(m_search, 3);
 
     // Trailing actions inside the search field: search scope and recent queries.
@@ -198,9 +241,7 @@ void MainWindow::buildUi()
 
     // Typed field filters (app:, type:, …) and rejected values, mirrored from
     // the search box so the effective query is visible while typing.
-    m_queryHint = new QLabel(central);
-    m_queryHint->setWordWrap(true);
-    m_queryHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+    m_queryHint = UiHelpers::makeHint(QString(), central, /*richText=*/false);
     m_queryHint->setVisible(false);
     layout->addWidget(m_queryHint);
 
@@ -214,9 +255,9 @@ void MainWindow::buildUi()
 
     m_model = new ClipboardListModel(m_ctx.storage(), this);
     m_delegate = new EntryDelegate(m_ctx.bookmarks(), m_ctx.settings(), this);
-    m_delegate->setRowPadding(densityPadding(m_ctx.settings()->listDensity()));
+    m_delegate->setRowPadding(DesignTokens::rowPaddingForDensity(m_ctx.settings()->listDensity()));
 
-    m_list = new QListView(splitter);
+    m_list = new HistoryListView(splitter);
     m_list->setModel(m_model);
     m_list->setItemDelegate(m_delegate);
     m_list->setAccessibleName(tr("Clipboard history"));
@@ -231,6 +272,14 @@ void MainWindow::buildUi()
     m_list->setDragDropMode(QAbstractItemView::DragOnly);
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
     splitter->addWidget(m_list);
+
+    // "No entries yet" / "nothing matches this filter", over the empty viewport.
+    m_emptyHint = UiHelpers::makeHint(QString(), m_list->viewport(), /*richText=*/false);
+    m_emptyHint->setAlignment(Qt::AlignCenter);
+    m_emptyHint->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    m_emptyHint->setGeometry(m_list->viewport()->rect());
+    m_emptyHint->hide();
+    m_list->viewport()->installEventFilter(this);
 
     m_preview = new PreviewPane(splitter);
     if (m_ctx.scripts()) m_preview->setScriptManager(m_ctx.scripts());
@@ -381,12 +430,15 @@ void MainWindow::connectSignals()
     connect(m_typeCombo, &QComboBox::currentIndexChanged, this, &MainWindow::applyCurrentFilter);
     if (m_timeline) {
         connect(m_timeline, &TimelineStrip::daySelected, this, [this](qint64 from, qint64 to){
+            // The timeline picked the day itself: set the range without going
+            // through the combo's "Custom range…" entry, which would open the
+            // date dialog for a click that already answered it.
+            const QSignalBlocker blocker(m_dateCombo);
             if (from == 0 && to == 0) {
+                m_lastRange = DateRange{};
                 m_dateCombo->setCurrentIndex(0);
             } else {
-                m_lastRange.isValid = true;
-                m_lastRange.fromMs = from;
-                m_lastRange.toMs = to;
+                m_lastRange = DateRange{true, from, to};
                 const int customIdx = m_dateCombo->findData(99);
                 if (customIdx >= 0) m_dateCombo->setCurrentIndex(customIdx);
             }
@@ -398,6 +450,8 @@ void MainWindow::connectSignals()
             ExportImportDialogs::DateRangeDialog dialog(this);
             if (dialog.exec() == QDialog::Accepted) {
                 m_lastRange = dialog.range();
+                if (m_timeline)
+                    m_timeline->clearSelection(); // a typed range, not a clicked day
                 if (!m_lastRange.isValid)
                     m_dateCombo->setCurrentIndex(0);
                 else
@@ -406,6 +460,8 @@ void MainWindow::connectSignals()
                 m_dateCombo->setCurrentIndex(0); // revert
             }
         } else {
+            if (m_timeline)
+                m_timeline->clearSelection();
             applyCurrentFilter();
         }
     });
@@ -425,6 +481,13 @@ void MainWindow::connectSignals()
 
     connect(m_ctx.storage(), &StorageManager::entryAdded, this,
             [this] { refreshAppFilter(); });
+    // Empty-list states: the model reports when the first page landed, the
+    // plain model signals cover every later change.
+    connect(m_model, &ClipboardListModel::initialPageLoaded, this,
+            [this](bool) { updateEmptyState(); });
+    connect(m_model, &QAbstractItemModel::rowsInserted, this, [this] { updateEmptyState(); });
+    connect(m_model, &QAbstractItemModel::rowsRemoved, this, [this] { updateEmptyState(); });
+    connect(m_model, &QAbstractItemModel::modelReset, this, [this] { updateEmptyState(); });
     connect(m_ctx.storage(), &StorageManager::storageReset, this, [this] {
         refreshAppFilter();
         refreshTagFilter();
@@ -436,7 +499,7 @@ void MainWindow::connectSignals()
         if (m_timeline)
             m_timeline->setVisible(m_ctx.settings()->timelineEnabled());
         if (m_delegate)
-            m_delegate->setRowPadding(densityPadding(m_ctx.settings()->listDensity()));
+            m_delegate->setRowPadding(DesignTokens::rowPaddingForDensity(m_ctx.settings()->listDensity()));
         if (!m_toolbar) return;
         m_toolbar->setToolButtonStyle(m_ctx.settings()->toolbarIconOnly()
                                           ? Qt::ToolButtonIconOnly
@@ -509,10 +572,15 @@ void MainWindow::applySavedSearch(const FilterSpec &filter)
     if (filter.fromMs > 0 || filter.toMs > 0) {
         m_lastRange = DateRange{true, filter.fromMs, filter.toMs};
         const int customIndex = m_dateCombo->findData(99);
-        if (customIndex >= 0)
+        if (customIndex >= 0) {
+            // Mirrored, not chosen: without the blocker the combo's handler
+            // would pop the "Custom range…" dialog at the user.
+            const QSignalBlocker blocker(m_dateCombo);
             m_dateCombo->setCurrentIndex(customIndex);
+        }
     } else {
         m_lastRange = DateRange{};
+        const QSignalBlocker blocker(m_dateCombo);
         m_dateCombo->setCurrentIndex(0);
     }
     applyCurrentFilter();
@@ -660,6 +728,29 @@ void MainWindow::applyCurrentFilter()
         m_queryHint->setVisible(!hint.isEmpty());
     }
     updateActionStates();
+}
+
+// The list says "no entries yet" and "nothing matches this filter" are two
+// different situations; which one shows comes from the active filter.
+void MainWindow::updateEmptyState()
+{
+    if (!m_emptyHint || !m_model)
+        return;
+    const bool empty = m_model->rowCount() == 0;
+    m_emptyHint->setGeometry(m_list->viewport()->rect());
+    m_emptyHint->setVisible(empty);
+    if (!empty)
+        return;
+    m_emptyHint->setText(m_model->filter().isTrivial()
+                             ? tr("No entries yet — copy something and it will show up here.")
+                             : tr("Nothing matches this filter."));
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (m_emptyHint && watched == m_emptyHint->parentWidget() && event->type() == QEvent::Resize)
+        m_emptyHint->setGeometry(m_list->viewport()->rect());
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::onSelectionChanged()

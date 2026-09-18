@@ -4,7 +4,7 @@
 
 **Status:** `v0.1.0` · Qt 6 + KF6 · local-only · MIT · no compilation required for this document.
 
-**Revision 2026-09-18:** **Phase 6 (correctness & hardening, Track G) and Phase 7 (Track H — Search 2.0) are delivered.** §4 and §5 are condensed to struck-through records with the handful of remaining optional items listed at the end of §4; §1.3 now describes what is actually left. Phase 8 (Track I/J — portability & integration) is the next phase; Track L (CI, packaging, docs) follows. Previous revision 2026-09-17: merged the prior roadmap (every entry preserved; delivered work compressed to struck-through single lines) with a full line-by-line review of `src/core`, `src/app`, `src/app/ui`, `tests/`, `docs/`, packaging and repo hygiene. Carried-over backlog: semantic search (Track A), LAN sync / browser companion (Track D), Settings & QoL (§3).
+**Revision 2026-09-18:** **Phase 6 (correctness & hardening, Track G), Phase 7 (Track H — Search 2.0) and Track M (design polish) are delivered.** §4 and §5 are condensed to struck-through records with the handful of remaining optional items listed at the end of §4; §1.3 now describes what is actually left. Phase 8 (Track I/J — portability & integration) is the next phase; Track L (CI, packaging, docs) and Track K (workflow delight) follow. Previous revision 2026-09-17: merged the prior roadmap (every entry preserved; delivered work compressed to struck-through single lines) with a full line-by-line review of `src/core`, `src/app`, `src/app/ui`, `tests/`, `docs/`, packaging and repo hygiene. Carried-over backlog: semantic search (Track A), LAN sync / browser companion (Track D), Settings & QoL (§3).
 
 ---
 
@@ -48,7 +48,7 @@ Phase 6 (hardening) and Phase 7 (Search 2.0) are delivered, so the fundamentals 
 
 * **Track I — data portability & durability** (backup story + Klipper import delivered): ~~scheduled backups~~ ✅, ~~restore flow~~ ✅, ~~Klipper importer~~ ✅ and ~~startup integrity (`quick_check` + index repair)~~ ✅; still open: CopyQ `.cpq` reader (versioned binary container — see §5), `.zip` archives, pre-migration file copy.
 * **Track J — integration 2.0**: ~~pause-capture + lock awareness~~ ✅, ~~global snippet hotkeys~~ ✅, ~~palette commands + argument completion + recent-command memory~~ ✅, ~~KRunner richer results + per-match actions~~ ✅, ~~tray click/wheel behaviour~~ ✅ (Phase 8); open: `xdg-desktop-portal` RemoteDesktop paste on Wayland, screencast awareness, KRunner preview pane.
-* **Track K — workflow delight** (multi-select, undo toast, paste queue, stats) and **Track L — release engineering** (CI pipeline, Flatpak/AUR, screenshots).
+* **Track K — workflow delight** (multi-select, undo toast, paste queue, stats) and **Track L — release engineering** (CI pipeline, Flatpak/AUR, screenshots). Track M (design polish: tokens, states, theme-safe colors, finished popups) shipped 2026-09-18 — see §5.
 * **Phase 5 leftover**: Quick paste 2.0 (search-as-you-type inside the popup, two-line previews, multi-monitor memory).
 * **§4 tail**: qtkeychain fallback (plan only), wlr-data-control mime reads still happen on the GUI thread (bounded by a shared read budget), import/export shows a wait cursor but no progress dialog, and the app/UI layer still has thinner test coverage than `src/core`.
 * Long-term: semantic search (Track A), LAN sync + browser companion (Track D).
@@ -312,37 +312,37 @@ public:
 * **Docs set**: refreshed `build.md`, corrected `agent.md` module map, plus `ARCHITECTURE.md` and `CONTRIBUTING.md`; screenshots/GIFs in the README.
 * **Settings schema versioning** (G6) and **benchmark budget gate** in CI (G4).
 
-### Track M — Design polish (small changes)
+### Track M — Design polish (small changes) — ✅ delivered (2026-09-18)
 
-> Scope is deliberately *small*: no restyle and no new visual language — one pass that makes the existing look consistent, theme-safe and testable. Every item is independently shippable, and none of them changes what the app does. Evidence in parentheses is from a 2026-09-18 review of `src/app/ui`.
+> Scope was deliberately *small*: no restyle and no new visual language — one pass that makes the existing look consistent, theme-safe and testable. Every item shipped; none of them changed what the app does. The evidence in parentheses was from a 2026-09-18 review of `src/app/ui`.
 
 **M1 — Tokens, helpers, dedup** (mechanical, behaviour-preserving)
-* One `src/app/ui/DesignTokens.h` holding the spacing scale (4 / 6 / 8 / 12), radii (3 / 4 / 6), icon sizes (16 / 18 / 22), row metrics and the highlight/timeline alphas — today every widget carries its own literals (`EntryDelegate.cpp:133-161,212`, `TimelineStrip.cpp:100-127`, `PreviewPane.cpp:107,117,468`, `CommandPalette.cpp:149-153,160`, `QuickPasteMenu.cpp:26`, `MainWindow.cpp:111,239`, `SettingsDialog.cpp:151-160`, `AppearancePreview.cpp:9-12`). Pixels stay as they are; the win is one place to tune them.
-* One hint/status-label helper, replacing the ~20 copy-pasted `color: palette(mid); font-size: 11px;` strings (`SettingsDialog.cpp` alone bypasses its own `makeHint()` at 11 sites; also `PreviewPane.cpp:156`, `CommandPalette.cpp:175`, `MainWindow.cpp:203`, `SnippetDialog.cpp:89/152/189`, `TransformChainDialog.cpp:76`) — and expressed in pt, so the "Text size" accessibility setting actually moves hints.
-* One `humanSize()`: three divergent copies exist and one has a formatting bug (`EntryDelegate.cpp:34`, `PreviewPane.cpp:35`, `SettingsDialog.cpp:71`). Likewise one bar-geometry helper for the timeline, shared by `paintEvent` and `barIndexAt` (`TimelineStrip.cpp:99-101,139-142`), and `AppearancePreview` drawn from the real delegate metrics instead of its own 18 px/10 px copy (`AppearancePreview.cpp:9-12,40`) so the settings preview cannot drift from the list.
-* One recorded decision on the group dots: advance 12 with an 8 px diameter leaves a gap where overlap is implied (`EntryDelegate.cpp:158-161`) — pick one, in one place.
+* ~~One `src/app/ui/DesignTokens.h` with the spacing scale (4 / 6 / 8 / 12), radii (3 / 4 / 6), icon sizes (16 / 18 / 22), the alpha values, the row/timeline metrics and the density mapping; the delegate, timeline, preview, palette, quick paste, settings dialog and groups dock all read from it now. Pixels are unchanged — there is just one place to tune them.~~
+* ~~One hint/status-label helper (`UiHelpers::makeHint` / `makeStatusPanel`, replacing the ~20 copy-pasted `color: palette(mid); font-size: 11px;` strings) — expressed as one point below the application font, so the "Text size" accessibility setting actually moves hints.~~
+* ~~One `humanSize()` (the three divergent copies are gone; the `PreviewPane` one padded to a 102-column field because `'f'` was passed as the *width*), one bar-geometry helper shared by the timeline's paint and hit-test, and `AppearancePreview` drawn from the delegate's own row metrics instead of its private 18 px/10 px copy.~~
+* ~~Group dots recorded in one place: the step is dot + gap (spaced, never overlapped).~~
 
 **M2 — States and feedback** (per-widget, small)
-* List rows honour `State_Enabled` (a disabled row paints fully coloured today — the delegate never checks) and get a palette-derived hover, so hovering reads before the click.
-* Tooltips on the painted badges — pin, sensitive shield, group dots are currently silent (`EntryDelegate.cpp:144-162`).
-* Timeline keeps the clicked bar highlighted (clicking filters the list but the bar never shows it; hover only, `TimelineStrip.cpp:116`), and day captions follow the UI font size instead of the fixed `setPointSize(7)` (`:125`).
-* Empty states: the model already emits `initialPageLoaded(bool isEmpty)` and nothing listens (`ClipboardListModel` → `MainWindow` never connects it) — show "no entries yet" versus "nothing matches this filter", and a first-line hint in the snippet dialog's empty list.
-* Drop feedback: highlight the group row under the cursor while entries are dragged onto the Groups dock, and give list drags a small preview pixmap instead of the default row snapshot (`GroupsDock.cpp:138-140`, list is drag-out only at `MainWindow.cpp:231`).
+* ~~List rows honour `State_Enabled` and get a palette-derived hover wash, so hovering reads before the click.~~
+* ~~Tooltips on the painted badges — pin, sensitive shield and group dots (per group name) — served from the same geometry that paints them.~~
+* ~~Timeline keeps the clicked bar highlighted (click again clears, matching the tooltip) and day captions follow the UI font size; a caption that cannot fit its bar is dropped instead of colliding with its neighbour.~~
+* ~~Empty states: `initialPageLoaded` is finally listened to — "no entries yet" versus "nothing matches this filter" over the empty list, plus a first-line hint in the snippet dialog's empty list.~~
+* ~~Drop feedback: the group row under the drag cursor is highlighted, and list drags carry a compact count badge instead of the default row snapshot.~~
 
 **M3 — Theme safety** (small, pays off on every non-Breeze scheme)
-* `CodePreviewHighlighter` derives its nine colors from the active scheme (contrast-aware light/dark pick) instead of two hardcoded VS-Code presets chosen by `Base.lightness() < 128` (`CodePreviewHighlighter.cpp:21,26-39`) — a high-contrast or mid-lightness theme currently gets the wrong set.
-* Retire literals: the `#3daee9` group-color default (`GroupsDock.cpp:52`) and the `#ff0000` sample swatch (`SettingsDialog.cpp:918`) come from the palette; warnings stop using `palette(bright-text)` (which `TextAppearance` does not override) and `palette(highlight)` as a foreground (`SnippetDialog.cpp:192`, `SettingsDialog.cpp:1315`, `TransformChainDialog.cpp:66`).
+* ~~`CodePreviewHighlighter` derives its colors from the active scheme (hue rotations of the accent, comments from the subdued role), each held to the contrast floor and picked by contrast rather than `Base.lightness() < 128`; the theme is computed once per palette instead of per highlighted block.~~
+* ~~Literals retired: the group-color default and the settings sample swatch come from the palette; warnings in rich text use a contrast-checked warning color instead of `palette(bright-text)` / `palette(highlight)` as a foreground (which rich text never resolved anyway), and the swatch outline gets a real color.~~
 
 **M4 — Popups feel finished** (contained to two windows)
-* The palette is borderless but square, opaque and unshadowed (`CommandPalette.cpp:143-144`); the quick-paste header/footer are bare labels (`QuickPasteMenu.cpp`). Give both the same rounding, padding and hint treatment as the settings sidebar, and share one search-field look between the main window and the palette.
-* Motion, capped and skippable: ~120 ms fade/slide when the palette and quick-paste open, plus a hover transition on the timeline bars — behind one "reduce motion" switch, since nothing in the tree animates today.
+* ~~The palette is borderless but square, opaque and unshadowed; the quick-paste header/footer are bare labels. Both are now rounded, bordered, shadowed cards with the same padding and hint treatment as the settings sidebar, and the main window and the palette share one search-field style.~~
+* ~~Motion, capped and skippable: a 120 ms fade when the palette and quick paste open, plus a hover transition on the timeline bars — all behind one "Reduce motion" switch (Appearance), wired through `SettingsManager` → `ApplicationContext` → `UiHelpers`. Rows, badges and captions still appear instantly.~~
 
 **M5 — How we prove it** (tests, no new UI surface)
-* Contrast assertions over the colors the delegate, palette and timeline derive, using the existing `TextAppearance` contrast helpers: ≥ 4.5:1 for text, ≥ 3:1 for dimmed text, for every shipped scheme — so M3 cannot regress silently.
-* A metrics check that pins the current pixel geometry (delegate `sizeHint`, timeline strip) across the three list densities while M1 moves the numbers around.
-* Both run offscreen in the existing widget-test targets — the same pattern as `tst_paletteui`.
+* ~~Contrast assertions over the colors the delegate, palette, timeline, code highlighter and rich-text helpers derive, using the existing `TextAppearance` contrast helpers: ≥ 4.5:1 for text, ≥ 3:1 for dimmed text and comments, for every scheme installed on the machine — so M3 cannot regress silently.~~
+* ~~A metrics check that pins the pixel geometry (the delegate `sizeHint` formula across the three densities, the row metrics, the timeline bar layout and the paint/hit-test agreement).~~
+* ~~Both run offscreen in a new widget-test target (`tests/tst_uidesign.cpp`, the same pattern as `tst_paletteui`). The new contrast test also exposed that `TextAppearance::ensureContrast` validated its intermediate float color rather than the 8-bit color that gets painted; it now measures what is drawn.~~
 
-**Suggested order**: M1 first (mechanical, and it is what the other items edit against) → M2 + M3 together (visible payoff, no structural risk) → M4 last (it touches two windows that are also integration points) → M5 lands alongside whichever item it pins down.
+> Two behaviour fixes fell out of the pass: clicking left of the first timeline bar selected that bar (integer division), and mirroring a saved search or a timeline click through the date combo popped the "Custom range…" dialog at the user.
 
 ---
 
@@ -360,7 +360,7 @@ Keep it iterative. Each phase ships and is usable on its own — no big-bang rew
 | **Phase 6 — Hardening** ✅ | Correctness first | G1–G5 defects, G4 index + signal fixes, G6 LICENSE/docs — all delivered 2026-09-18 (§4) |
 | **Phase 7 — Search & scale** ✅ | Retrieval | Track H (field filters, phrases/AND-OR/NOT, guarded regex, highlight, recent searches, scope, query explain) + `--bench` budgets — delivered 2026-09-18 (§5) |
 | **Phase 8 — Portability & integration** ◐ *in progress* | Backup & platform | Track I: backups/restore ✅, Klipper import ✅, Markdown/CSV/HTML export ✅, startup integrity ✅; Track J: capture pause + lock awareness ✅, snippet hotkeys ✅, palette commands ✅, KRunner results + actions ✅, tray clicks + wheel ✅; open: CopyQ `.cpq` reader, `.zip` backups, portal paste, screencast awareness |
-| **Phase 9 — Release & delight** | Polish | Track L (CI, Flatpak, docs), Track K (multi-select, undo, paste queue, stats), Track M (design consistency: tokens, states, theme safety, popups) |
+| **Phase 9 — Release & delight** | Polish | Track L (CI, Flatpak, docs), Track K (multi-select, undo, paste queue, stats), Track M ✅ (design consistency: tokens, states, theme safety, popups) |
 | **Tracks A / D** | Long-term | Semantic search (Track A), LAN sync + browser companion (Track D) |
 
 > Phases are sequential by default, but §3 batches and Track K items can be reordered freely by need — every batch ships independently.
@@ -434,4 +434,4 @@ QT_QPA_PLATFORM=offscreen ./build/egoboard --smoke
 
 ---
 
-*Last updated: 2026-09-18 (Phase 6 + 7 delivered; Phase 8: Track I backups/restore/Klipper/export formats/integrity + Track J capture pause, lock awareness, snippet hotkeys, palette commands, KRunner results/actions & tray behaviour; design-polish plan recorded as Track M) · Maintainer: local development · Next review: after the next Phase 8 batch — remaining long-term: semantic search (Track A), browser/LAN sync (Track D), Track I/J/K/L items above.*
+*Last updated: 2026-09-18 (Phase 6 + 7 delivered; Phase 8: Track I backups/restore/Klipper/export formats/integrity + Track J capture pause, lock awareness, snippet hotkeys, palette commands, KRunner results/actions & tray behaviour; Track M design polish delivered — tokens/helpers, row + timeline states, theme-safe colors, finished popups with capped motion, contrast and metrics tests) · Maintainer: local development · Next review: after the next Phase 8 batch — remaining long-term: semantic search (Track A), browser/LAN sync (Track D), Track I/J/K/L items above.*

@@ -1,17 +1,23 @@
 #include "GroupsDock.h"
 
+#include "DesignTokens.h"
 #include "GroupTreeModel.h"
 
+#include <QApplication>
 #include <QColorDialog>
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDragLeaveEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPainter>
 #include <QPushButton>
 #include <QToolBar>
 #include <QTreeView>
@@ -19,11 +25,65 @@
 
 namespace {
 
+// Group colors default to the scheme's own accent rather than a fixed blue.
+QColor defaultGroupColor()
+{
+    return QApplication::palette().color(QPalette::Highlight);
+}
+
 // A short curated list of Breeze icon names suitable for groups; editable.
 const char *kIconPresets[] = {
     "folder",       "bookmarks",   "edit-paste",  "favorite",    "starred",
     "view-calendar", "mail-message", "web-browser", "dialog-password", "development",
     "folder-documents", "folder-download", "media-playback-start", "tag", "flag",
+};
+
+// Tree view that marks the group the dragged entries would land on, so the
+// drop target is visible before the mouse button is released.
+class DropTargetTreeView : public QTreeView {
+public:
+    using QTreeView::QTreeView;
+
+protected:
+    void dragMoveEvent(QDragMoveEvent *event) override
+    {
+        setDropIndex(indexAt(event->position().toPoint()));
+        QTreeView::dragMoveEvent(event);
+    }
+
+    void dragLeaveEvent(QDragLeaveEvent *event) override
+    {
+        setDropIndex({});
+        QTreeView::dragLeaveEvent(event);
+    }
+
+    void dropEvent(QDropEvent *event) override
+    {
+        setDropIndex({});
+        QTreeView::dropEvent(event);
+    }
+
+    void drawRow(QPainter *painter, const QStyleOptionViewItem &option,
+                 const QModelIndex &index) const override
+    {
+        if (index == m_dropIndex) {
+            QColor wash = palette().color(QPalette::Highlight);
+            wash.setAlpha(DesignTokens::DropTargetAlpha);
+            painter->fillRect(option.rect, wash);
+        }
+        QTreeView::drawRow(painter, option, index);
+    }
+
+private:
+    void setDropIndex(const QModelIndex &index)
+    {
+        if (m_dropIndex == index)
+            return;
+        m_dropIndex = index;
+        viewport()->update();
+    }
+
+    QModelIndex m_dropIndex;
 };
 
 class GroupDialog : public QDialog {
@@ -49,7 +109,7 @@ public:
         updateColorButton(colorButton);
         connect(colorButton, &QPushButton::clicked, this, [this, colorButton] {
             const QColor picked =
-                QColorDialog::getColor(m_color.isValid() ? m_color : QColor(QStringLiteral("#3daee9")),
+                QColorDialog::getColor(m_color.isValid() ? m_color : defaultGroupColor(),
                                        this, tr("Group color"));
             if (picked.isValid()) {
                 m_color = picked;
@@ -132,7 +192,7 @@ GroupsDock::GroupsDock(BookmarkManager *bookmarks, QWidget *parent)
     m_model = new GroupTreeModel(bookmarks, this);
     connect(m_model, &GroupTreeModel::entriesDropped, this, &GroupsDock::entriesDropped);
 
-    m_tree = new QTreeView(container);
+    m_tree = new DropTargetTreeView(container);
     m_tree->setModel(m_model);
     m_tree->setHeaderHidden(true);
     m_tree->setDragDropMode(QAbstractItemView::DragDrop);

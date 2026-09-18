@@ -157,11 +157,30 @@ add_test(NAME tst_palette COMMAND tst_palette)
 add_executable(tst_paletteui tst_paletteui.cpp
     ../src/app/ui/CommandPalette.cpp
     ../src/app/ui/PaletteCommands.cpp
+    ../src/app/ScriptActionManager.cpp
+    ../src/app/ui/UiHelpers.cpp
+    ../src/app/TextAppearance.cpp
     ../src/app/ScriptActionManager.cpp)
 target_include_directories(tst_paletteui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/app/ui ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(tst_paletteui PRIVATE egoboard::core Qt6::Widgets Qt6::Test Qt6::Qml)
 target_compile_options(tst_paletteui PRIVATE -Wall -Wextra)
 add_test(NAME tst_paletteui COMMAND tst_paletteui)
+
+# Design polish (Track M): the colors the delegate, palette, timeline and code
+# highlighter derive must stay readable on every installed scheme, and the row /
+# timeline geometry must not drift. Headless, offscreen, same pattern as tst_paletteui.
+add_executable(tst_uidesign tst_uidesign.cpp
+    ../src/app/ui/EntryDelegate.cpp
+    ../src/app/ui/UiHelpers.cpp
+    ../src/app/ui/CodePreviewHighlighter.cpp
+    ../src/app/SettingsManager.cpp
+    ../src/app/TextAppearance.cpp
+    ../src/app/ColorSchemeIndex.cpp
+    ../src/app/IconThemeIndex.cpp)
+target_include_directories(tst_uidesign PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/app/ui ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(tst_uidesign PRIVATE egoboard::core Qt6::Widgets Qt6::Sql Qt6::Test KF6::ConfigCore KF6::ConfigWidgets)
+target_compile_options(tst_uidesign PRIVATE -Wall -Wextra)
+add_test(NAME tst_uidesign COMMAND tst_uidesign)
 
 # Wheel-over-tray-icon state machine (header-only, so no extra sources)
 add_executable(tst_traycycle tst_traycycle.cpp)

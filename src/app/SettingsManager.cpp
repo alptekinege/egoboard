@@ -781,6 +781,17 @@ void SettingsManager::setToolbarIconOnly(bool iconOnly)
     save();
 }
 
+bool SettingsManager::reduceMotion() const
+{
+    return m_config->group(kGroupUi).readEntry("ReduceMotion", false);
+}
+
+void SettingsManager::setReduceMotion(bool reduce)
+{
+    m_config->group(kGroupUi).writeEntry("ReduceMotion", reduce);
+    save();
+}
+
 bool SettingsManager::timelineEnabled() const
 {
     return m_config->group(kGroupUi).readEntry("TimelineEnabled", true);

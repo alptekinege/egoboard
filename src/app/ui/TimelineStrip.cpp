@@ -1,14 +1,29 @@
 #include "TimelineStrip.h"
+#include "DesignTokens.h"
 #include "IClipboardStorage.h"
 #include "FilterSpec.h"
 #include "StorageManager.h"
+#include "TextAppearance.h"
+#include "UiHelpers.h"
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QPainter>
 #include <QDateTime>
 #include <QMouseEvent>
+#include <QVariantAnimation>
 #include "SearchEngine.h"
+
+namespace {
+constexpr qint64 kDayMs = 86400000;
+
+// Day captions are drawn three points below the UI font (and follow the
+// "Text size" setting with it) instead of at a fixed point size.
+QFont captionFont(const QFont &uiFont)
+{
+    return TextAppearance::withFontPointDelta(uiFont, -3);
+}
+} // namespace
 
 TimelineStrip::TimelineStrip(IClipboardStorage *storage, QWidget *parent)
     : QWidget(parent), m_storage(storage)
@@ -16,6 +31,15 @@ TimelineStrip::TimelineStrip(IClipboardStorage *storage, QWidget *parent)
     setMouseTracking(true);
     m_defaultHint = tr("Click a bar to filter by day \u2022 click again to clear");
     setToolTip(m_defaultHint);
+
+    m_hoverAnimation = new QVariantAnimation(this);
+    m_hoverAnimation->setDuration(DesignTokens::MotionDurationMs);
+    m_hoverAnimation->setEasingCurve(QEasingCurve::OutCubic);
+    connect(m_hoverAnimation, &QVariantAnimation::valueChanged, this,
+            [this](const QVariant &value) {
+                m_hoverStrength = value.toReal();
+                update();
+            });
     recompute();
 }
 
@@ -23,6 +47,14 @@ void TimelineStrip::setFilter(const FilterSpec &filter)
 {
     m_filter = filter;
     recompute();
+    update();
+}
+
+void TimelineStrip::clearSelection()
+{
+    if (m_selected == -1)
+        return;
+    m_selected = -1;
     update();
 }
 
@@ -63,7 +95,7 @@ void TimelineStrip::recompute()
 
         for (int i = 0; i < m_bins.size(); ++i) {
             qint64 from = m_bins[i].dayStartMs;
-            qint64 to = from + 86400000 - 1;
+            qint64 to = from + kDayMs - 1;
             QString sql = QStringLiteral("SELECT COUNT(*) FROM entries");
             QStringList w2 = where;
             w2 << QStringLiteral("timestamp_ms >= ? AND timestamp_ms <= ?");
@@ -92,68 +124,96 @@ void TimelineStrip::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
-    const int w = width(), h = height();
-    if (m_bins.isEmpty()) return;
-    int maxCount = 1;
-    for (auto &b: m_bins) maxCount = qMax(maxCount, b.count);
     const int n = m_bins.size();
-    const int barW = qMax(4, (w - 16 - (n-1)*4) / n);
-    const int totalW = n*barW + (n-1)*4;
-    int x0 = (w - totalW)/2;
-    const int y0 = 8, barH = h - 20;
+    if (n == 0) return;
+
+    int maxCount = 1;
+    for (const auto &bin : m_bins) maxCount = qMax(maxCount, bin.count);
+
+    const QFont captions = captionFont(font());
+    const QFontMetrics captionMetrics(captions);
+    const DesignTokens::TimelineGeometry geometry =
+        DesignTokens::timelineGeometry(size(), n, captionMetrics.height());
+
     // background
     p.setPen(Qt::NoPen);
     p.setBrush(palette().color(QPalette::Base));
-    p.drawRoundedRect(rect(), 6, 6);
+    p.drawRoundedRect(rect(), DesignTokens::RadiusL, DesignTokens::RadiusL);
+
     for (int i = 0; i < n; ++i) {
         const auto &b = m_bins[i];
-        int bh = b.count == 0 ? 2 : qMax(4, barH * b.count / maxCount);
-        QRect br(x0 + i*(barW+4), y0 + barH - bh, barW, bh);
-        QColor col = palette().color(QPalette::Highlight);
-        if (b.count == 0) col.setAlpha(60);
-        else col.setAlpha(180);
-        if (i == n-1) col.setAlpha(255); // today emphasised
-        if (i == m_hovered) col = col.lighter(130);
-        p.setBrush(col);
+
+        DesignTokens::TimelineBarState state;
+        state.count = b.count;
+        state.today = i == n - 1;
+        state.hovered = i == m_hovered;
+        state.selected = i == m_selected;
+        state.hoverStrength = m_hoverStrength;
+
+        const int barHeight =
+            b.count == 0 ? 2 : qMax(4, geometry.barHeight * b.count / maxCount);
+        const QRect bar(geometry.left + i * geometry.stride,
+                        geometry.top + geometry.barHeight - barHeight, geometry.barWidth,
+                        barHeight);
         p.setPen(Qt::NoPen);
-        p.drawRoundedRect(br, 2, 2);
-        // day label
+        p.setBrush(DesignTokens::timelineBarColor(palette(), state));
+        p.drawRoundedRect(bar, DesignTokens::RadiusS, DesignTokens::RadiusS);
+        if (state.selected) {
+            // The clicked bar stays marked while the list is filtered by it.
+            QColor outline = palette().color(QPalette::WindowText);
+            outline.setAlpha(90);
+            p.setPen(QPen(outline, 1));
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(bar.adjusted(-1, -1, 1, 1), DesignTokens::RadiusS,
+                              DesignTokens::RadiusS);
+        }
+
+        // Day label, in the same font the rest of the UI uses (one step below).
+        // A caption that cannot fit its own bar is dropped instead of running
+        // into its neighbour (only happens on a very narrow strip).
         if (n <= 14) {
             QDate d = QDateTime::fromMSecsSinceEpoch(b.dayStartMs).date();
             QString label = (i == n-1) ? tr("Today") : (i == n-2) ? tr("Yest.") : d.toString(QStringLiteral("M/d"));
-            p.setPen(palette().color(QPalette::Mid));
-            QFont f = p.font(); f.setPointSize(7); p.setFont(f);
-            p.drawText(QRect(br.x()-2, y0+barH+2, barW+4, 10), Qt::AlignCenter, label);
+            const QRect captionRect(bar.x() - 2,
+                                    geometry.top + geometry.barHeight + DesignTokens::SpaceXs,
+                                    bar.width() + 4, captionMetrics.height());
+            if (captionMetrics.horizontalAdvance(label) <= captionRect.width()) {
+                QFont labelFont = captions;
+                labelFont.setBold(state.selected);
+                p.setFont(labelFont);
+                p.setPen(DesignTokens::timelineCaptionColor(palette(), state.selected));
+                p.drawText(captionRect, Qt::AlignCenter, label);
+            }
         }
     }
 }
 
 int TimelineStrip::barIndexAt(const QPoint &pos) const
 {
-    const int n = m_bins.size();
-    if (n == 0)
-        return -1;
-    const int barW = qMax(4, (width() - 16 - (n - 1) * 4) / n);
-    const int totalW = n * barW + (n - 1) * 4;
-    const int x0 = (width() - totalW) / 2;
-    const int idx = (pos.x() - x0) / (barW + 4);
-    return (idx < 0 || idx >= n) ? -1 : idx;
+    return DesignTokens::timelineBarAt(size(), m_bins.size(), pos);
 }
 
 void TimelineStrip::mousePressEvent(QMouseEvent *event)
 {
     const int idx = barIndexAt(event->pos());
-    if (idx < 0 || m_bins[idx].count == 0) { emit daySelected(0,0); return; }
-    qint64 from = m_bins[idx].dayStartMs;
-    qint64 to = from + 86400000 - 1;
-    emit daySelected(from, to);
+    // Clicking an empty bar, outside the strip, or the bar that is already
+    // active clears the day filter.
+    if (idx < 0 || idx >= m_bins.size() || m_bins[idx].count == 0 || idx == m_selected) {
+        clearSelection();
+        emit daySelected(0, 0);
+        return;
+    }
+    m_selected = idx;
+    update();
+    const qint64 from = m_bins[idx].dayStartMs;
+    emit daySelected(from, from + kDayMs - 1);
 }
 
 void TimelineStrip::mouseMoveEvent(QMouseEvent *event)
 {
     const int idx = barIndexAt(event->pos());
     if (idx != m_hovered) {
-        m_hovered = idx;
+        setHovered(idx);
         if (idx >= 0) {
             const QDate day = QDateTime::fromMSecsSinceEpoch(m_bins[idx].dayStartMs).date();
             setToolTip(tr("%1 — %n entrie(s)", nullptr, m_bins[idx].count)
@@ -161,17 +221,31 @@ void TimelineStrip::mouseMoveEvent(QMouseEvent *event)
         } else {
             setToolTip(m_defaultHint);
         }
-        update();
     }
     QWidget::mouseMoveEvent(event);
 }
 
 void TimelineStrip::leaveEvent(QEvent *event)
 {
-    if (m_hovered != -1) {
-        m_hovered = -1;
-        update();
-    }
+    setHovered(-1);
     setToolTip(m_defaultHint);
     QWidget::leaveEvent(event);
+}
+
+void TimelineStrip::setHovered(int index)
+{
+    if (index == m_hovered)
+        return;
+    m_hovered = index;
+    const qreal target = index >= 0 ? 1.0 : 0.0;
+    if (UiHelpers::reduceMotion()) {
+        m_hoverAnimation->stop();
+        m_hoverStrength = target;
+        update();
+        return;
+    }
+    m_hoverAnimation->stop();
+    m_hoverAnimation->setStartValue(m_hoverStrength);
+    m_hoverAnimation->setEndValue(target);
+    m_hoverAnimation->start();
 }

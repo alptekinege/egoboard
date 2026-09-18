@@ -15,6 +15,7 @@
 #include "SnippetManager.h"
 #include "StorageManager.h"
 #include "TransformEngine.h"
+#include "UiHelpers.h"
 #include "../../core/SensitiveDataDetector.h"
 #include "../../core/ExpirePolicy.h"
 #include "ExportImportDialogs.h"
@@ -68,31 +69,11 @@
 #include <limits>
 
 namespace {
-QString humanSize(qint64 bytes)
-{
-    if (bytes < 1024 * 1024)
-        return SettingsDialog::tr("%1 kB").arg(bytes / 1024.0, 0, 'f', 1);
-    return SettingsDialog::tr("%1 MB").arg(bytes / (1024.0 * 1024.0), 0, 'f', 1);
-}
-
-// Muted explanation line under a setting — the shared look for every hint.
-QLabel *makeHint(const QString &html, QWidget *parent)
-{
-    auto *label = new QLabel(parent);
-    label->setTextFormat(Qt::RichText);
-    label->setWordWrap(true);
-    label->setText(html);
-    label->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    return label;
-}
-
-// Bordered status readout (platform diagnostics, test results).
-QLabel *makeStatusPanel(const QString &html, QWidget *parent)
-{
-    auto *label = makeHint(html, parent);
-    label->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px; border: 1px solid palette(mid); border-radius: 6px; padding: 6px;"));
-    return label;
-}
+// The dialog's hints and byte sizes are the app-wide ones (UiHelpers), so the
+// settings pages cannot drift from the list and the preview.
+using UiHelpers::humanSize;
+using UiHelpers::makeHint;
+using UiHelpers::makeStatusPanel;
 
 // Every page scrolls the same way, whatever its content height.
 QWidget *makeScrollable(QWidget *page)
@@ -410,9 +391,8 @@ QWidget *SettingsDialog::buildGeneralPage()
             m_ctx.settings()->setDimTextColor(color.name());
     });
 
-    auto *previewHint = new QLabel(tr("Preview — the rows, hint and placeholder text as the app draws them:"), appearanceBox);
-    previewHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    appearanceLayout->addWidget(previewHint);
+    appearanceLayout->addWidget(makeHint(
+        tr("Preview — the rows, hint and placeholder text as the app draws them:"), appearanceBox));
     appearanceLayout->addWidget(new AppearancePreview(appearanceBox));
     m_densityCombo = new QComboBox(appearanceBox);
     m_densityCombo->addItem(tr("Compact"), QStringLiteral("compact"));
@@ -430,6 +410,9 @@ QWidget *SettingsDialog::buildGeneralPage()
     m_toolbarIconOnly = new QCheckBox(tr("Show toolbar buttons as icons only (compact)"), appearanceBox);
     m_toolbarIconOnly->setToolTip(tr("Toolbar buttons appear as logos only — hover for the label. Text+icon otherwise. Takes effect immediately, also while the window is open."));
     appearanceLayout->addWidget(m_toolbarIconOnly);
+    m_reduceMotion = new QCheckBox(tr("Reduce motion (no popup fades or timeline hover transition)"), appearanceBox);
+    m_reduceMotion->setToolTip(tr("Animations are capped at ~120 ms; turning this on removes them entirely."));
+    appearanceLayout->addWidget(m_reduceMotion);
     appearanceLayout->addWidget(makeHint(tr("Color themes are the KDE color schemes (<code>color-schemes</code> dirs) and icon themes installed on this system; System follows whichever Plasma has active. Themes preview live and apply on OK/Apply; text size and colors take effect as you change them. Text colors marked \"contrast-checked\" keep the scheme's color but raise it until it is readable."), appearanceBox));
     layout->addWidget(appearanceBox);
 
@@ -595,11 +578,7 @@ QWidget *SettingsDialog::buildPrivacyPage()
     privacyLayout->addWidget(m_sensitiveMark);
     privacyLayout->addWidget(m_sensitiveRedact);
     privacyLayout->addWidget(m_sensitiveExclude);
-    auto *privacyHint = new QLabel(tr("Detection: Luhn-validated credit cards, high-entropy secrets, API tokens (e.g. <code>AKIA…</code>, <code>ghp_…</code>, <code>sk-…</code>). <i>Exclude</i> is recommended for shared machines. <i>Redact</i> keeps the context but replaces the secret with <code>••••</code> — the original never touches disk. Custom regex below extends detection."), privacyBox);
-    privacyHint->setWordWrap(true);
-    privacyHint->setTextFormat(Qt::RichText);
-    privacyHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    privacyLayout->addWidget(privacyHint);
+    privacyLayout->addWidget(makeHint(tr("Detection: Luhn-validated credit cards, high-entropy secrets, API tokens (e.g. <code>AKIA…</code>, <code>ghp_…</code>, <code>sk-…</code>). <i>Exclude</i> is recommended for shared machines. <i>Redact</i> keeps the context but replaces the secret with <code>••••</code> — the original never touches disk. Custom regex below extends detection."), privacyBox));
 
     // Per-kind redaction toggles (only meaningful in Redact mode).
     auto *kindLabel = new QLabel(tr("Redact these kinds (Redact mode):"), privacyBox);
@@ -630,8 +609,8 @@ QWidget *SettingsDialog::buildPrivacyPage()
             if (box->isChecked())
                 enabled << box->text();
         const auto result = SensitiveDataDetector::redact(sample, enabled);
-        QString html = QStringLiteral("<b style='color:palette(highlight);'>Result:</b><br/><pre>%1</pre>")
-                           .arg(result.text.toHtmlEscaped());
+        QString html = QStringLiteral("<b style='%1'>Result:</b><br/><pre>%2</pre>")
+                           .arg(UiHelpers::positiveStyle(), result.text.toHtmlEscaped());
         m_redactTestResult->setText(html);
     });
     for (QRadioButton *radio : {m_sensitiveOff, m_sensitiveMark, m_sensitiveRedact, m_sensitiveExclude})
@@ -660,7 +639,7 @@ QWidget *SettingsDialog::buildPrivacyPage()
             QRegularExpression re(pat.trimmed(), QRegularExpression::CaseInsensitiveOption);
             if (re.isValid() && re.match(sample).hasMatch()) customHit = true;
         }
-        m_sensitiveTestResult->setText((hit||customHit) ? tr("<b style='color:palette(highlight);'>Would be flagged ✓</b> (%1)").arg(hit?tr("built-in"):tr("custom")) : tr("No match — pattern not triggered"));
+        m_sensitiveTestResult->setText((hit||customHit) ? tr("<b style='%1'>Would be flagged ✓</b> (%2)").arg(UiHelpers::positiveStyle(), hit?tr("built-in"):tr("custom")) : tr("No match — pattern not triggered"));
     });
     privacyLayout->addLayout(customRow);
     historyLayout->addWidget(privacyBox);
@@ -752,10 +731,7 @@ QWidget *SettingsDialog::buildHistoryPage()
 
     auto *expireBox = new QGroupBox(tr("Auto-expire rules"), historyPage);
     auto *expireLayout = new QVBoxLayout(expireBox);
-    auto *expireHint = new QLabel(tr("Delete old entries that match all criteria — e.g. \"unpinned Terminal copies after 24h\". Runs on startup and every 15 minutes while egoboard is running."), expireBox);
-    expireHint->setWordWrap(true);
-    expireHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    expireLayout->addWidget(expireHint);
+    expireLayout->addWidget(makeHint(tr("Delete old entries that match all criteria — e.g. \"unpinned Terminal copies after 24h\". Runs on startup and every 15 minutes while egoboard is running."), expireBox));
     m_expireList = new QListWidget(expireBox);
     m_expireList->setMaximumHeight(104);
     m_expireList->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -818,11 +794,7 @@ QWidget *SettingsDialog::buildSearchPreviewPage()
     m_ftsStatus->setWordWrap(true);
     m_ftsStatus->setTextFormat(Qt::RichText);
     ftsLayout->addWidget(m_ftsStatus);
-    auto *ftsHint = new QLabel(tr("Index covers <code>preview</code>, <code>text_data</code> and <code>ocr_text</code> with <code>unicode61</code> tokenizer, external-content sync and prefix search (<code>\"token\"*</code>). Queries like <code>hello world</code> become <code>\"hello\"* AND \"world\"*</code> — every word must match, diacritics folded."), ftsBox);
-    ftsHint->setWordWrap(true);
-    ftsHint->setTextFormat(Qt::RichText);
-    ftsHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    ftsLayout->addWidget(ftsHint);
+    ftsLayout->addWidget(makeHint(tr("Index covers <code>preview</code>, <code>text_data</code> and <code>ocr_text</code> with <code>unicode61</code> tokenizer, external-content sync and prefix search (<code>\"token\"*</code>). Queries like <code>hello world</code> become <code>\"hello\"* AND \"world\"*</code> — every word must match, diacritics folded."), ftsBox));
     auto *ftsRow = new QHBoxLayout();
     m_ftsRebuildBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("view-refresh")), tr("Rebuild index"), ftsBox);
     m_ftsRebuildBtn->setToolTip(tr("Runs INSERT INTO entries_fts(entries_fts) VALUES('rebuild') — safe, handles external-content drift."));
@@ -838,7 +810,7 @@ QWidget *SettingsDialog::buildSearchPreviewPage()
         QSqlDatabase db = m_ctx.storage()->database();
         QSqlQuery q(db);
         const bool ok = q.exec(QStringLiteral("INSERT INTO entries_fts(entries_fts) VALUES('rebuild')"));
-        if (ok) m_ftsStatus->setText(tr("<b style='color:palette(highlight);'>Rebuilt ✓</b> — index now in sync."));
+        if (ok) m_ftsStatus->setText(tr("<b style='%1'>Rebuilt ✓</b> — index now in sync.").arg(UiHelpers::positiveStyle()));
         else m_ftsStatus->setText(tr("<b>Rebuild failed:</b> %1").arg(q.lastError().text()));
         m_ftsRebuildBtn->setEnabled(true);
         QTimer::singleShot(3000, this, &SettingsDialog::refreshDiagnostics);
@@ -911,11 +883,19 @@ QWidget *SettingsDialog::buildSearchPreviewPage()
     previewLayout->addWidget(m_previewLinks);
     previewLayout->addWidget(m_previewColors);
     previewLayout->addWidget(m_timelineEnabled);
-    m_previewSample = new QLabel(previewBox);
-    m_previewSample->setTextFormat(Qt::RichText);
-    m_previewSample->setWordWrap(true);
-    m_previewSample->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px; border: 1px solid palette(mid); border-radius: 6px; padding: 6px;"));
-    m_previewSample->setText(tr("Sample: <code>{\"a\": 1}</code> → highlighted keys, <a href=\"https://example.com\">https://example.com</a> → 🔗, <span style=\"background:#ff0000; padding:0 6px; border-radius:3px;\">#ff0000</span> → 🎨. Toggle above to disable."));
+    // The sample swatch uses the scheme's own accent instead of a fixed red,
+    // so it demonstrates the palette on whatever theme is loaded.
+    m_previewSample = makeStatusPanel(QString(), previewBox);
+    {
+        const QColor accent = qApp->palette().color(QPalette::Highlight);
+        const QColor onAccent = qApp->palette().color(QPalette::HighlightedText);
+        m_previewSample->setText(
+            tr("Sample: <code>{\"a\": 1}</code> → highlighted keys, "
+               "<a href=\"https://example.com\">https://example.com</a> → 🔗, "
+               "<span style=\"background:%1; color:%2; padding:0 6px; border-radius:3px;\">%1</span> "
+               "→ 🎨. Toggle above to disable.")
+                .arg(accent.name(), onAccent.name()));
+    }
     previewLayout->addWidget(m_previewSample);
     previewLayout->addWidget(makeHint(tr("All detectors are local regex. Disabling restores raw text preview and speeds up rendering for huge entries."), previewBox));
     layout->addWidget(previewBox);
@@ -946,7 +926,7 @@ QWidget *SettingsDialog::buildSearchPreviewPage()
     connect(m_testOcrBtn, &QPushButton::clicked, this, [this]{
         m_ocrStatus->setText(tr("Testing…"));
         if (!OcrWorker::isAvailable()) {
-            m_ocrStatus->setText(tr("<b style='color:palette(highlight);'>tesseract not found</b> — install <code>tesseract</code> and <code>tesseract-data-eng</code>"));
+            m_ocrStatus->setText(tr("<b style='%1'>tesseract not found</b> — install <code>tesseract</code> and <code>tesseract-data-eng</code>").arg(UiHelpers::warningStyle()));
             return;
         }
         m_ocrStatus->setText(tr("Checking tesseract…"));
@@ -956,7 +936,7 @@ QWidget *SettingsDialog::buildSearchPreviewPage()
             QMetaObject::invokeMethod(qApp, [guard, ver]{
                 if (!guard) return;
                 if (!guard->m_ocrStatus) return;
-                guard->m_ocrStatus->setText(tr("<b style='color:palette(highlight);'>tesseract OK</b> — %1").arg(ver.isEmpty() ? QStringLiteral("found in PATH") : ver));
+                guard->m_ocrStatus->setText(tr("<b style='%1'>tesseract OK</b> — %2").arg(UiHelpers::positiveStyle(), ver.isEmpty() ? QStringLiteral("found in PATH") : ver));
             }, Qt::QueuedConnection);
         });
     });
@@ -994,11 +974,8 @@ QWidget *SettingsDialog::buildStoragePage()
     sizeLabel->setObjectName(QStringLiteral("dbSizeLabel"));
     dbLayout->addWidget(makeHint(tr("FTS and OCR are local — no cloud. The database lives under <code>~/.local/share/egoboard/</code> (WAL mode, foreign keys on)."), dbInfoBox));
     // pragma badges
-    auto *pragmaLabel = new QLabel(dbInfoBox);
-    pragmaLabel->setTextFormat(Qt::RichText);
-    pragmaLabel->setWordWrap(true);
+    auto *pragmaLabel = makeHint(QString(), dbInfoBox);
     pragmaLabel->setObjectName(QStringLiteral("pragmaLabel"));
-    pragmaLabel->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
     dbLayout->addWidget(pragmaLabel);
     layout->addWidget(dbInfoBox);
 
@@ -1293,11 +1270,7 @@ QWidget *SettingsDialog::buildAutomationPage()
     m_transformList = new QListWidget(transBox);
     m_transformList->setMaximumHeight(160);
     transLayout->addWidget(m_transformList);
-    auto *transHint = new QLabel(tr("Uncheck to hide from palette & Transform ▾ menu. Built-ins: <code>trim, uppercase, lowercase, capitalize, reverse, base64, url, json-pretty/minify, html-escape, sort-lines, unique-lines, remove-empty-lines, trim-lines</code>. Chainable via preview <i>Transform ▾ → Chain…</i> or palette <code>&gt;transform</code>."), transBox);
-    transHint->setWordWrap(true);
-    transHint->setTextFormat(Qt::RichText);
-    transHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    transLayout->addWidget(transHint);
+    transLayout->addWidget(makeHint(tr("Uncheck to hide from palette & Transform ▾ menu. Built-ins: <code>trim, uppercase, lowercase, capitalize, reverse, base64, url, json-pretty/minify, html-escape, sort-lines, unique-lines, remove-empty-lines, trim-lines</code>. Chainable via preview <i>Transform ▾ → Chain…</i> or palette <code>&gt;transform</code>."), transBox));
     layout->addWidget(transBox);
 
     auto *snippetBox = new QGroupBox(tr("Snippets (templates)"), page);
@@ -1312,14 +1285,10 @@ QWidget *SettingsDialog::buildAutomationPage()
     m_snippetShortcutProblems = new QLabel(snippetBox);
     m_snippetShortcutProblems->setWordWrap(true);
     m_snippetShortcutProblems->setTextFormat(Qt::RichText);
-    m_snippetShortcutProblems->setStyleSheet(QStringLiteral("color: palette(bright-text); font-size: 11px;"));
+    m_snippetShortcutProblems->setStyleSheet(UiHelpers::warningStyle());
     m_snippetShortcutProblems->setVisible(false);
     snippetLayout->addWidget(m_snippetShortcutProblems);
-    auto *snippetHint = new QLabel(tr("Placeholders: <code>{{clipboard}}</code> / <code>{{text}}</code>, <code>{{date}}</code> YYYY-MM-DD, <code>{{time}}</code> HH:mm, <code>{{datetime}}</code>, <code>{{timestamp}}</code>. Expand via palette <code>&gt;snippet</code>, context menu, or a global shortcut set in Tools ▸ Snippets."), snippetBox);
-    snippetHint->setWordWrap(true);
-    snippetHint->setTextFormat(Qt::RichText);
-    snippetHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    snippetLayout->addWidget(snippetHint);
+    snippetLayout->addWidget(makeHint(tr("Placeholders: <code>{{clipboard}}</code> / <code>{{text}}</code>, <code>{{date}}</code> YYYY-MM-DD, <code>{{time}}</code> HH:mm, <code>{{datetime}}</code>, <code>{{timestamp}}</code>. Expand via palette <code>&gt;snippet</code>, context menu, or a global shortcut set in Tools ▸ Snippets."), snippetBox));
     auto *snippetRow = new QHBoxLayout();
     auto *addSnippetBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("list-add")), tr("Add"), snippetBox);
     auto *editSnippetBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-edit")), tr("Edit"), snippetBox);
@@ -1374,11 +1343,7 @@ QWidget *SettingsDialog::buildAutomationPage()
     m_scriptList = new QListWidget(scriptBox);
     m_scriptList->setMaximumHeight(120);
     scriptLayout->addWidget(m_scriptList);
-    auto *scriptHint = new QLabel(tr("JS files in <code>~/.local/share/egoboard/actions/*.js</code> — each must define <code>function transform(text){ return ...; }</code> and optional <code>var meta = { label: \"Name\", match: \"regex\" }</code>. No file/network globals, 256 kB input cap, 64 kB file cap. Timeout 2 s."), scriptBox);
-    scriptHint->setWordWrap(true);
-    scriptHint->setTextFormat(Qt::RichText);
-    scriptHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    scriptLayout->addWidget(scriptHint);
+    scriptLayout->addWidget(makeHint(tr("JS files in <code>~/.local/share/egoboard/actions/*.js</code> — each must define <code>function transform(text){ return ...; }</code> and optional <code>var meta = { label: \"Name\", match: \"regex\" }</code>. No file/network globals, 256 kB input cap, 64 kB file cap. Timeout 2 s."), scriptBox));
     auto *scriptRow = new QHBoxLayout();
     auto *openFolderBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("folder")), tr("Open actions folder"), scriptBox);
     auto *reloadBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("view-refresh")), tr("Reload"), scriptBox);
@@ -1426,11 +1391,7 @@ QWidget *SettingsDialog::buildAutomationPage()
         scheduleDiagnosticsRefresh();
     });
 
-    auto *dbusHint = new QLabel(tr("D-Bus: <code>org.egoboard.Egoboard</code> at <code>/org/egoboard/Egoboard</code> — <code>Search(query, limit)</code> for future KRunner plugin. Try: <code>qdbus org.egoboard.Egoboard /org/egoboard/Egoboard org.egoboard.Egoboard.Search hello 5</code>. Local session bus only, no network."), scriptBox);
-    dbusHint->setWordWrap(true);
-    dbusHint->setTextFormat(Qt::RichText);
-    dbusHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    scriptLayout->addWidget(dbusHint);
+    scriptLayout->addWidget(makeHint(tr("D-Bus: <code>org.egoboard.Egoboard</code> at <code>/org/egoboard/Egoboard</code> — <code>Search(query, limit)</code> for future KRunner plugin. Try: <code>qdbus org.egoboard.Egoboard /org/egoboard/Egoboard org.egoboard.Egoboard.Search hello 5</code>. Local session bus only, no network."), scriptBox));
 
     layout->addWidget(scriptBox);
     layout->addStretch(1);
@@ -1508,9 +1469,7 @@ QWidget *SettingsDialog::buildHotkeysPage()
         pauseKey->setKeySequence(HotkeyManager::defaultPauseShortcut().value(0));
     });
     hotkeyForm->addRow(QString(), resetKeys);
-    auto *hotkeyHint = new QLabel(tr("Shortcuts are registered with KWin via KGlobalAccel. They work even when Egoboard is hidden. The palette (Ctrl+K) is local to the window and needs no registration."), hotkeyBox);
-    hotkeyHint->setWordWrap(true);
-    hotkeyHint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+    auto *hotkeyHint = makeHint(tr("Shortcuts are registered with KWin via KGlobalAccel. They work even when Egoboard is hidden. The palette (Ctrl+K) is local to the window and needs no registration."), hotkeyBox);
     hotkeyForm->addRow(QString(), hotkeyHint);
     hotkeyLayout->addWidget(hotkeyBox);
     hotkeyLayout->addStretch(1);
@@ -2003,6 +1962,8 @@ void SettingsDialog::load()
                  QPalette::Mid);
     if (m_toolbarIconOnly)
         m_toolbarIconOnly->setChecked(m_ctx.settings()->toolbarIconOnly());
+    if (m_reduceMotion)
+        m_reduceMotion->setChecked(m_ctx.settings()->reduceMotion());
 }
 
 void SettingsDialog::save()
@@ -2086,6 +2047,8 @@ void SettingsDialog::save()
         m_ctx.settings()->setIconTheme(m_iconThemeCombo->currentData().toString());
     if (m_toolbarIconOnly)
         m_ctx.settings()->setToolbarIconOnly(m_toolbarIconOnly->isChecked());
+    if (m_reduceMotion)
+        m_ctx.settings()->setReduceMotion(m_reduceMotion->isChecked());
     // transform/script hidden/disabled are saved immediately on toggle, but also save here
     refreshDiagnostics();
 }

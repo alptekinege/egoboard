@@ -28,6 +28,7 @@
 #include "X11ActiveWindowTracker.h"
 #include "ui/MainWindow.h"
 #include "ui/QuickPasteMenu.h"
+#include "ui/UiHelpers.h"
 
 #include <KNotification>
 
@@ -200,6 +201,7 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
         m_ocr->setLanguage(m_settings->ocrLanguage());
         m_ocr->setMaxChars(m_settings->ocrMaxChars());
         m_quickPaste->setItemCount(m_settings->quickPasteCount());
+        UiHelpers::setReduceMotion(m_settings->reduceMotion());
     });
     connect(m_ocr, &OcrWorker::recognized, this, [this](qint64 id, const QString &text){
         m_storage->setOcrText(id, text);
@@ -320,6 +322,7 @@ void ApplicationContext::start()
     // install or a move, otherwise login keeps launching the old path.
     m_settings->ensureAutostartEntry();
     // Apply the configured theme before any window is shown.
+    UiHelpers::setReduceMotion(m_settings->reduceMotion());
     applyThemes(m_settings->theme(), m_settings->iconTheme(), m_settings->textAppearance());
     if (m_settings->startVisible())
         m_window->show();

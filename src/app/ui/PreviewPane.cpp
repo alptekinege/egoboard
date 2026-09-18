@@ -1,6 +1,8 @@
 #include "PreviewPane.h"
 
 #include "CodePreviewHighlighter.h"
+#include "DesignTokens.h"
+#include "UiHelpers.h"
 #include "../ScriptActionManager.h"
 #include "../SettingsManager.h"
 #include "TransformChainDialog.h"
@@ -30,17 +32,6 @@
 #include <QHBoxLayout>
 
 namespace {
-
-QString humanSize(qint64 bytes)
-{
-    if (bytes <= 0)
-        return {}; // unknown/empty payload: nothing to report
-    if (bytes < 1024)
-        return PreviewPane::tr("%1 B").arg(bytes);
-    if (bytes < 1024 * 1024)
-        return PreviewPane::tr("%1 kB").arg(bytes / 1024.0, 'f', 1);
-    return PreviewPane::tr("%1 MB").arg(bytes / (1024.0 * 1024.0), 0, 'f', 1);
-}
 
 QStringList extractUrls(const QString &text)
 {
@@ -152,9 +143,7 @@ void PreviewPane::buildTransformBar()
     });
     bar->addWidget(m_revertBtn);
 
-    m_transformStatus = new QLabel(m_transformBar);
-    m_transformStatus->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
-    m_transformStatus->setWordWrap(true);
+    m_transformStatus = UiHelpers::makeHint(QString(), m_transformBar, /*richText=*/false);
     bar->addWidget(m_transformStatus, 1);
 
     // Build initial menu
@@ -419,7 +408,7 @@ void PreviewPane::showRecord(const ClipboardRecord &record)
         meta << record.sourceApp;
     if (!record.sourceWindow.isEmpty())
         meta << tr("from “%1”").arg(record.sourceWindow);
-    const QString sizeText = humanSize(record.sizeBytes);
+    const QString sizeText = UiHelpers::humanSize(record.sizeBytes);
     if (!sizeText.isEmpty())
         meta << sizeText;
     // use_count counts re-copies/pastes after the initial capture.
@@ -464,8 +453,11 @@ void PreviewPane::showRecord(const ClipboardRecord &record)
                 const auto cols = extractHexColors(display);
                 if (!cols.isEmpty()) {
                     QStringList swatchesList;
+                    const QString borderColor = UiHelpers::mutedColor().name();
                     for (const QString &c : cols) {
-                        swatchesList << QStringLiteral("<span style=\"background:%1; border:1px solid palette(mid); padding:0 8px; margin-right:4px; border-radius:3px;\">%1</span>").arg(c);
+                        // Rich text has no palette() roles, so the outline color
+                        // is resolved here instead of silently doing nothing.
+                        swatchesList << QStringLiteral("<span style=\"background:%1; border:1px solid %2; padding:0 8px; margin-right:4px; border-radius:3px;\">%1</span>").arg(c, borderColor);
                     }
                     extraMeta += QStringLiteral("<br/>🎨 ") + swatchesList.join(QStringLiteral(" "));
                 }

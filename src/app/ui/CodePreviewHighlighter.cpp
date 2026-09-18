@@ -1,47 +1,68 @@
 #include "CodePreviewHighlighter.h"
+#include "../TextAppearance.h"
 #include <QGuiApplication>
-#include <QPalette>
 #include <QRegularExpression>
 
 namespace {
-// Dark-surface variants of the VS-style colors (light variants are unreadable
-// on a dark Base color).
-struct ThemeFormats {
-    QTextCharFormat stringFmt;
-    QTextCharFormat keyFmt;
-    QTextCharFormat numberFmt;
-    QTextCharFormat keywordFmt;
-    QTextCharFormat commentFmt;
-};
+// Hue offsets from the scheme's own accent: a blue-accented scheme (Breeze)
+// lands on the familiar code look — blue keywords, violet keys, warm strings,
+// green numbers — while any other accent still yields a coherent set.
+constexpr int kKeyHueShift = 70;
+constexpr int kStringHueShift = 180;
+constexpr int kNumberHueShift = -60;
+constexpr int kFallbackAccentHue = 205; // Breeze blue
 
-bool isDarkSurface()
+int accentHue(const QPalette &palette)
 {
-    return QGuiApplication::palette().color(QPalette::Base).lightness() < 128;
+    int hue = palette.color(QPalette::Highlight).hsvHue();
+    if (hue < 0)
+        hue = palette.color(QPalette::Link).hsvHue();
+    return hue < 0 ? kFallbackAccentHue : hue;
 }
 
-ThemeFormats makeFormats()
+QColor roleColor(const QPalette &palette, int hue, qreal saturation, qreal value)
 {
-    ThemeFormats f;
-    if (!isDarkSurface()) {
-        f.stringFmt.setForeground(QColor(QStringLiteral("#a31515")));
-        f.keyFmt.setForeground(QColor(QStringLiteral("#0451a5")));
-        f.keyFmt.setFontWeight(QFont::DemiBold);
-        f.numberFmt.setForeground(QColor(QStringLiteral("#098658")));
-        f.keywordFmt.setForeground(QColor(QStringLiteral("#0000ff")));
-        f.commentFmt.setForeground(QColor(QStringLiteral("#008000")));
-    } else {
-        // Breeze-dark code colors: readable on #1b1e21
-        f.stringFmt.setForeground(QColor(QStringLiteral("#f67400")));   // orange strings
-        f.keyFmt.setForeground(QColor(QStringLiteral("#8e44ad")));     // violet keys
-        f.keyFmt.setFontWeight(QFont::DemiBold);
-        f.numberFmt.setForeground(QColor(QStringLiteral("#f67400")));  // orange numbers
-        f.keywordFmt.setForeground(QColor(QStringLiteral("#1d99f3"))); // blue keywords
-        f.commentFmt.setForeground(QColor(QStringLiteral("#7f8c8d"))); // gray comments
+    const QColor surface = palette.color(QPalette::Base);
+    const QColor seed = QColor::fromHsv((hue % 360 + 360) % 360, qRound(saturation * 255),
+                                        qRound(value * 255));
+    // Every role is held to the same floor as ordinary text, so a scheme whose
+    // accent happens to be close to its Base still produces readable code.
+    return TextAppearance::ensureContrast(seed, surface, TextAppearance::kTextContrastRatio);
+}
+
+// Built once per palette, not once per highlighted block.
+const CodePreviewHighlighter::Theme &currentTheme()
+{
+    static CodePreviewHighlighter::Theme theme;
+    static qint64 paletteKey = 0;
+    const QPalette palette = QGuiApplication::palette();
+    if (paletteKey != palette.cacheKey()) {
+        theme = CodePreviewHighlighter::themeFor(palette);
+        paletteKey = palette.cacheKey();
     }
-    f.commentFmt.setFontItalic(true);
-    return f;
+    return theme;
 }
 } // namespace
+
+CodePreviewHighlighter::Theme CodePreviewHighlighter::themeFor(const QPalette &palette)
+{
+    const QColor surface = palette.color(QPalette::Base);
+    const bool dark = surface.lightness() < 128;
+    const int accent = accentHue(palette);
+    const qreal saturation = dark ? 0.78 : 0.88;
+    const qreal value = dark ? 0.94 : 0.55;
+
+    Theme theme;
+    theme.keyword = roleColor(palette, accent, saturation, value);
+    theme.key = roleColor(palette, accent + kKeyHueShift, saturation * 0.75, value);
+    theme.string = roleColor(palette, accent + kStringHueShift, saturation, value);
+    theme.number = roleColor(palette, accent + kNumberHueShift, saturation * 0.9, value);
+    // Comments use the scheme's own subdued role, italic and slightly dimmer
+    // than code (the readability floor for secondary text, not for body text).
+    theme.comment = TextAppearance::ensureContrast(palette.color(QPalette::Mid), surface,
+                                                   TextAppearance::kDimTextContrastRatio);
+    return theme;
+}
 
 CodePreviewHighlighter::CodePreviewHighlighter(QTextDocument *doc)
     : QSyntaxHighlighter(doc) {}
@@ -73,12 +94,20 @@ CodePreviewHighlighter::Mode CodePreviewHighlighter::detect(const QString &text)
 
 void CodePreviewHighlighter::highlightBlock(const QString &text) {
     if (m_mode == Mode::Plain) return;
-    const ThemeFormats tf = makeFormats();
-    const QTextCharFormat &stringFmt = tf.stringFmt;
-    const QTextCharFormat &keyFmt = tf.keyFmt;
-    const QTextCharFormat &numberFmt = tf.numberFmt;
-    const QTextCharFormat &keywordFmt = tf.keywordFmt;
-    const QTextCharFormat &commentFmt = tf.commentFmt;
+    const Theme theme = currentTheme();
+
+    QTextCharFormat stringFmt;
+    stringFmt.setForeground(theme.string);
+    QTextCharFormat keyFmt;
+    keyFmt.setForeground(theme.key);
+    keyFmt.setFontWeight(QFont::DemiBold);
+    QTextCharFormat numberFmt;
+    numberFmt.setForeground(theme.number);
+    QTextCharFormat keywordFmt;
+    keywordFmt.setForeground(theme.keyword);
+    QTextCharFormat commentFmt;
+    commentFmt.setForeground(theme.comment);
+    commentFmt.setFontItalic(true);
 
     if (m_mode == Mode::Json) {
         // strings "key" :

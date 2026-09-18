@@ -69,6 +69,9 @@ QColor TextAppearance::ensureContrast(const QColor &color, const QColor &backgro
         result = QColor::fromRgbF(color.redF() + (target.redF() - color.redF()) * t,
                                   color.greenF() + (target.greenF() - color.greenF()) * t,
                                   color.blueF() + (target.blueF() - color.blueF()) * t);
+        // The floor is measured on the 8-bit color that actually gets painted,
+        // not on the intermediate float, so "readable" means readable on screen.
+        result = QColor::fromRgb(result.rgb());
         if (contrastRatio(result, background) >= minRatio)
             break;
     }

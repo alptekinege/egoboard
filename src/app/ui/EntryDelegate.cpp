@@ -2,14 +2,19 @@
 
 #include "BookmarkManager.h"
 #include "ClipboardListModel.h"
+#include "DesignTokens.h"
+#include "UiHelpers.h"
 #include "../SettingsManager.h"
 
+#include <QAbstractItemView>
 #include <QApplication>
 #include <QDateTime>
 #include <QGuiApplication>
+#include <QHelpEvent>
 #include <QIcon>
 #include <QPainter>
 #include <QStyle>
+#include <QToolTip>
 
 #include <algorithm>
 
@@ -28,17 +33,6 @@ QString typeIconName(int typeRole)
     default:
         return QStringLiteral("text-x-generic");
     }
-}
-
-QString humanSize(qint64 bytes)
-{
-    if (bytes <= 0)
-        return {};
-    if (bytes < 1024)
-        return EntryDelegate::tr("%1 B").arg(bytes);
-    if (bytes < 1024 * 1024)
-        return EntryDelegate::tr("%1 kB").arg(bytes / 1024.0, 0, 'f', 1);
-    return EntryDelegate::tr("%1 MB").arg(bytes / (1024.0 * 1024.0), 0, 'f', 1);
 }
 
 QString relativeTime(qint64 timestampMs, bool absolute, bool ampm)
@@ -62,6 +56,57 @@ QString relativeTime(qint64 timestampMs, bool absolute, bool ampm)
     return timestamp.toString(QStringLiteral("yyyy-MM-dd ") + timeFormat);
 }
 
+// One painted marker on the right-hand side of a row. The rect is shared by
+// paint() and helpEvent(), so a tooltip always lands on the badge it explains.
+struct Badge {
+    QRect rect;
+    QString tooltip;
+    QIcon icon; // pin / sensitive shield; null for a group color dot
+    QColor dot; // group color; invalid for icons
+};
+
+QVector<Badge> badgesFor(const QRect &row, const DesignTokens::RowMetrics &metrics, bool pinned,
+                         bool sensitive, const QVector<EntryDelegate::GroupBadge> &groups)
+{
+    QVector<Badge> badges;
+    int rightEdge = row.left() + row.width() - metrics.margin;
+    const int badgeTop = row.top() + (row.height() - metrics.badgeSize) / 2;
+    if (pinned) {
+        rightEdge -= metrics.badgeSize;
+        badges.append({QRect(rightEdge, badgeTop, metrics.badgeSize, metrics.badgeSize),
+                       EntryDelegate::tr("Pinned"),
+                       QIcon::fromTheme(QStringLiteral("bookmarks")), {}});
+    }
+    if (sensitive) {
+        rightEdge -= metrics.badgeSize;
+        badges.append({QRect(rightEdge, badgeTop, metrics.badgeSize, metrics.badgeSize),
+                       EntryDelegate::tr("Flagged as sensitive"),
+                       QIcon::fromTheme(QStringLiteral("security-low")), {}});
+    }
+    for (int i = 0; i < qMin(groups.size(), 4); ++i) {
+        // Dots are spaced, never overlapped (DesignTokens::dotAdvance).
+        rightEdge -= metrics.dotAdvance();
+        const int dotTop = row.top() + (row.height() - metrics.dotDiameter) / 2;
+        badges.append({QRect(rightEdge, dotTop, metrics.dotDiameter, metrics.dotDiameter),
+                       groups.at(i).name.isEmpty()
+                           ? QString()
+                           : EntryDelegate::tr("Group: %1").arg(groups.at(i).name),
+                       {},
+                       groups.at(i).color});
+    }
+    return badges;
+}
+
+// How far the text may run before it would touch the badge strip.
+int badgesLeftEdge(const QRect &row, const QVector<Badge> &badges,
+                   const DesignTokens::RowMetrics &metrics)
+{
+    int edge = row.right() - metrics.margin;
+    for (const Badge &badge : badges)
+        edge = qMin(edge, badge.rect.left() - metrics.margin);
+    return edge;
+}
+
 } // namespace
 
 EntryDelegate::EntryDelegate(BookmarkManager *bookmarks, SettingsManager *settings,
@@ -81,30 +126,30 @@ void EntryDelegate::refreshTimeFormats()
     // Cached once per settings change instead of per painted row.
     m_absoluteTimestamps = m_settings && m_settings->timestampStyle() == QLatin1String("absolute");
     m_ampmClock = m_settings && !m_settings->clock24h();
-    m_groupColorCache.clear();
+    m_groupCache.clear();
 }
 
 void EntryDelegate::clearGroupCache()
 {
-    m_groupColorCache.clear();
+    m_groupCache.clear();
 }
 
-QVector<QColor> EntryDelegate::groupColors(qint64 entryId) const
+QVector<EntryDelegate::GroupBadge> EntryDelegate::groupBadges(qint64 entryId) const
 {
-    const auto cached = m_groupColorCache.constFind(entryId);
-    if (cached != m_groupColorCache.constEnd())
+    const auto cached = m_groupCache.constFind(entryId);
+    if (cached != m_groupCache.constEnd())
         return cached.value();
-    QVector<QColor> colors;
+    QVector<GroupBadge> badges;
     if (m_bookmarks) {
         const QList<qint64> groupIds = m_bookmarks->groupIdsForEntry(entryId);
         for (const qint64 groupId : groupIds) {
             const auto group = m_bookmarks->group(groupId);
             if (group.has_value() && !group->color.isEmpty())
-                colors.append(QColor(group->color));
+                badges.append({group->name, QColor(group->color)});
         }
     }
-    m_groupColorCache.insert(entryId, colors);
-    return colors;
+    m_groupCache.insert(entryId, badges);
+    return badges;
 }
 
 void EntryDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
@@ -118,69 +163,69 @@ void EntryDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
     QStyle *style = opt.widget ? opt.widget->style() : QApplication::style();
     style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, opt.widget);
 
-    // Secondary text: the palette's subdued role, which ThemeManager keeps above
-    // a readability floor. On a selected row it switches to the highlighted text
-    // color, otherwise the meta line would be unreadable on the highlight.
     const bool selected = option.state & QStyle::State_Selected;
-    const QPen metaPen(option.palette.color(selected ? QPalette::HighlightedText : QPalette::Mid));
+    const bool enabled = option.state & QStyle::State_Enabled;
+    const bool hovered = option.state & QStyle::State_MouseOver;
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
 
+    // The style paints selection and focus; a palette-derived wash is added on
+    // hover so a row answers the pointer before it is clicked.
+    if (hovered && !selected && enabled)
+        painter->fillRect(option.rect, DesignTokens::hoverBackground(option.palette));
+
+    const DesignTokens::RowMetrics metrics = DesignTokens::rowMetrics(m_rowPadding);
     const int left = option.rect.left();
     const int top = option.rect.top();
-    const int height = option.rect.height();
-    constexpr int kMargin = 8;
-    constexpr int kIconSize = 22;
 
     // Type icon.
-    const QIcon icon = QIcon::fromTheme(
-        typeIconName(index.data(ClipboardListModel::TypeRole).toInt()));
-    icon.paint(painter, left + kMargin, top + (height - kIconSize) / 2, kIconSize, kIconSize);
+    const QIcon icon =
+        QIcon::fromTheme(typeIconName(index.data(ClipboardListModel::TypeRole).toInt()));
+    icon.paint(painter, QRect(left + metrics.margin, top + (option.rect.height() - metrics.iconSize) / 2,
+                              metrics.iconSize, metrics.iconSize),
+               Qt::AlignCenter, enabled ? QIcon::Normal : QIcon::Disabled);
 
     // Right-hand badges.
-    int rightEdge = left + option.rect.width() - kMargin;
+    const QVector<GroupBadge> groups =
+        groupBadges(index.data(ClipboardListModel::IdRole).toLongLong());
     const bool pinned = index.data(ClipboardListModel::PinnedRole).toBool();
-    if (pinned) {
-        const QIcon star = QIcon::fromTheme(QStringLiteral("bookmarks"));
-        rightEdge -= 16;
-        star.paint(painter, rightEdge, top + (height - 16) / 2, 16, 16);
-    }
     const bool sensitive = index.data(ClipboardListModel::SensitiveRole).toBool();
-    if (sensitive) {
-        const QIcon shield = QIcon::fromTheme(QStringLiteral("security-low"));
-        rightEdge -= 16;
-        shield.paint(painter, rightEdge, top + (height - 16) / 2, 16, 16);
-    }
-    const QVector<QColor> colors =
-        groupColors(index.data(ClipboardListModel::IdRole).toLongLong());
-    for (int i = 0; i < qMin(colors.size(), 4); ++i) {
-        rightEdge -= 12;
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(colors.at(i));
-        painter->drawEllipse(QPoint(rightEdge + 4, top + height / 2), 4, 4);
+    const QVector<Badge> badges = badgesFor(option.rect, metrics, pinned, sensitive, groups);
+    for (const Badge &badge : badges) {
+        if (badge.dot.isValid()) {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(badge.dot);
+            painter->drawEllipse(badge.rect);
+        } else {
+            badge.icon.paint(painter, badge.rect, Qt::AlignCenter,
+                             enabled ? QIcon::Normal : QIcon::Disabled);
+        }
     }
 
     // Text block.
-    const int textLeft = left + kMargin + kIconSize + kMargin;
-    const int textWidth = rightEdge - textLeft - kMargin;
+    const int textLeft = metrics.contentLeft(left);
+    const int textRight = badgesLeftEdge(option.rect, badges, metrics);
+    const int textWidth = qMax(0, textRight - textLeft);
     const QFont originalFont = painter->font();
     QFont previewFont = originalFont;
     previewFont.setWeight(QFont::DemiBold);
     painter->setFont(previewFont);
     const QString preview =
         painter->fontMetrics().elidedText(index.data().toString(), Qt::ElideRight, textWidth);
-    const QRect previewRect(textLeft, top + kMargin, textWidth, painter->fontMetrics().height());
+    const QRect previewRect(textLeft, top + metrics.padding, textWidth,
+                            painter->fontMetrics().height());
+    const QColor previewColor =
+        DesignTokens::previewTextColor(option.palette, selected, enabled);
     if (m_searchTerms.isEmpty()) {
-        painter->setPen(option.palette.color(
-            selected ? QPalette::HighlightedText : QPalette::Text));
+        painter->setPen(previewColor);
         painter->drawText(previewRect, Qt::AlignVCenter | Qt::AlignLeft, preview);
     } else {
-        drawHighlightedText(painter, previewRect, preview, option.palette, selected);
+        drawHighlightedText(painter, previewRect, preview, option.palette, previewColor, selected);
     }
 
     painter->setFont(originalFont);
-    painter->setPen(metaPen);
+    painter->setPen(DesignTokens::metaTextColor(option.palette, selected, enabled));
     QStringList metaParts;
     metaParts << relativeTime(index.data(ClipboardListModel::TimestampRole).toLongLong(),
                               m_absoluteTimestamps, m_ampmClock);
@@ -188,7 +233,7 @@ void EntryDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
     if (!app.isEmpty())
         metaParts << app;
     const qint64 sizeBytes = index.data(ClipboardListModel::SizeRole).toLongLong();
-    const QString sizeText = humanSize(sizeBytes);
+    const QString sizeText = UiHelpers::humanSize(sizeBytes);
     if (!sizeText.isEmpty())
         metaParts << sizeText;
     // use_count counts re-copies/pastes after the initial capture, so the
@@ -198,22 +243,47 @@ void EntryDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
         metaParts << tr("used %1×").arg(useCount);
     const QString meta = painter->fontMetrics().elidedText(metaParts.join(QStringLiteral(" · ")),
                                                            Qt::ElideRight, textWidth);
-    painter->drawText(
-        QRect(textLeft, top + kMargin + painter->fontMetrics().height() + 2, textWidth,
-              painter->fontMetrics().height()),
-        Qt::AlignVCenter | Qt::AlignLeft, meta);
+    painter->drawText(QRect(textLeft, top + metrics.padding + painter->fontMetrics().height() + 2,
+                            textWidth, painter->fontMetrics().height()),
+                      Qt::AlignVCenter | Qt::AlignLeft, meta);
 
     painter->restore();
 }
 
 QSize EntryDelegate::sizeHint(const QStyleOptionViewItem &option, const QModelIndex &) const
 {
-    const QFontMetrics metrics(option.font);
-    return QSize(option.rect.width(), metrics.height() * 2 + 2 * m_rowPadding + 4);
+    return rowSizeHint(QFontMetrics(option.font), m_rowPadding, option.rect.width());
+}
+
+QSize EntryDelegate::rowSizeHint(const QFontMetrics &metrics, int rowPadding, int width)
+{
+    return DesignTokens::rowMetrics(rowPadding).sizeHint(metrics, width);
+}
+
+bool EntryDelegate::helpEvent(QHelpEvent *event, QAbstractItemView *view,
+                              const QStyleOptionViewItem &option, const QModelIndex &index)
+{
+    if (!event || !view || !index.isValid() || event->type() != QEvent::ToolTip)
+        return QStyledItemDelegate::helpEvent(event, view, option, index);
+
+    const DesignTokens::RowMetrics metrics = DesignTokens::rowMetrics(m_rowPadding);
+    const QVector<Badge> badges =
+        badgesFor(option.rect, metrics, index.data(ClipboardListModel::PinnedRole).toBool(),
+                  index.data(ClipboardListModel::SensitiveRole).toBool(),
+                  groupBadges(index.data(ClipboardListModel::IdRole).toLongLong()));
+    const QPoint pos = event->pos();
+    for (const Badge &badge : badges) {
+        if (badge.tooltip.isEmpty() || !badge.rect.contains(pos))
+            continue;
+        QToolTip::showText(event->globalPos(), badge.tooltip, view, badge.rect);
+        return true;
+    }
+    return QStyledItemDelegate::helpEvent(event, view, option, index);
 }
 
 void EntryDelegate::drawHighlightedText(QPainter *painter, const QRect &rect, const QString &text,
-                                        const QPalette &palette, bool selected) const
+                                        const QPalette &palette, const QColor &textColor,
+                                        bool selected) const
 {
     // Collect case-insensitive match ranges for every search term.
     const QString lower = text.toLower();
@@ -232,7 +302,7 @@ void EntryDelegate::drawHighlightedText(QPainter *painter, const QRect &rect, co
         }
     }
     if (ranges.isEmpty()) {
-        painter->setPen(palette.color(selected ? QPalette::HighlightedText : QPalette::Text));
+        painter->setPen(textColor);
         painter->drawText(rect, Qt::AlignVCenter | Qt::AlignLeft, text);
         return;
     }
@@ -246,9 +316,7 @@ void EntryDelegate::drawHighlightedText(QPainter *painter, const QRect &rect, co
     }
 
     const QFontMetrics metrics = painter->fontMetrics();
-    QColor fill = palette.color(QPalette::Highlight);
-    fill.setAlpha(selected ? 120 : 80);
-    const QColor textColor = palette.color(selected ? QPalette::HighlightedText : QPalette::Text);
+    const QColor fill = DesignTokens::searchHighlightFill(palette, selected);
     const int baseline = rect.top() + (rect.height() + metrics.ascent() - metrics.descent()) / 2;
 
     int x = rect.left();
@@ -260,8 +328,7 @@ void EntryDelegate::drawHighlightedText(QPainter *painter, const QRect &rect, co
         const int width = metrics.horizontalAdvance(piece);
         if (highlight)
             painter->fillRect(QRect(x, baseline - metrics.ascent(), width, metrics.height()), fill);
-        painter->setPen(highlight ? textColor : palette.color(selected ? QPalette::HighlightedText
-                                                                       : QPalette::Text));
+        painter->setPen(textColor);
         painter->drawText(x, baseline, piece);
         x += width;
     };

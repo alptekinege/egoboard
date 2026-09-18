@@ -115,6 +115,7 @@ add_executable(egoboard
     src/core/GroupTreeModel.cpp # Gui-dependent (QIcon in DecorationRole)
     src/app/ui/MainWindow.cpp
     src/app/ui/AppearancePreview.cpp
+    src/app/ui/DesignTokens.h
     src/app/ui/EntryDelegate.cpp
     src/app/ui/PreviewPane.cpp
     src/app/ui/QuickPasteMenu.cpp
@@ -126,6 +127,8 @@ add_executable(egoboard
     src/app/ui/TimelineStrip.cpp
     src/app/ui/SnippetDialog.cpp
     src/app/ui/TransformChainDialog.cpp
+    src/app/ui/UiHelpers.cpp
+    src/app/ui/UiHelpers.h
     src/app/OcrWorker.cpp
     src/app/ui/CodePreviewHighlighter.cpp
     data/resources.qrc

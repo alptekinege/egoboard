@@ -1,15 +1,19 @@
 #include "CommandPalette.h"
 
 #include "ClipboardListModel.h"
+#include "DesignTokens.h"
 #include "IClipboardStorage.h"
 #include "SnippetManager.h"
 #include "TransformEngine.h"
+#include "UiHelpers.h"
 #include "../ScriptActionManager.h"
 
 #include <QAbstractListModel>
 #include <QApplication>
 #include <QSet>
 #include <QDateTime>
+#include <QFrame>
+#include <QGraphicsDropShadowEffect>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -145,23 +149,43 @@ CommandPalette::CommandPalette(IClipboardStorage *storage, QWidget *parent)
     setWindowTitle(tr("Command Palette"));
     setModal(true);
     setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
-    setAttribute(Qt::WA_TranslucentBackground, false);
+    // Borderless, but not edgeless: the rounded card below carries the frame,
+    // and the margin around it holds the drop shadow.
+    setAttribute(Qt::WA_TranslucentBackground, true);
     resize(640, 420);
 
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(12, 12, 12, 12);
-    layout->setSpacing(8);
+    auto *outer = new QVBoxLayout(this);
+    outer->setContentsMargins(DesignTokens::SpaceM, DesignTokens::SpaceM, DesignTokens::SpaceM,
+                              DesignTokens::SpaceM);
 
-    m_input = new QLineEdit(this);
+    m_card = new QFrame(this);
+    m_card->setObjectName(QStringLiteral("paletteCard"));
+    m_card->setStyleSheet(QStringLiteral("#paletteCard { background: palette(window); "
+                                         "border: 1px solid palette(mid); border-radius: %1px; }")
+                              .arg(DesignTokens::RadiusL));
+    auto *shadow = new QGraphicsDropShadowEffect(m_card);
+    shadow->setBlurRadius(DesignTokens::SpaceL * 2);
+    shadow->setOffset(0, DesignTokens::SpaceXs);
+    shadow->setColor(QColor(0, 0, 0, 140));
+    m_card->setGraphicsEffect(shadow);
+    outer->addWidget(m_card);
+
+    auto *layout = new QVBoxLayout(m_card);
+    layout->setContentsMargins(DesignTokens::SpaceL, DesignTokens::SpaceL, DesignTokens::SpaceL,
+                               DesignTokens::SpaceL);
+    layout->setSpacing(DesignTokens::SpaceM);
+
+    m_input = new QLineEdit(m_card);
     m_input->setPlaceholderText(tr("Type to search history…  •  > for commands (>tag, >export, >pause…)"));
     m_input->setClearButtonEnabled(true);
     m_input->setAccessibleName(tr("Command palette search"));
     QFont f = m_input->font();
     f.setPointSizeF(f.pointSizeF() + 1.5);
     m_input->setFont(f);
+    UiHelpers::styleSearchField(m_input);
     layout->addWidget(m_input);
 
-    m_list = new QListView(this);
+    m_list = new QListView(m_card);
     m_list->setAccessibleName(tr("Palette results"));
     m_list->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_list->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -170,9 +194,7 @@ CommandPalette::CommandPalette(IClipboardStorage *storage, QWidget *parent)
     m_list->setModel(m_model);
     layout->addWidget(m_list, 1);
 
-    m_hint = new QLabel(this);
-    m_hint->setWordWrap(true);
-    m_hint->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+    m_hint = UiHelpers::makeHint(QString(), m_card);
     layout->addWidget(m_hint);
 
     connect(m_input, &QLineEdit::textChanged, this, &CommandPalette::onTextChanged);
@@ -201,6 +223,7 @@ void CommandPalette::openPalette()
     m_input->clear();
     refreshResults({});
     m_input->setFocus();
+    UiHelpers::fadeIn(this); // capped, skippable (Settings ▸ Appearance)
     show();
     raise();
     activateWindow();
