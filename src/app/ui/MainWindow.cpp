@@ -37,6 +37,7 @@
 #include <QListView>
 #include <QMenu>
 #include <QMessageBox>
+#include <QRegularExpression>
 #include <QScreen>
 #include <QSplitter>
 #include <QTimer>
@@ -56,6 +57,22 @@ int densityPadding(const QString &density)
     if (density == QLatin1String("spacious"))
         return 12;
     return 8;
+}
+
+// Search scope values come from the settings file as plain ints.
+QString scopeLabel(int scope)
+{
+    switch (static_cast<FilterSpec::SearchScope>(scope)) {
+    case FilterSpec::SearchScope::Preview:
+        return MainWindow::tr("Preview");
+    case FilterSpec::SearchScope::FullText:
+        return MainWindow::tr("Full text");
+    case FilterSpec::SearchScope::Ocr:
+        return MainWindow::tr("OCR");
+    case FilterSpec::SearchScope::All:
+    default:
+        return MainWindow::tr("All text");
+    }
 }
 } // namespace
 
@@ -98,15 +115,28 @@ void MainWindow::buildUi()
     auto *filterRow = new QHBoxLayout();
 
     m_search = new QLineEdit(central);
-    m_search->setPlaceholderText(tr("Search history…  •  app:firefox  type:image  has:ocr  before:7d  -word"));
+    m_search->setPlaceholderText(tr("Search history…  •  app:firefox  has:ocr  -word  OR  /regex/"));
     m_search->setClearButtonEnabled(true);
     m_search->setAccessibleName(tr("Search history"));
     m_search->setAccessibleDescription(
         tr("Full-text search over previews, stored text and OCR output. Field filters: "
-           "app:, type:, tag:, pinned:, sensitive:, has:ocr, before:, after:; quote phrases "
-           "and prefix a word with - to exclude it."));
+           "app:, type:, tag:, pinned:, sensitive:, has:ocr, before:, after:. Quote phrases; "
+           "-term or NOT term excludes; uppercase OR gives alternatives; /pattern/ matches a "
+           "regular expression."));
     m_search->setToolTip(m_search->accessibleDescription());
     filterRow->addWidget(m_search, 3);
+
+    // Trailing actions inside the search field: search scope and recent queries.
+    m_searchScope = m_ctx.settings()->searchScope();
+    m_scopeAction = m_search->addAction(QIcon::fromTheme(QStringLiteral("edit-find")),
+                                        QLineEdit::TrailingPosition);
+    m_scopeAction->setToolTip(tr("Search scope: %1").arg(scopeLabel(m_searchScope)));
+    connect(m_scopeAction, &QAction::triggered, this, &MainWindow::showScopeMenu);
+
+    m_recentSearchAction = m_search->addAction(QIcon::fromTheme(QStringLiteral("view-history")),
+                                               QLineEdit::TrailingPosition);
+    m_recentSearchAction->setToolTip(tr("Recent searches"));
+    connect(m_recentSearchAction, &QAction::triggered, this, &MainWindow::showRecentSearches);
 
     m_typeCombo = new QComboBox(central);
     m_typeCombo->setAccessibleName(tr("Content type filter"));
@@ -343,6 +373,10 @@ void MainWindow::connectSignals()
     }
     connect(m_search, &QLineEdit::textChanged, this,
             [this] { m_searchDebounce->start(); });
+    connect(m_search, &QLineEdit::returnPressed, this, [this] {
+        commitCurrentSearch();
+        applyCurrentFilter();
+    });
 
     connect(m_typeCombo, &QComboBox::currentIndexChanged, this, &MainWindow::applyCurrentFilter);
     if (m_timeline) {
@@ -445,14 +479,19 @@ void MainWindow::applySavedSearch(const FilterSpec &filter)
 {
     // Mirror the saved filter onto the widgets so the UI stays the source of
     // truth; anything not representable in the presets lands in "Custom range…".
-    // has:ocr and -exclusions have no widget, so they go back into the search
-    // box in query syntax — dropping them would silently change the search.
+    // has:ocr, /regex/ and -exclusions have no widget, so they go back into the
+    // search box in query syntax — dropping them would change the search.
     QString queryText = filter.searchText;
     if (filter.hasOcrOnly)
         queryText += QStringLiteral(" has:ocr");
+    if (!filter.regexText.isEmpty())
+        queryText += QStringLiteral(" /%1/").arg(filter.regexText);
     if (!filter.excludeText.isEmpty())
         queryText += QLatin1Char(' ') + SearchEngine::negatedTerms(filter.excludeText);
     m_search->setText(queryText.trimmed());
+    m_searchScope = int(filter.searchScope);
+    if (m_scopeAction)
+        m_scopeAction->setToolTip(tr("Search scope: %1").arg(scopeLabel(m_searchScope)));
     const int typeIndex = m_typeCombo->findData(filter.contentType);
     m_typeCombo->setCurrentIndex(typeIndex >= 0 ? typeIndex : 0);
     const int appIndex = m_appCombo->findData(filter.sourceApp);
@@ -588,6 +627,7 @@ void MainWindow::applyCurrentFilter()
         break;
     }
     base.sourceApp = m_appCombo->currentData().toString();
+    base.searchScope = static_cast<FilterSpec::SearchScope>(m_searchScope);
 
     // The search box carries free text plus field filters (app:, type:, …);
     // typed fields override the matching toolbar presets.
@@ -595,6 +635,17 @@ void MainWindow::applyCurrentFilter()
     const FilterSpec filter = parsed.filter;
     m_model->setFilter(filter);
     if (m_timeline) m_timeline->setFilter(filter);
+
+    // Mark the searched words in the list rows and the text preview. Operators
+    // (AND/OR/NOT) and quotes are dropped; two-letter terms are too noisy.
+    QStringList terms;
+    for (const QString &word : SearchEngine::textTerms(parsed.text)) {
+        if (word.size() >= 2 && !terms.contains(word, Qt::CaseInsensitive))
+            terms << word;
+    }
+    m_delegate->setSearchTerms(terms);
+    m_preview->setSearchTerms(terms);
+    m_list->viewport()->update();
 
     if (m_queryHint) {
         QString hint;
@@ -640,6 +691,8 @@ void MainWindow::onActivated(const QModelIndex &index)
 
 void MainWindow::pasteEntry(qint64 entryId)
 {
+    // A paste while a search is active means the query was useful: remember it.
+    commitCurrentSearch();
     m_ctx.pasteEntry(entryId);
 }
 
@@ -647,6 +700,57 @@ void MainWindow::pasteCurrent()
 {
     if (m_selectedId != 0)
         pasteEntry(m_selectedId);
+}
+
+void MainWindow::commitCurrentSearch()
+{
+    const QString text = m_search->text().trimmed();
+    if (!text.isEmpty())
+        m_ctx.settings()->addRecentSearch(text);
+}
+
+void MainWindow::showScopeMenu()
+{
+    QMenu menu(this);
+    const int scopes[] = {int(FilterSpec::SearchScope::All), int(FilterSpec::SearchScope::Preview),
+                          int(FilterSpec::SearchScope::FullText), int(FilterSpec::SearchScope::Ocr)};
+    for (const int scope : scopes) {
+        QAction *action = menu.addAction(scopeLabel(scope));
+        action->setCheckable(true);
+        action->setChecked(scope == m_searchScope);
+        connect(action, &QAction::triggered, this, [this, scope] {
+            m_searchScope = scope;
+            m_ctx.settings()->setSearchScope(scope);
+            m_scopeAction->setToolTip(tr("Search scope: %1").arg(scopeLabel(scope)));
+            applyCurrentFilter();
+        });
+    }
+    menu.exec(m_search->mapToGlobal(QPoint(0, m_search->height())));
+}
+
+void MainWindow::showRecentSearches()
+{
+    QMenu menu(this);
+    const QStringList recents = m_ctx.settings()->recentSearches();
+    if (recents.isEmpty()) {
+        QAction *empty = menu.addAction(tr("No recent searches yet"));
+        empty->setEnabled(false);
+    } else {
+        for (const QString &query : recents) {
+            QAction *action = menu.addAction(query);
+            connect(action, &QAction::triggered, this, [this, query] {
+                m_search->setText(query);
+                commitCurrentSearch(); // selecting moves it to the front
+                applyCurrentFilter();
+            });
+        }
+        menu.addSeparator();
+        QAction *clear = menu.addAction(QIcon::fromTheme(QStringLiteral("edit-clear-history")),
+                                        tr("Clear recent searches"));
+        connect(clear, &QAction::triggered, this,
+                [this] { m_ctx.settings()->clearRecentSearches(); });
+    }
+    menu.exec(m_search->mapToGlobal(QPoint(0, m_search->height())));
 }
 
 void MainWindow::copyCurrent()

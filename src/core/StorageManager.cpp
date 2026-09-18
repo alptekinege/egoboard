@@ -5,12 +5,44 @@
 
 #include <QDateTime>
 #include <QFile>
+#include <QRegularExpression>
 #include <QSqlError>
 #include <QSqlQuery>
 
 #include <atomic>
 
 namespace {
+
+// Regular-expression search is a guarded fallback: a page fetch scans at most
+// this many rows (in small batches, so payloads never arrive in one huge query)
+// and matches at most this many characters per field. Together these bound the
+// work a pathological pattern can cause on the GUI thread.
+constexpr int kRegexScanCap = 20000;
+constexpr int kRegexBatch = 200;
+constexpr int kRegexMaxSubjectChars = 20000;
+
+bool matchesRegex(const ClipboardRecord &row, const QRegularExpression &regex,
+                  FilterSpec::SearchScope scope)
+{
+    const auto hit = [&regex](const QString &text) {
+        if (text.isEmpty())
+            return false;
+        return regex
+            .match(text.size() > kRegexMaxSubjectChars ? text.left(kRegexMaxSubjectChars) : text)
+            .hasMatch();
+    };
+    switch (scope) {
+    case FilterSpec::SearchScope::Preview:
+        return hit(row.preview);
+    case FilterSpec::SearchScope::FullText:
+        return hit(row.textData);
+    case FilterSpec::SearchScope::Ocr:
+        return hit(row.ocrText);
+    case FilterSpec::SearchScope::All:
+    default:
+        return hit(row.preview) || hit(row.textData) || hit(row.ocrText);
+    }
+}
 
 // SQLCipher databases begin with a random salt, not SQLite's plaintext magic;
 // a file without that header can only be read after PRAGMA key.
@@ -219,6 +251,60 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
 QVector<ClipboardRecord> StorageManager::fetchPage(const FilterSpec &filter, const PageCursor &cursor,
                                                    int limit, bool *hasMore) const
 {
+    if (hasMore)
+        *hasMore = false;
+    if (!m_db.isOpen() || limit <= 0)
+        return {};
+    if (filter.regexText.isEmpty())
+        return fetchPageSql(filter, cursor, limit, hasMore, false);
+    return fetchPageRegex(filter, cursor, limit, hasMore);
+}
+
+QVector<ClipboardRecord> StorageManager::fetchPageRegex(const FilterSpec &filter,
+                                                        const PageCursor &cursor, int limit,
+                                                        bool *hasMore) const
+{
+    QRegularExpression regex(filter.regexText);
+    if (!regex.isValid())
+        return {};
+
+    FilterSpec plain = filter;
+    plain.regexText.clear();
+
+    QVector<ClipboardRecord> matches;
+    matches.reserve(limit);
+    PageCursor scan = cursor;
+    int scanned = 0;
+    while (scanned < kRegexScanCap) {
+        bool batchHasMore = false;
+        const int batchSize = qMin(kRegexBatch, kRegexScanCap - scanned);
+        const QVector<ClipboardRecord> batch =
+            fetchPageSql(plain, scan, batchSize, &batchHasMore, true);
+        if (batch.isEmpty())
+            break;
+        scanned += batch.size();
+        for (const ClipboardRecord &row : batch) {
+            if (!matchesRegex(row, regex, filter.searchScope))
+                continue;
+            if (matches.size() == limit) {
+                if (hasMore)
+                    *hasMore = true; // found one match past the page
+                return matches;
+            }
+            matches.append(row);
+        }
+        if (!batchHasMore)
+            break;
+        const ClipboardRecord &last = batch.constLast();
+        scan = PageCursor{true, last.timestamp, last.id, last.useCount};
+    }
+    return matches;
+}
+
+QVector<ClipboardRecord> StorageManager::fetchPageSql(const FilterSpec &filter,
+                                                      const PageCursor &cursor, int limit,
+                                                      bool *hasMore, bool includeText) const
+{
     QVector<ClipboardRecord> results;
     if (hasMore)
         *hasMore = false;
@@ -237,41 +323,67 @@ QVector<ClipboardRecord> StorageManager::fetchPage(const FilterSpec &filter, con
     const bool hasTextQuery = !filter.searchText.isEmpty() || !filter.excludeText.isEmpty();
     const bool ftsAvailable = hasTextQuery && SearchEngine::isFtsAvailable(m_db);
 
+    // LIKE fallback for one term, restricted to the active search scope.
+    const auto likeMatch = [&](const QString &placeholder) -> QString {
+        switch (filter.searchScope) {
+        case FilterSpec::SearchScope::Preview:
+            return QStringLiteral("preview LIKE %1 ESCAPE '\\'").arg(placeholder);
+        case FilterSpec::SearchScope::FullText:
+            return QStringLiteral("text_data LIKE %1 ESCAPE '\\'").arg(placeholder);
+        case FilterSpec::SearchScope::Ocr:
+            return QStringLiteral("ocr_text LIKE %1 ESCAPE '\\'").arg(placeholder);
+        case FilterSpec::SearchScope::All:
+        default:
+            return QStringLiteral("(preview LIKE %1 ESCAPE '\\' OR text_data LIKE %1 ESCAPE '\\' OR ocr_text LIKE %1 ESCAPE '\\')")
+                .arg(placeholder);
+        }
+    };
+
     if (!filter.searchText.isEmpty()) {
-        const QString ftsQuery = SearchEngine::buildFtsQuery(filter.searchText);
+        const QString ftsQuery = SearchEngine::buildFtsQuery(filter.searchText, filter.searchScope);
         if (!ftsQuery.isEmpty() && ftsAvailable) {
             const QString placeholder = addBind(ftsQuery);
             where << QStringLiteral("id IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH %1)")
                          .arg(placeholder);
         } else {
-            const QString needle =
-                QStringLiteral("%")
-                + SearchEngine::likeEscape(SearchEngine::stripQueryQuotes(filter.searchText))
-                + QStringLiteral("%");
-            const QString placeholder = addBind(needle);
-            where << QStringLiteral("(preview LIKE %1 ESCAPE '\\' OR text_data LIKE %1 ESCAPE '\\' OR ocr_text LIKE %1 ESCAPE '\\')")
-                         .arg(placeholder);
+            // OR-groups: alternatives of AND terms ("a b OR c").
+            QStringList orParts;
+            for (const QStringList &group : SearchEngine::orGroups(filter.searchText)) {
+                QStringList andParts;
+                for (const QString &term : group) {
+                    const QString needle =
+                        QStringLiteral("%") + SearchEngine::likeEscape(term) + QStringLiteral("%");
+                    andParts << likeMatch(addBind(needle));
+                }
+                if (!andParts.isEmpty())
+                    orParts << QStringLiteral("(%1)").arg(andParts.join(QStringLiteral(" AND ")));
+            }
+            if (!orParts.isEmpty())
+                where << QStringLiteral("(%1)").arg(orParts.join(QStringLiteral(" OR ")));
         }
     }
     if (!filter.excludeText.isEmpty()) {
-        // "-term" / -"phrase": drop every entry the excluded expression matches.
-        const QString ftsQuery = SearchEngine::buildFtsQuery(filter.excludeText);
-        if (!ftsQuery.isEmpty() && ftsAvailable) {
-            const QString placeholder = addBind(ftsQuery);
-            where << QStringLiteral("id NOT IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH %1)")
-                         .arg(placeholder);
-        } else {
-            const QString needle =
-                QStringLiteral("%")
-                + SearchEngine::likeEscape(SearchEngine::stripQueryQuotes(filter.excludeText))
-                + QStringLiteral("%");
-            const QString placeholder = addBind(needle);
-            // COALESCE: NULL NOT LIKE x is NULL, which would drop every row.
-            where << QStringLiteral(
-                         "(COALESCE(preview, '') NOT LIKE %1 ESCAPE '\\'"
-                         " AND COALESCE(text_data, '') NOT LIKE %1 ESCAPE '\\'"
-                         " AND COALESCE(ocr_text, '') NOT LIKE %1 ESCAPE '\\')")
-                         .arg(placeholder);
+        // Every "-term" / NOT term excludes on its own; a match anywhere drops
+        // the entry, regardless of the search scope.
+        for (const QStringList &group : SearchEngine::orGroups(filter.excludeText)) {
+            for (const QString &term : group) {
+                const QString ftsTerm = SearchEngine::buildFtsTerm(term);
+                if (!ftsTerm.isEmpty() && ftsAvailable) {
+                    const QString placeholder = addBind(ftsTerm);
+                    where << QStringLiteral("id NOT IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH %1)")
+                                 .arg(placeholder);
+                    continue;
+                }
+                const QString needle =
+                    QStringLiteral("%") + SearchEngine::likeEscape(term) + QStringLiteral("%");
+                const QString placeholder = addBind(needle);
+                // COALESCE: NULL NOT LIKE x is NULL, which would drop every row.
+                where << QStringLiteral(
+                             "(COALESCE(preview, '') NOT LIKE %1 ESCAPE '\\'"
+                             " AND COALESCE(text_data, '') NOT LIKE %1 ESCAPE '\\'"
+                             " AND COALESCE(ocr_text, '') NOT LIKE %1 ESCAPE '\\')")
+                             .arg(placeholder);
+            }
         }
     }
     if (filter.contentType >= 0)
@@ -347,8 +459,10 @@ QVector<ClipboardRecord> StorageManager::fetchPage(const FilterSpec &filter, con
     QString sql = QStringLiteral(
         "SELECT id, timestamp_ms, content_type, content_hash, preview, size_bytes, pinned,"
         " sensitive, use_count, source_app, source_window,"
-        " (blob_data IS NOT NULL AND LENGTH(blob_data) > 0) AS has_blob"
-        " FROM entries");
+        " (blob_data IS NOT NULL AND LENGTH(blob_data) > 0) AS has_blob");
+    if (includeText)
+        sql += QStringLiteral(", text_data, ocr_text"); // regex verification
+    sql += QStringLiteral(" FROM entries");
     if (!where.isEmpty())
         sql += QStringLiteral(" WHERE ") + where.join(QStringLiteral(" AND "));
     sql += orderBy;
@@ -369,7 +483,12 @@ QVector<ClipboardRecord> StorageManager::fetchPage(const FilterSpec &filter, con
                 *hasMore = true;
             break;
         }
-        results.append(recordFromSummary(query));
+        ClipboardRecord record = recordFromSummary(query);
+        if (includeText) {
+            record.textData = query.value(12).toString();
+            record.ocrText = query.value(13).toString();
+        }
+        results.append(record);
     }
     return results;
 }

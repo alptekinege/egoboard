@@ -18,8 +18,18 @@ struct FilterSpec {
         MostUsed = 2, // use count descending, newest first on ties
     };
 
+    // Which text the search matches: everything indexed, the list preview, the
+    // stored payload or the OCR output.
+    enum class SearchScope : int {
+        All = 0,
+        Preview = 1,
+        FullText = 2,
+        Ocr = 3,
+    };
+
     QString searchText; // free text (quoted phrases kept); case-insensitive over preview/text/OCR
     QString excludeText; // "-term" / -"phrase": entries matching any of these are dropped
+    QString regexText; // "/pattern/": QT regular expression over the search scope
     int contentType = -1; // -1 = all, else ContentType value
     qint64 fromMs = 0; // 0 = unbounded
     qint64 toMs = 0; // 0 = unbounded
@@ -30,12 +40,14 @@ struct FilterSpec {
     bool hasOcrOnly = false; // only entries with OCR text
     QStringList tags; // entry must carry ALL of these tags
     SortMode sortMode = SortMode::Newest;
+    SearchScope searchScope = SearchScope::All; // ignored when searchText is empty
 
     bool isTrivial() const
     {
-        return searchText.isEmpty() && excludeText.isEmpty() && contentType == -1 && fromMs == 0
-            && toMs == 0 && sourceApp.isEmpty() && !groupId.has_value() && !pinnedOnly
-            && !sensitiveOnly && !hasOcrOnly && tags.isEmpty() && sortMode == SortMode::Newest;
+        return searchText.isEmpty() && excludeText.isEmpty() && regexText.isEmpty()
+            && contentType == -1 && fromMs == 0 && toMs == 0 && sourceApp.isEmpty()
+            && !groupId.has_value() && !pinnedOnly && !sensitiveOnly && !hasOcrOnly
+            && tags.isEmpty() && sortMode == SortMode::Newest;
     }
 
     // JSON codec (used to persist saved searches). Unknown keys are ignored so
@@ -47,6 +59,8 @@ struct FilterSpec {
             json.insert(QStringLiteral("searchText"), searchText);
         if (!excludeText.isEmpty())
             json.insert(QStringLiteral("excludeText"), excludeText);
+        if (!regexText.isEmpty())
+            json.insert(QStringLiteral("regexText"), regexText);
         if (contentType >= 0)
             json.insert(QStringLiteral("contentType"), contentType);
         if (fromMs > 0)
@@ -71,6 +85,8 @@ struct FilterSpec {
         }
         if (sortMode != SortMode::Newest)
             json.insert(QStringLiteral("sortMode"), static_cast<int>(sortMode));
+        if (searchScope != SearchScope::All)
+            json.insert(QStringLiteral("searchScope"), static_cast<int>(searchScope));
         return json;
     }
 
@@ -79,6 +95,7 @@ struct FilterSpec {
         FilterSpec filter;
         filter.searchText = json.value(QLatin1String("searchText")).toString();
         filter.excludeText = json.value(QLatin1String("excludeText")).toString();
+        filter.regexText = json.value(QLatin1String("regexText")).toString();
         filter.contentType = json.value(QLatin1String("contentType")).toInt(-1);
         filter.fromMs = json.value(QLatin1String("fromMs")).toInteger();
         filter.toMs = json.value(QLatin1String("toMs")).toInteger();
@@ -97,6 +114,9 @@ struct FilterSpec {
         const int sort = json.value(QLatin1String("sortMode")).toInt(0);
         if (sort >= 0 && sort <= static_cast<int>(SortMode::MostUsed))
             filter.sortMode = static_cast<SortMode>(sort);
+        const int scope = json.value(QLatin1String("searchScope")).toInt(0);
+        if (scope >= 0 && scope <= static_cast<int>(SearchScope::Ocr))
+            filter.searchScope = static_cast<SearchScope>(scope);
         return filter;
     }
 

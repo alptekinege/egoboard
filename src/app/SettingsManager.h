@@ -187,6 +187,15 @@ public:
     int sortMode() const; // 0..2, invalid values normalize to 0
     void setSortMode(int mode);
 
+    // Search scope: 0 = all indexed text, 1 = preview, 2 = full text, 3 = OCR.
+    int searchScope() const; // invalid values normalize to 0
+    void setSearchScope(int scope);
+
+    // Committed search queries, newest first (capped at 10).
+    QStringList recentSearches() const;
+    void addRecentSearch(const QString &query); // moves an existing entry to the front
+    void clearRecentSearches();
+
     // Timestamp rendering in the list: "relative" | "absolute"
     QString timestampStyle() const;
     void setTimestampStyle(const QString &style);

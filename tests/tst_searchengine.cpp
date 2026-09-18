@@ -32,9 +32,12 @@ private slots:
     void parsesFreeTextPhrasesAndExclusions();
     void reportsUnusableFieldValues();
     void buildFtsQueryKeepsPhrases();
-    void stripQueryQuotesRemovesOnlyQuoting();
     void negatedTermsRoundTrip();
     void appliesExclusionsAndOcrFilter();
+    void appliesSearchScope();
+    void parsesBooleanOperators();
+    void appliesOrAndNotEndToEnd();
+    void parsesAndAppliesRegex();
 
 private:
     QTemporaryDir m_dir;
@@ -340,16 +343,6 @@ void TestSearchEngine::buildFtsQueryKeepsPhrases()
              QStringLiteral("\"say \"\"hi\"\" now\"*"));
 }
 
-void TestSearchEngine::stripQueryQuotesRemovesOnlyQuoting()
-{
-    QCOMPARE(SearchEngine::stripQueryQuotes(QStringLiteral("\"exact phrase\" word")),
-             QStringLiteral("exact phrase word"));
-    QCOMPARE(SearchEngine::stripQueryQuotes(QStringLiteral("no quotes here")),
-             QStringLiteral("no quotes here"));
-    QCOMPARE(SearchEngine::stripQueryQuotes(QStringLiteral("  spaced   out  ")),
-             QStringLiteral("spaced out"));
-}
-
 void TestSearchEngine::negatedTermsRoundTrip()
 {
     // A saved search restores its non-widget fields through the search box;
@@ -358,11 +351,13 @@ void TestSearchEngine::negatedTermsRoundTrip()
              QStringLiteral("-draft -\"not now\""));
 
     const auto parsed = SearchEngine::parseQuery(
-        QStringLiteral("report has:ocr ")
+        QStringLiteral("report has:ocr /id-\\d+/ ")
         + SearchEngine::negatedTerms(QStringLiteral("draft \"not now\"")));
     QVERIFY(parsed.filter.hasOcrOnly);
+    QCOMPARE(parsed.filter.regexText, QStringLiteral("id-\\d+"));
     QCOMPARE(parsed.filter.searchText, QStringLiteral("report"));
     QCOMPARE(parsed.filter.excludeText, QStringLiteral("draft \"not now\""));
+    QCOMPARE(parsed.problems.size(), 0);
 }
 
 void TestSearchEngine::appliesExclusionsAndOcrFilter()
@@ -420,6 +415,198 @@ void TestSearchEngine::appliesExclusionsAndOcrFilter()
     const auto withOcr = m_storage->fetchPage(ocr, {}, 10);
     QCOMPARE(withOcr.size(), 1);
     QCOMPARE(withOcr.first().id, keepId);
+}
+
+void TestSearchEngine::appliesSearchScope()
+{
+    // The query shape carries the FTS5 column filter.
+    QCOMPARE(SearchEngine::buildFtsQuery(QStringLiteral("a"), FilterSpec::SearchScope::Ocr),
+             QStringLiteral("ocr_text : (\"a\"*)"));
+    QCOMPARE(SearchEngine::buildFtsQuery(QStringLiteral("a"), FilterSpec::SearchScope::Preview),
+             QStringLiteral("preview : (\"a\"*)"));
+    QCOMPARE(SearchEngine::buildFtsQuery(QStringLiteral("a"), FilterSpec::SearchScope::FullText),
+             QStringLiteral("text_data : (\"a\"*)"));
+    QCOMPARE(SearchEngine::buildFtsQuery(QStringLiteral("a"), FilterSpec::SearchScope::All),
+             QStringLiteral("\"a\"*"));
+
+    ClipboardRecord inFullText;
+    inFullText.hash = QByteArrayLiteral("scope-full");
+    inFullText.type = ContentType::Text;
+    inFullText.textData = QStringLiteral("needle only in the payload");
+    inFullText.preview = QStringLiteral("payload entry");
+    inFullText.timestamp = 1000;
+    m_storage->insertOrUpdate(inFullText);
+
+    ClipboardRecord inPreview;
+    inPreview.hash = QByteArrayLiteral("scope-preview");
+    inPreview.type = ContentType::Text;
+    inPreview.preview = QStringLiteral("needle in preview");
+    inPreview.textData = QStringLiteral("payload without the word");
+    inPreview.timestamp = 2000;
+    m_storage->insertOrUpdate(inPreview);
+
+    ClipboardRecord inOcr;
+    inOcr.hash = QByteArrayLiteral("scope-ocr");
+    inOcr.type = ContentType::Image;
+    inOcr.blobData = QByteArrayLiteral("png");
+    inOcr.hasBlob = true;
+    inOcr.preview = QStringLiteral("image entry");
+    inOcr.timestamp = 3000;
+    const qint64 ocrId = m_storage->insertOrUpdate(inOcr);
+    QVERIFY(m_storage->setOcrText(ocrId, QStringLiteral("needle seen by OCR")));
+
+    const auto count = [this](FilterSpec::SearchScope scope) {
+        FilterSpec filter;
+        filter.searchText = QStringLiteral("needle");
+        filter.searchScope = scope;
+        return m_storage->fetchPage(filter, {}, 10).size();
+    };
+    QCOMPARE(count(FilterSpec::SearchScope::All), 3);
+    QCOMPARE(count(FilterSpec::SearchScope::Preview), 1);
+    QCOMPARE(count(FilterSpec::SearchScope::FullText), 1);
+    QCOMPARE(count(FilterSpec::SearchScope::Ocr), 1);
+
+    // Field filters and the scope combine.
+    FilterSpec combined;
+    combined.searchText = QStringLiteral("needle");
+    combined.searchScope = FilterSpec::SearchScope::Ocr;
+    combined.hasOcrOnly = true;
+    const auto ocrOnly = m_storage->fetchPage(combined, {}, 10);
+    QCOMPARE(ocrOnly.size(), 1);
+    QCOMPARE(ocrOnly.first().id, ocrId);
+}
+
+void TestSearchEngine::parsesBooleanOperators()
+{
+    // Uppercase OR separates alternatives; AND is implicit and binds tighter.
+    QCOMPARE(SearchEngine::buildFtsQuery(QStringLiteral("alpha OR beta")),
+             QStringLiteral("\"alpha\"* OR \"beta\"*"));
+    QCOMPARE(SearchEngine::buildFtsQuery(QStringLiteral("a b OR c")),
+             QStringLiteral("\"a\"* AND \"b\"* OR \"c\"*"));
+    // Lowercase words stay terms, so searching for "or" still works.
+    QCOMPARE(SearchEngine::buildFtsQuery(QStringLiteral("cats or dogs")),
+             QStringLiteral("\"cats\"* AND \"or\"* AND \"dogs\"*"));
+
+    const auto groups = SearchEngine::orGroups(QStringLiteral("a \"b c\" OR d"));
+    QCOMPARE(groups.size(), 2);
+    QCOMPARE(groups.at(0), QStringList({QStringLiteral("a"), QStringLiteral("b c")}));
+    QCOMPARE(groups.at(1), QStringList({QStringLiteral("d")}));
+
+    // Highlight terms drop operators and quoting.
+    QCOMPARE(SearchEngine::textTerms(QStringLiteral("\"one two\" AND alpha OR beta")),
+             QStringList({QStringLiteral("one two"), QStringLiteral("alpha"),
+                          QStringLiteral("beta")}));
+
+    // NOT (like a -prefix) turns the next term into an exclusion.
+    const auto notQuery = SearchEngine::parseQuery(QStringLiteral("keep NOT draft"));
+    QCOMPARE(notQuery.text, QStringLiteral("keep"));
+    QCOMPARE(notQuery.filter.excludeText, QStringLiteral("draft"));
+    QCOMPARE(notQuery.problems.size(), 0);
+}
+
+void TestSearchEngine::appliesOrAndNotEndToEnd()
+{
+    const auto insert = [this](const char *hash, const QString &text, qint64 timestamp) {
+        ClipboardRecord record;
+        record.hash = QByteArray(hash);
+        record.type = ContentType::Text;
+        record.textData = text;
+        record.preview = text;
+        record.timestamp = timestamp;
+        return m_storage->insertOrUpdate(record);
+    };
+    insert("or-alpha", QStringLiteral("alpha only"), 1000);
+    insert("or-beta", QStringLiteral("beta only"), 2000);
+    insert("or-gamma", QStringLiteral("gamma only"), 3000);
+
+    FilterSpec alternatives;
+    alternatives.searchText = QStringLiteral("alpha OR beta");
+    QCOMPARE(m_storage->fetchPage(alternatives, {}, 10).size(), 2);
+
+    FilterSpec andTerms;
+    andTerms.searchText = QStringLiteral("alpha AND beta");
+    QCOMPARE(m_storage->fetchPage(andTerms, {}, 10).size(), 0);
+
+    // The whole raw query goes through parseQuery, as the UI does: "NOT" becomes
+    // an exclusion, so only the two non-alpha entries remain.
+    const auto parsedExcluded = SearchEngine::parseQuery(QStringLiteral("only NOT alpha"));
+    const auto withoutAlpha = m_storage->fetchPage(parsedExcluded.filter, {}, 10);
+    QCOMPARE(withoutAlpha.size(), 2);
+    for (const ClipboardRecord &record : withoutAlpha)
+        QVERIFY(!record.preview.contains(QStringLiteral("alpha")));
+}
+
+void TestSearchEngine::parsesAndAppliesRegex()
+{
+    // Valid pattern: stored on the filter and reported as applied.
+    const auto parsed = SearchEngine::parseQuery(QStringLiteral("/^id-\\d{4}$/ extra"));
+    QCOMPARE(parsed.filter.regexText, QStringLiteral("^id-\\d{4}$"));
+    QCOMPARE(parsed.text, QStringLiteral("extra"));
+    QCOMPARE(parsed.problems.size(), 0);
+    QCOMPARE(parsed.applied.size(), 1);
+
+    // Invalid pattern: reported, never applied.
+    const auto invalid = SearchEngine::parseQuery(QStringLiteral("/[unclosed/"));
+    QVERIFY(invalid.filter.regexText.isEmpty());
+    QCOMPARE(invalid.problems.size(), 1);
+
+    // Only one pattern per search.
+    const auto two = SearchEngine::parseQuery(QStringLiteral("/a/ /b/"));
+    QCOMPARE(two.filter.regexText, QStringLiteral("a"));
+    QCOMPARE(two.problems.size(), 1);
+
+    // Ordinary paths do not become regexes.
+    const auto path = SearchEngine::parseQuery(QStringLiteral("file /usr/bin/env"));
+    QVERIFY(path.filter.regexText.isEmpty());
+    QCOMPARE(path.text, QStringLiteral("file /usr/bin/env"));
+
+    ClipboardRecord matching;
+    matching.hash = QByteArrayLiteral("rx-match");
+    matching.type = ContentType::Text;
+    matching.textData = QStringLiteral("build id-1234 finished");
+    matching.preview = QStringLiteral("build id-1234");
+    matching.timestamp = 1000;
+    const qint64 matchId = m_storage->insertOrUpdate(matching);
+
+    ClipboardRecord other;
+    other.hash = QByteArrayLiteral("rx-other");
+    other.type = ContentType::Text;
+    other.textData = QStringLiteral("build id-abcd finished");
+    other.preview = QStringLiteral("build id-abcd");
+    other.timestamp = 2000;
+    m_storage->insertOrUpdate(other);
+
+    FilterSpec regex;
+    regex.regexText = QStringLiteral("id-\\d{4}");
+    const auto hits = m_storage->fetchPage(regex, {}, 10);
+    QCOMPARE(hits.size(), 1);
+    QCOMPARE(hits.first().id, matchId);
+
+    // Scope restricts the regex to one column: the preview holds "id-abcd".
+    FilterSpec previewHits;
+    previewHits.regexText = QStringLiteral("id-[a-z]{4}");
+    previewHits.searchScope = FilterSpec::SearchScope::Preview;
+    QCOMPARE(m_storage->fetchPage(previewHits, {}, 10).size(), 1);
+
+    // Regex combines with a text query (both must match).
+    FilterSpec combined;
+    combined.regexText = QStringLiteral("id-\\d{4}");
+    combined.searchText = QStringLiteral("build");
+    QCOMPARE(m_storage->fetchPage(combined, {}, 10).size(), 1);
+    FilterSpec contradicted = combined;
+    contradicted.searchText = QStringLiteral("nonsense");
+    QCOMPARE(m_storage->fetchPage(contradicted, {}, 10).size(), 0);
+
+    // Paging reports hasMore when another match exists beyond the page.
+    FilterSpec paged;
+    paged.regexText = QStringLiteral("id-");
+    bool hasMore = false;
+    const auto first = m_storage->fetchPage(paged, {}, 1, &hasMore);
+    QCOMPARE(first.size(), 1);
+    QVERIFY(hasMore);
+    const auto second = m_storage->fetchPage(paged, {}, 10, &hasMore);
+    QCOMPARE(second.size(), 2);
+    QVERIFY(!hasMore);
 }
 
 QTEST_GUILESS_MAIN(TestSearchEngine)

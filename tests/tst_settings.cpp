@@ -39,6 +39,7 @@ private slots:
     void autostartEntryPointsAtThisBinary();
     void autostartCommandCanPointAtAnAppImage();
     void persistsAcrossInstances();
+    void searchScopeAndRecentsPersist();
     void configMigrationsAreForwardOnly();
 
 private:
@@ -590,6 +591,39 @@ void TestSettings::persistsAcrossInstances()
     QCOMPARE(loaded.clock24h(), false);
     QCOMPARE(loaded.rememberWindowGeometry(), false);
     QCOMPARE(loaded.restoreLastFilter(), true);
+}
+
+void TestSettings::searchScopeAndRecentsPersist()
+{
+    {
+        SettingsManager settings;
+        QCOMPARE(settings.searchScope(), 0);
+        settings.setSearchScope(3);
+        for (int i = 1; i <= 12; ++i)
+            settings.addRecentSearch(QStringLiteral("query %1").arg(i));
+        settings.addRecentSearch(QStringLiteral("query 5")); // moves to front, no duplicate
+        settings.addRecentSearch(QStringLiteral("   ")); // ignored
+    }
+    {
+        SettingsManager loaded;
+        QCOMPARE(loaded.searchScope(), 3);
+        const QStringList recents = loaded.recentSearches();
+        QCOMPARE(recents.size(), 10); // capped at 10
+        QCOMPARE(recents.first(), QStringLiteral("query 5"));
+        QCOMPARE(recents.count(QStringLiteral("query 5")), 1);
+        QVERIFY(!recents.contains(QStringLiteral("query 1")));
+        QVERIFY(!recents.contains(QStringLiteral("query 2")));
+
+        loaded.clearRecentSearches();
+        QVERIFY(loaded.recentSearches().isEmpty());
+    }
+
+    // Out-of-range scope values normalize to "all text".
+    {
+        SettingsManager settings;
+        settings.setSearchScope(99);
+        QCOMPARE(settings.searchScope(), 0);
+    }
 }
 
 void TestSettings::configMigrationsAreForwardOnly()

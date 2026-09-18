@@ -27,6 +27,8 @@ public:
     void showEmpty(const QString &message = {});
     void setScriptManager(ScriptActionManager *mgr) { m_scripts = mgr; }
     void setSettingsManager(SettingsManager *mgr) { m_settings = mgr; }
+    // Words from the active search, marked in the current text preview.
+    void setSearchTerms(const QStringList &terms);
 
 signals:
     void copyToClipboardRequested(const QString &text);
@@ -42,6 +44,7 @@ private:
     void applyBuiltin(int transformIndex);
     void applyScript(const QString &id);
     void openChainDialog();
+    void applySearchHighlights();
 
     QStackedWidget *m_stack = nullptr;
     QLabel *m_emptyLabel = nullptr;
@@ -52,6 +55,7 @@ private:
     QListWidget *m_filesList = nullptr;
     QLabel *m_metaLabel = nullptr;
     CodePreviewHighlighter *m_highlighter = nullptr;
+    QStringList m_searchTerms;
 
     // Phase 3 transform bar
     QWidget *m_transformBar = nullptr;

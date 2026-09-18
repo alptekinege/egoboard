@@ -31,6 +31,8 @@ constexpr qint64 kDefaultMaxItemBytes = 5 * 1024 * 1024; // 5 MiB
 constexpr qint64 kDefaultMaxImageBytes = 8 * 1024 * 1024; // 8 MiB
 constexpr qint64 kDefaultDiskCapBytes = 0; // unlimited
 constexpr int kDefaultOcrMaxChars = 8192;
+// Search box history: how many committed queries are kept.
+constexpr int kMaxRecentSearches = 10;
 // Bump when a migration step is added below; the file records this number.
 constexpr int kCurrentConfigVersion = 1;
 
@@ -785,6 +787,46 @@ int SettingsManager::sortMode() const
 void SettingsManager::setSortMode(int mode)
 {
     m_config->group(kGroupUi).writeEntry("SortMode", (mode >= 0 && mode <= 2) ? mode : 0);
+    save();
+}
+
+int SettingsManager::searchScope() const
+{
+    const int v = m_config->group(kGroupUi).readEntry("SearchScope", 0);
+    return (v >= 0 && v <= 3) ? v : 0;
+}
+
+void SettingsManager::setSearchScope(int scope)
+{
+    m_config->group(kGroupUi).writeEntry("SearchScope", (scope >= 0 && scope <= 3) ? scope : 0);
+    save();
+}
+
+QStringList SettingsManager::recentSearches() const
+{
+    QStringList list = m_config->group(kGroupUi).readEntry("RecentSearches", QStringList());
+    if (list.size() > kMaxRecentSearches)
+        list = list.mid(0, kMaxRecentSearches);
+    return list;
+}
+
+void SettingsManager::addRecentSearch(const QString &query)
+{
+    const QString trimmed = query.trimmed();
+    if (trimmed.isEmpty())
+        return;
+    QStringList list = recentSearches();
+    list.removeAll(trimmed);
+    list.prepend(trimmed);
+    if (list.size() > kMaxRecentSearches)
+        list = list.mid(0, kMaxRecentSearches);
+    m_config->group(kGroupUi).writeEntry("RecentSearches", list);
+    save();
+}
+
+void SettingsManager::clearRecentSearches()
+{
+    m_config->group(kGroupUi).writeEntry("RecentSearches", QStringList());
     save();
 }
 

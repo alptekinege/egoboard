@@ -10,6 +10,7 @@ class ClipboardListModel;
 class EntryDelegate;
 class GroupsDock;
 class PreviewPane;
+class QAction;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -49,6 +50,10 @@ private:
     void onActivated(const QModelIndex &index);
     void pasteCurrent();
     void copyCurrent();
+    void showScopeMenu();
+    void showRecentSearches();
+    // Records the current search box text in the recent-searches list.
+    void commitCurrentSearch();
     void deleteSelected();
     void deleteFiltered(); // bulk delete of everything matching the current filter
     void togglePinSelected();
@@ -67,6 +72,9 @@ private:
     GroupsDock *m_groupsDock = nullptr;
     QListView *m_list = nullptr;
     QLineEdit *m_search = nullptr;
+    QAction *m_scopeAction = nullptr;
+    QAction *m_recentSearchAction = nullptr;
+    int m_searchScope = 0; // FilterSpec::SearchScope value
     QLabel *m_queryHint = nullptr;
     QComboBox *m_typeCombo = nullptr;
     QComboBox *m_dateCombo = nullptr;

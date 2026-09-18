@@ -68,6 +68,76 @@ bool isQuotedPhrase(const QString &token)
         && token.endsWith(QLatin1Char('"'));
 }
 
+bool isOperator(const QString &token, const char *name)
+{
+    // Uppercase only: a lowercase "or"/"and" is an ordinary search word.
+    return token == QLatin1String(name);
+}
+
+// OR-groups of AND terms from free text: "a b OR c" -> [[a, b], [c]].
+// Uppercase AND/OR/NOT are operators, '-' prefixed tokens are exclusions
+// (collected by parseQuery, ignored here).
+QVector<QStringList> planText(const QString &userText)
+{
+    QVector<QStringList> groups;
+    QStringList current;
+    const QStringList tokens = tokenizeWithQuotes(userText);
+    for (const QString &token : tokens) {
+        if (token.isEmpty())
+            continue;
+        if (isOperator(token, "OR")) {
+            if (!current.isEmpty()) {
+                groups.append(current);
+                current.clear();
+            }
+            continue;
+        }
+        if (isOperator(token, "AND") || isOperator(token, "NOT"))
+            continue; // implicit AND; NOT belongs to the exclusion list
+        if (token.size() > 1 && token.startsWith(QLatin1Char('-')))
+            continue; // exclusion
+        current << token;
+    }
+    if (!current.isEmpty())
+        groups.append(current);
+    return groups;
+}
+
+QString escapeQuotes(QString token)
+{
+    // Inside a double-quoted FTS5 term only " needs escaping, by doubling it.
+    token.replace(QStringLiteral("\""), QStringLiteral("\"\""));
+    return token;
+}
+
+// One FTS5 term: a quoted phrase keeps its words together, a word is stripped
+// of surrounding punctuation and prefix-matched. Empty when nothing is left.
+QString ftsTerm(const QString &raw)
+{
+    if (isQuotedPhrase(raw)) {
+        QString phrase = raw.mid(1, raw.size() - 2).simplified();
+        if (phrase.isEmpty())
+            return {};
+        if (phrase.size() > kMaxTokenChars)
+            phrase = phrase.left(kMaxTokenChars);
+        return QStringLiteral("\"") + escapeQuotes(phrase) + QStringLiteral("\"*");
+    }
+
+    QString token = raw;
+    int start = 0;
+    while (start < token.size() && !token.at(start).isLetterOrNumber())
+        ++start;
+    int end = token.size() - 1;
+    while (end >= start && !token.at(end).isLetterOrNumber())
+        --end;
+    if (start > end)
+        return {};
+    token = token.mid(start, end - start + 1);
+    if (token.isEmpty() || token.size() > kMaxTokenChars)
+        token = token.left(kMaxTokenChars);
+    return QStringLiteral("\"") + escapeQuotes(token) + QStringLiteral("\"*");
+}
+
 // Strips one pair of surrounding quotes (if present) and unescapes doubled ones.
 QString unquoteValue(const QString &value)
 {
@@ -166,74 +236,79 @@ QString SearchEngine::likeEscape(const QString &text)
     return out;
 }
 
-QString SearchEngine::escapeFtsToken(QString token)
+QString SearchEngine::buildFtsQuery(const QString &userText, FilterSpec::SearchScope scope)
 {
-    // FTS5 special chars to neutralize when inside quoted term.
-    // Inside double quotes only " needs escaping by doubling it.
-    token.replace(QStringLiteral("\""), QStringLiteral("\"\""));
-    return token;
-}
-
-QString SearchEngine::buildFtsQuery(const QString &userText)
-{
-    const QString trimmed = userText.trimmed();
-    if (trimmed.isEmpty())
-        return {};
-
-    // Tokenize with quote awareness so a quoted phrase stays one unit.
-    const QStringList rawTokens = tokenizeWithQuotes(trimmed);
-    if (rawTokens.isEmpty())
-        return {};
-
-    QStringList ftsTokens;
-    ftsTokens.reserve(rawTokens.size());
-    for (const QString &raw : rawTokens) {
-        if (isQuotedPhrase(raw)) {
-            QString phrase = raw.mid(1, raw.size() - 2).simplified();
-            if (phrase.isEmpty())
-                continue;
-            if (phrase.size() > kMaxTokenChars)
-                phrase = phrase.left(kMaxTokenChars);
-            phrase = escapeFtsToken(phrase);
-            // Phrase with a prefix match on its final token: "one two"*
-            ftsTokens << QStringLiteral("\"") + phrase + QStringLiteral("\"*");
-            continue;
+    const QVector<QStringList> groups = planText(userText);
+    QStringList groupExpressions;
+    for (const QStringList &group : groups) {
+        QStringList terms;
+        for (const QString &raw : group) {
+            const QString term = ftsTerm(raw);
+            if (!term.isEmpty())
+                terms << term;
         }
-
-        QString token = raw;
-        // Keep only meaningful tokens (>=1 alnum). Strip surrounding punctuation.
-        int start = 0;
-        while (start < token.size() && !token.at(start).isLetterOrNumber())
-            ++start;
-        int end = token.size() - 1;
-        while (end >= start && !token.at(end).isLetterOrNumber())
-            --end;
-        if (start > end)
-            continue;
-        token = token.mid(start, end - start + 1);
-        if (token.isEmpty() || token.size() > kMaxTokenChars)
-            token = token.left(kMaxTokenChars);
-        token = escapeFtsToken(token);
-        // Prefix search: "token"*  — quoted for safety + wildcard for responsiveness.
-        ftsTokens << QStringLiteral("\"") + token + QStringLiteral("\"*");
+        if (!terms.isEmpty())
+            groupExpressions << terms.join(QStringLiteral(" AND "));
     }
-    if (ftsTokens.isEmpty())
+    if (groupExpressions.isEmpty())
         return {};
-    // AND semantics: every word must appear (feels like classic clipboard search).
-    return ftsTokens.join(QStringLiteral(" AND "));
+    // FTS5 binds AND tighter than OR, so the groups are alternatives already.
+    const QString expression = groupExpressions.join(QStringLiteral(" OR "));
+
+    // FTS5 column filter: preview : (expr) / text_data : … / ocr_text : …
+    QString column;
+    switch (scope) {
+    case FilterSpec::SearchScope::Preview:
+        column = QStringLiteral("preview");
+        break;
+    case FilterSpec::SearchScope::FullText:
+        column = QStringLiteral("text_data");
+        break;
+    case FilterSpec::SearchScope::Ocr:
+        column = QStringLiteral("ocr_text");
+        break;
+    case FilterSpec::SearchScope::All:
+        break;
+    }
+    if (column.isEmpty())
+        return expression;
+    return QStringLiteral("%1 : (%2)").arg(column, expression);
 }
 
-QString SearchEngine::stripQueryQuotes(const QString &userText)
+QString SearchEngine::buildFtsTerm(const QString &term)
 {
-    const QStringList tokens = tokenizeWithQuotes(userText);
-    QStringList plain;
-    plain.reserve(tokens.size());
-    for (const QString &token : tokens) {
-        const QString unquoted = isQuotedPhrase(token) ? unquoteValue(token) : token;
-        if (!unquoted.isEmpty())
-            plain << unquoted;
+    return ftsTerm(term);
+}
+
+QVector<QStringList> SearchEngine::orGroups(const QString &userText)
+{
+    QVector<QStringList> groups;
+    const QVector<QStringList> planned = planText(userText);
+    groups.reserve(planned.size());
+    for (const QStringList &group : planned) {
+        QStringList terms;
+        terms.reserve(group.size());
+        for (const QString &raw : group) {
+            const QString plain = isQuotedPhrase(raw) ? unquoteValue(raw) : raw;
+            if (!plain.isEmpty())
+                terms << plain;
+        }
+        if (!terms.isEmpty())
+            groups << terms;
     }
-    return plain.join(QLatin1Char(' '));
+    return groups;
+}
+
+QStringList SearchEngine::textTerms(const QString &userText)
+{
+    QStringList terms;
+    for (const QStringList &group : orGroups(userText)) {
+        for (const QString &term : group) {
+            if (!terms.contains(term, Qt::CaseInsensitive))
+                terms << term;
+        }
+    }
+    return terms;
 }
 
 QString SearchEngine::negatedTerms(const QString &excludeText)
@@ -255,11 +330,23 @@ SearchEngine::ParsedQuery SearchEngine::parseQuery(const QString &input, const F
 
     QStringList free;
     QStringList excluded;
+    bool negateNext = false;
 
     const QStringList tokens = tokenizeWithQuotes(input);
     for (const QString &token : tokens) {
         if (token.isEmpty())
             continue;
+
+        // Uppercase NOT makes the next term an exclusion (same as -term).
+        if (isOperator(token, "NOT")) {
+            negateNext = true;
+            continue;
+        }
+        if (negateNext) {
+            negateNext = false;
+            excluded << token;
+            continue;
+        }
 
         // -term / -"phrase": exclusion from the free-text match.
         if (token.size() > 1 && token.startsWith(QLatin1Char('-'))) {
@@ -267,6 +354,25 @@ SearchEngine::ParsedQuery SearchEngine::parseQuery(const QString &input, const F
             const QString plain = isQuotedPhrase(term) ? unquoteValue(term) : term;
             if (!plain.isEmpty())
                 excluded << term;
+            continue;
+        }
+
+        // /pattern/: guarded regular expression, verified here so the caller
+        // never runs an invalid pattern.
+        if (token.size() >= 2 && token.startsWith(QLatin1Char('/'))
+            && token.endsWith(QLatin1Char('/'))) {
+            const QString pattern = token.mid(1, token.size() - 2);
+            const QRegularExpression re(pattern);
+            if (pattern.isEmpty()) {
+                parsed.problems << QStringLiteral("Empty /regex/ pattern");
+            } else if (!re.isValid()) {
+                parsed.problems << QStringLiteral("Invalid regex: %1").arg(re.errorString());
+            } else if (!parsed.filter.regexText.isEmpty()) {
+                parsed.problems << QStringLiteral("Only one /regex/ per search");
+            } else {
+                parsed.filter.regexText = pattern;
+                parsed.applied << QStringLiteral("/%1/").arg(pattern);
+            }
             continue;
         }
 

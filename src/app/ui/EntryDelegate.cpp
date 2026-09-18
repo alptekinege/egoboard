@@ -11,6 +11,8 @@
 #include <QPainter>
 #include <QStyle>
 
+#include <algorithm>
+
 namespace {
 
 QString typeIconName(int typeRole)
@@ -168,10 +170,14 @@ void EntryDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
     painter->setFont(previewFont);
     const QString preview =
         painter->fontMetrics().elidedText(index.data().toString(), Qt::ElideRight, textWidth);
-    painter->setPen(option.palette.color(
-        selected ? QPalette::HighlightedText : QPalette::Text));
-    painter->drawText(QRect(textLeft, top + kMargin, textWidth, painter->fontMetrics().height()),
-                      Qt::AlignVCenter | Qt::AlignLeft, preview);
+    const QRect previewRect(textLeft, top + kMargin, textWidth, painter->fontMetrics().height());
+    if (m_searchTerms.isEmpty()) {
+        painter->setPen(option.palette.color(
+            selected ? QPalette::HighlightedText : QPalette::Text));
+        painter->drawText(previewRect, Qt::AlignVCenter | Qt::AlignLeft, preview);
+    } else {
+        drawHighlightedText(painter, previewRect, preview, option.palette, selected);
+    }
 
     painter->setFont(originalFont);
     painter->setPen(metaPen);
@@ -204,4 +210,65 @@ QSize EntryDelegate::sizeHint(const QStyleOptionViewItem &option, const QModelIn
 {
     const QFontMetrics metrics(option.font);
     return QSize(option.rect.width(), metrics.height() * 2 + 2 * m_rowPadding + 4);
+}
+
+void EntryDelegate::drawHighlightedText(QPainter *painter, const QRect &rect, const QString &text,
+                                        const QPalette &palette, bool selected) const
+{
+    // Collect case-insensitive match ranges for every search term.
+    const QString lower = text.toLower();
+    QVector<QPair<int, int>> ranges;
+    for (const QString &term : m_searchTerms) {
+        const QString needle = term.toLower();
+        if (needle.isEmpty())
+            continue;
+        int from = 0;
+        while (ranges.size() < 64) {
+            const int at = lower.indexOf(needle, from);
+            if (at < 0)
+                break;
+            ranges.append({at, at + needle.size()});
+            from = at + needle.size();
+        }
+    }
+    if (ranges.isEmpty()) {
+        painter->setPen(palette.color(selected ? QPalette::HighlightedText : QPalette::Text));
+        painter->drawText(rect, Qt::AlignVCenter | Qt::AlignLeft, text);
+        return;
+    }
+    std::sort(ranges.begin(), ranges.end());
+    QVector<QPair<int, int>> merged;
+    for (const auto &range : ranges) {
+        if (!merged.isEmpty() && range.first <= merged.last().second)
+            merged.last().second = qMax(merged.last().second, range.second);
+        else
+            merged.append(range);
+    }
+
+    const QFontMetrics metrics = painter->fontMetrics();
+    QColor fill = palette.color(QPalette::Highlight);
+    fill.setAlpha(selected ? 120 : 80);
+    const QColor textColor = palette.color(selected ? QPalette::HighlightedText : QPalette::Text);
+    const int baseline = rect.top() + (rect.height() + metrics.ascent() - metrics.descent()) / 2;
+
+    int x = rect.left();
+    int position = 0;
+    const auto drawRun = [&](int from, int to, bool highlight) {
+        if (to <= from)
+            return;
+        const QString piece = text.mid(from, to - from);
+        const int width = metrics.horizontalAdvance(piece);
+        if (highlight)
+            painter->fillRect(QRect(x, baseline - metrics.ascent(), width, metrics.height()), fill);
+        painter->setPen(highlight ? textColor : palette.color(selected ? QPalette::HighlightedText
+                                                                       : QPalette::Text));
+        painter->drawText(x, baseline, piece);
+        x += width;
+    };
+    for (const auto &range : merged) {
+        drawRun(position, range.first, false);
+        drawRun(range.first, range.second, true);
+        position = range.second;
+    }
+    drawRun(position, text.size(), false);
 }

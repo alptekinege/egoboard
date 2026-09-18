@@ -83,6 +83,14 @@ private:
     // Row parsers for the two column sets (list summary vs. full payload).
     static ClipboardRecord recordFromFull(const QSqlQuery &query);
 
+    // One SQL page fetch; includeText adds text_data/ocr_text to the row (used
+    // by the regex scan, which needs the payloads to match against).
+    QVector<ClipboardRecord> fetchPageSql(const FilterSpec &filter, const PageCursor &cursor,
+                                          int limit, bool *hasMore, bool includeText) const;
+    // Regex pages scan the (capped) history, verifying rows in C++.
+    QVector<ClipboardRecord> fetchPageRegex(const FilterSpec &filter, const PageCursor &cursor,
+                                            int limit, bool *hasMore) const;
+
     // Reentrant transaction helpers: SQLite does not nest, so inner scopes
     // join the outermost transaction (used by the importer's bulk mode).
     bool beginTransaction();

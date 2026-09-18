@@ -23,6 +23,7 @@
 #include <QScrollArea>
 #include <QStackedWidget>
 #include <QTextBrowser>
+#include <QTextEdit>
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -236,6 +237,7 @@ void PreviewPane::applyBuiltin(int transformIndex)
     m_originalText = input;
     m_isTransformed = true;
     m_textEdit->setPlainText(r.output);
+    applySearchHighlights();
     // Highlight as plain if JSON pretty produced JSON, keep highlighter mode
     // Do not change stack — stay on text page
     m_stack->setCurrentWidget(m_textEdit->parentWidget());
@@ -264,6 +266,7 @@ void PreviewPane::applyScript(const QString &id)
     m_originalText = input;
     m_isTransformed = true;
     m_textEdit->setPlainText(r.output);
+    applySearchHighlights();
     m_stack->setCurrentWidget(m_textEdit->parentWidget());
     m_copyResultBtn->setVisible(true);
     m_revertBtn->setVisible(true);
@@ -285,6 +288,7 @@ void PreviewPane::openChainDialog()
         m_originalText = input;
         m_isTransformed = true;
         m_textEdit->setPlainText(out);
+        applySearchHighlights();
         m_stack->setCurrentWidget(m_textEdit->parentWidget());
         m_copyResultBtn->setVisible(true);
         m_revertBtn->setVisible(true);
@@ -340,6 +344,49 @@ void PreviewPane::setMeta(const QString &text)
 {
     m_metaLabel->setText(text);
     m_metaLabel->setVisible(!text.isEmpty());
+}
+
+void PreviewPane::setSearchTerms(const QStringList &terms)
+{
+    m_searchTerms = terms;
+    applySearchHighlights();
+}
+
+void PreviewPane::applySearchHighlights()
+{
+    if (!m_textEdit)
+        return;
+    m_textEdit->setExtraSelections({});
+    if (m_searchTerms.isEmpty())
+        return;
+    const QString text = m_textEdit->toPlainText();
+    if (text.isEmpty())
+        return;
+
+    const QString lower = text.toLower();
+    QColor fill = m_textEdit->palette().color(QPalette::Highlight);
+    fill.setAlpha(80);
+    QList<QTextEdit::ExtraSelection> selections;
+    for (const QString &term : m_searchTerms) {
+        const QString needle = term.toLower();
+        if (needle.isEmpty())
+            continue;
+        int from = 0;
+        while (selections.size() < 500) {
+            const int at = lower.indexOf(needle, from);
+            if (at < 0)
+                break;
+            QTextEdit::ExtraSelection selection;
+            selection.format.setBackground(fill);
+            QTextCursor cursor(m_textEdit->document());
+            cursor.setPosition(at);
+            cursor.setPosition(at + needle.size(), QTextCursor::KeepAnchor);
+            selection.cursor = cursor;
+            selections.append(selection);
+            from = at + needle.size();
+        }
+    }
+    m_textEdit->setExtraSelections(selections);
 }
 
 void PreviewPane::showEmpty(const QString &message)
@@ -400,6 +447,7 @@ void PreviewPane::showRecord(const ClipboardRecord &record)
         }
         m_highlighter->setMode(mode);
         m_textEdit->setPlainText(display);
+        applySearchHighlights();
         m_stack->setCurrentWidget(m_textEdit->parentWidget());
         {
             const bool linkify = !m_settings || m_settings->previewLinkify();
