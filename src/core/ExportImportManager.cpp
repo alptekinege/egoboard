@@ -32,6 +32,58 @@ QString singleLinePreview(const QString &text, int maxLength = 180)
     return line;
 }
 
+// --- helpers for the reading formats (CSV / Markdown / HTML) -----------------
+
+bool writeTextFile(const QString &path, const QString &content, QString *error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (error)
+            *error = QObject::tr("Cannot write %1: %2").arg(path, file.errorString());
+        return false;
+    }
+    const QByteArray payload = content.toUtf8();
+    if (file.write(payload) != payload.size()) {
+        if (error)
+            *error = QObject::tr("Write to %1 failed: %2").arg(path, file.errorString());
+        return false;
+    }
+    return true;
+}
+
+// RFC 4180: quote when the field holds a delimiter, a quote or a line break.
+QString csvField(const QString &value)
+{
+    if (!value.contains(QLatin1Char(',')) && !value.contains(QLatin1Char('"'))
+        && !value.contains(QLatin1Char('\n')) && !value.contains(QLatin1Char('\r')))
+        return value;
+    QString quoted = value;
+    quoted.replace(QLatin1Char('"'), QStringLiteral("\"\""));
+    return QLatin1Char('"') + quoted + QLatin1Char('"');
+}
+
+QString htmlEscaped(const QString &value)
+{
+    QString out = value;
+    out.replace(QLatin1Char('&'), QStringLiteral("&amp;"));
+    out.replace(QLatin1Char('<'), QStringLiteral("&lt;"));
+    out.replace(QLatin1Char('>'), QStringLiteral("&gt;"));
+    out.replace(QLatin1Char('"'), QStringLiteral("&quot;"));
+    return out;
+}
+
+// A fence long enough to survive any backtick run inside the block.
+QString markdownFence(const QString &text)
+{
+    int longest = 0;
+    int current = 0;
+    for (const QChar c : text) {
+        current = c == QLatin1Char('`') ? current + 1 : 0;
+        longest = qMax(longest, current);
+    }
+    return QString(QLatin1Char('`')).repeated(qMax(3, longest + 1));
+}
+
 QStringList backupFiles(const QString &folder)
 {
     QDir dir(folder);
@@ -142,6 +194,14 @@ bool ExportImportManager::exportToFile(const ExportRequest &request, QString *er
             }
         }
     }
+
+    // --- reading formats stop here (entries only, no re-import) ---------------
+    if (request.format == ExportFormat::Csv)
+        return writeCsvExport(request, entries, error);
+    if (request.format == ExportFormat::Markdown)
+        return writeMarkdownExport(request, entries, error);
+    if (request.format == ExportFormat::Html)
+        return writeHtmlExport(request, entries, error);
 
     // --- memberships --------------------------------------------------------
     QJsonArray memberships;
@@ -542,6 +602,121 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode)
     emit m_storage->storageReset(); // one reload for the whole import
     result.ok = true;
     return result;
+}
+
+bool ExportImportManager::writeCsvExport(const ExportRequest &request,
+                                         const QVector<ClipboardRecord> &entries, QString *error) const
+{
+    QString out;
+    out.reserve(entries.size() * 160);
+    out += QStringLiteral(
+        "timestamp,type,source_app,source_window,pinned,sensitive,use_count,tags,text\n");
+    for (const ClipboardRecord &record : entries) {
+        const QString text = record.textData.isEmpty() ? record.preview : record.textData;
+        const QString tags = m_storage->tagsForEntry(record.id).join(QStringLiteral("; "));
+        out += csvField(QDateTime::fromMSecsSinceEpoch(record.timestamp).toString(Qt::ISODateWithMs));
+        out += QLatin1Char(',');
+        out += csvField(QString::fromLatin1(contentTypeTag(record.type)));
+        out += QLatin1Char(',');
+        out += csvField(record.sourceApp);
+        out += QLatin1Char(',');
+        out += csvField(record.sourceWindow);
+        out += QLatin1Char(',');
+        out += record.pinned ? QLatin1Char('1') : QLatin1Char('0');
+        out += QLatin1Char(',');
+        out += record.sensitive ? QLatin1Char('1') : QLatin1Char('0');
+        out += QLatin1Char(',');
+        out += QString::number(record.useCount);
+        out += QLatin1Char(',');
+        out += csvField(tags);
+        out += QLatin1Char(',');
+        out += csvField(text);
+        out += QLatin1Char('\n');
+    }
+    return writeTextFile(request.path, out, error);
+}
+
+bool ExportImportManager::writeMarkdownExport(const ExportRequest &request,
+                                              const QVector<ClipboardRecord> &entries,
+                                              QString *error) const
+{
+    QString out;
+    out += QStringLiteral("# Egoboard history\n\n");
+    out += tr("Exported %1 — %n entry/entries.", nullptr, entries.size())
+               .arg(QDateTime::currentDateTime().toString(Qt::ISODate));
+    out += QStringLiteral("\n");
+    for (const ClipboardRecord &record : entries) {
+        out += QStringLiteral("\n## %1 · %2")
+                   .arg(QDateTime::fromMSecsSinceEpoch(record.timestamp)
+                            .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")),
+                        QString::fromLatin1(contentTypeTag(record.type)));
+        if (!record.sourceApp.isEmpty())
+            out += QStringLiteral(" · ") + record.sourceApp;
+        if (record.pinned)
+            out += QStringLiteral(" · pinned");
+        if (record.sensitive)
+            out += QStringLiteral(" · sensitive");
+        out += QStringLiteral("\n");
+        const QStringList tags = m_storage->tagsForEntry(record.id);
+        if (!tags.isEmpty())
+            out += tr("Tags: %1\n").arg(tags.join(QStringLiteral(", ")));
+        if (record.sourceWindow.isEmpty() == false)
+            out += tr("Window: %1\n").arg(record.sourceWindow);
+        const QString text = record.textData.isEmpty() ? record.preview : record.textData;
+        const QString fence = markdownFence(text);
+        out += QStringLiteral("\n") + fence + QStringLiteral("\n") + text + QStringLiteral("\n")
+               + fence + QStringLiteral("\n");
+    }
+    return writeTextFile(request.path, out, error);
+}
+
+bool ExportImportManager::writeHtmlExport(const ExportRequest &request,
+                                          const QVector<ClipboardRecord> &entries, QString *error) const
+{
+    QString out;
+    out += QStringLiteral(
+        "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">\n"
+        "<title>Egoboard history</title>\n"
+        "<style>body{font-family:sans-serif;margin:2rem;}"
+        "table{border-collapse:collapse;width:100%;}"
+        "th,td{border:1px solid #bbb;padding:4px 8px;vertical-align:top;text-align:left;}"
+        "td.text{white-space:pre-wrap;max-width:60ch;}"
+        "tr:nth-child(even){background:#f6f6f6;}</style></head>\n<body>\n");
+    out += QStringLiteral("<h1>Egoboard history</h1>\n<p>")
+           + htmlEscaped(tr("Exported %1 — %n entry/entries.", nullptr, entries.size())
+                             .arg(QDateTime::currentDateTime().toString(Qt::ISODate)))
+           + QStringLiteral("</p>\n<table>\n<thead><tr>");
+    const QStringList headers{tr("Time"), tr("Type"), tr("Source"), tr("Tags"), tr("Text")};
+    for (const QString &header : headers)
+        out += QStringLiteral("<th>") + htmlEscaped(header) + QStringLiteral("</th>");
+    out += QStringLiteral("</tr></thead>\n<tbody>\n");
+    for (const ClipboardRecord &record : entries) {
+        const QString text = record.textData.isEmpty() ? record.preview : record.textData;
+        QString source = record.sourceApp;
+        if (!record.sourceWindow.isEmpty()) {
+            source += source.isEmpty() ? record.sourceWindow
+                                       : QStringLiteral(" — ") + record.sourceWindow;
+        }
+        QStringList flags;
+        if (record.pinned)
+            flags << tr("pinned");
+        if (record.sensitive)
+            flags << tr("sensitive");
+        if (!flags.isEmpty())
+            source += QStringLiteral(" (") + flags.join(QStringLiteral(", ")) + QLatin1Char(')');
+
+        out += QStringLiteral("<tr><td>")
+               + htmlEscaped(QDateTime::fromMSecsSinceEpoch(record.timestamp)
+                                 .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")))
+               + QStringLiteral("</td><td>")
+               + htmlEscaped(QString::fromLatin1(contentTypeTag(record.type)))
+               + QStringLiteral("</td><td>") + htmlEscaped(source) + QStringLiteral("</td><td>")
+               + htmlEscaped(m_storage->tagsForEntry(record.id).join(QStringLiteral(", ")))
+               + QStringLiteral("</td><td class=\"text\">") + htmlEscaped(text)
+               + QStringLiteral("</td></tr>\n");
+    }
+    out += QStringLiteral("</tbody></table>\n</body></html>\n");
+    return writeTextFile(request.path, out, error);
 }
 
 QString ExportImportManager::defaultKlipperPath()

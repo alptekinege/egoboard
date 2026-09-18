@@ -31,6 +31,7 @@ private slots:
     void reportsExportWriteErrors();
     void writesAndPrunesAutomaticBackups();
     void importsKlipperHistory();
+    void exportsReadingFormats();
 
 private:
     void seed(StorageManager *storage, BookmarkManager *bookmarks);
@@ -387,6 +388,89 @@ void TestExportImport::importBatchesSignalsIntoOneReset()
     QCOMPARE(resetSpy.count(), 1);
     QCOMPARE(m_storage->stats().entryCount, qint64(3));
     QCOMPARE(m_storage->savedSearches().size(), 0); // nothing pending from the bulk
+}
+
+void TestExportImport::exportsReadingFormats()
+{
+    // Delimiters, quotes and line breaks must survive every format.
+    ClipboardRecord tricky;
+    tricky.hash = QByteArrayLiteral("tricky");
+    tricky.type = ContentType::Text;
+    tricky.textData = QStringLiteral("line one\nline two, with \"quotes\"");
+    tricky.preview = QStringLiteral("line one …");
+    tricky.timestamp = 1000;
+    tricky.sourceApp = QStringLiteral("kate");
+    tricky.pinned = true;
+    const qint64 trickyId = m_storage->insertOrUpdate(tricky);
+    QVERIFY(trickyId > 0);
+    QVERIFY(m_storage->addTag(trickyId, QStringLiteral("work")));
+
+    ClipboardRecord markup;
+    markup.hash = QByteArrayLiteral("markup");
+    markup.type = ContentType::Text;
+    markup.textData = QStringLiteral("<b>bold</b> & \"quoted\"");
+    markup.preview = markup.textData;
+    markup.timestamp = 2000;
+    m_storage->insertOrUpdate(markup);
+
+    ClipboardRecord fenced;
+    fenced.hash = QByteArrayLiteral("fenced");
+    fenced.type = ContentType::Text;
+    fenced.textData = QStringLiteral("a ``` fenced block");
+    fenced.preview = fenced.textData;
+    fenced.timestamp = 3000;
+    m_storage->insertOrUpdate(fenced);
+
+    const auto exportAs = [this](ExportImportManager::ExportFormat format, const QString &name) {
+        ExportImportManager::ExportRequest request;
+        request.path = m_dir.filePath(name);
+        request.format = format;
+        QString error;
+        if (!m_io->exportToFile(request, &error)) {
+            qWarning("export failed: %s", qPrintable(error));
+            return QString();
+        }
+        QFile file(request.path);
+        if (!file.open(QIODevice::ReadOnly))
+            return QString();
+        return QString::fromUtf8(file.readAll());
+    };
+
+    // --- CSV: RFC 4180 quoting, tags joined with "; ", flags as 0/1 ----------
+    const QString csv = exportAs(ExportImportManager::ExportFormat::Csv, QStringLiteral("h.csv"));
+    QVERIFY(!csv.isEmpty());
+    QVERIFY(csv.startsWith(QStringLiteral(
+        "timestamp,type,source_app,source_window,pinned,sensitive,use_count,tags,text\n")));
+    QVERIFY(csv.contains(QStringLiteral(",\"line one\nline two, with \"\"quotes\"\"\"\n")));
+    QVERIFY(csv.contains(QStringLiteral(",work,")));
+    QVERIFY(csv.contains(QStringLiteral(",\"<b>bold</b> & \"\"quoted\"\"\"\n")));
+    QVERIFY(csv.contains(QStringLiteral(",kate,")));
+    QVERIFY(csv.contains(QStringLiteral("a ``` fenced block")));
+
+    // --- Markdown: heading per entry, fenced text, longer fence on demand ----
+    const QString md = exportAs(ExportImportManager::ExportFormat::Markdown, QStringLiteral("h.md"));
+    QVERIFY(!md.isEmpty());
+    QVERIFY(md.startsWith(QStringLiteral("# Egoboard history")));
+    QVERIFY(md.contains(QStringLiteral("· pinned")));
+    QVERIFY(md.contains(QStringLiteral("Tags: work")));
+    QVERIFY(md.contains(QStringLiteral("```\nline one\nline two, with \"quotes\"\n```")));
+    QVERIFY(md.contains(QStringLiteral("````\na ``` fenced block\n````")));
+
+    // --- HTML: escaped text, table rows ---------------------------------------
+    const QString html = exportAs(ExportImportManager::ExportFormat::Html, QStringLiteral("h.html"));
+    QVERIFY(!html.isEmpty());
+    QVERIFY(html.startsWith(QStringLiteral("<!DOCTYPE html>")));
+    QVERIFY(html.contains(QStringLiteral("&lt;b&gt;bold&lt;/b&gt; &amp; &quot;quoted&quot;")));
+    QVERIFY(!html.contains(QStringLiteral("<b>bold</b>")));
+    QVERIFY(html.contains(QStringLiteral("<td>kate (pinned)</td>")));
+    QVERIFY(html.contains(QStringLiteral("<td>work</td>")));
+    QVERIFY(html.endsWith(QStringLiteral("</html>\n")));
+
+    // Every entry appears exactly once in each format.
+    QCOMPARE(csv.count(QStringLiteral("plain entry")), 0); // none in this fixture
+    QCOMPARE(csv.count(QStringLiteral("line one")), 1);
+    QCOMPARE(md.count(QStringLiteral("## ")), 3);
+    QCOMPARE(html.count(QStringLiteral("<tr><td>")), 3); // header row has <th> cells
 }
 
 void TestExportImport::writesAndPrunesAutomaticBackups()

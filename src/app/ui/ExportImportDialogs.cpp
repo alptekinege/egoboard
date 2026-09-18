@@ -90,6 +90,19 @@ ExportDialog::ExportDialog(BookmarkManager *bookmarks, QWidget *parent)
     pathRow->addWidget(browse);
     layout->addLayout(pathRow);
 
+    auto *formatRow = new QHBoxLayout();
+    formatRow->addWidget(new QLabel(tr("Format:"), this));
+    m_formatCombo = new QComboBox(this);
+    m_formatCombo->addItem(tr("JSON — full backup, can be imported again"),
+                           int(ExportImportManager::ExportFormat::Json));
+    m_formatCombo->addItem(tr("Markdown — readable document"), int(ExportImportManager::ExportFormat::Markdown));
+    m_formatCombo->addItem(tr("CSV — spreadsheet"), int(ExportImportManager::ExportFormat::Csv));
+    m_formatCombo->addItem(tr("HTML — shareable page"), int(ExportImportManager::ExportFormat::Html));
+    m_formatCombo->setToolTip(tr("Only JSON files can be imported back into Egoboard; the other "
+                                 "formats export the entries for reading and sharing."));
+    formatRow->addWidget(m_formatCombo, 1);
+    layout->addLayout(formatRow);
+
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -98,9 +111,25 @@ ExportDialog::ExportDialog(BookmarkManager *bookmarks, QWidget *parent)
 
 void ExportDialog::pickPath()
 {
-    const QString path = QFileDialog::getSaveFileName(
-        this, tr("Export to file"), QStringLiteral("egoboard-export.json"),
-        tr("Egoboard export (*.json);;All files (*)"));
+    QString filter = tr("Egoboard export (*.json);;All files (*)");
+    QString suggested = QStringLiteral("egoboard-export.json");
+    switch (format()) {
+    case ExportImportManager::ExportFormat::Markdown:
+        filter = tr("Markdown (*.md);;All files (*)");
+        suggested = QStringLiteral("egoboard-history.md");
+        break;
+    case ExportImportManager::ExportFormat::Csv:
+        filter = tr("CSV (*.csv);;All files (*)");
+        suggested = QStringLiteral("egoboard-history.csv");
+        break;
+    case ExportImportManager::ExportFormat::Html:
+        filter = tr("HTML (*.html);;All files (*)");
+        suggested = QStringLiteral("egoboard-history.html");
+        break;
+    case ExportImportManager::ExportFormat::Json:
+        break;
+    }
+    const QString path = QFileDialog::getSaveFileName(this, tr("Export to file"), suggested, filter);
     if (!path.isEmpty())
         m_pathEdit->setText(path);
 }
@@ -122,6 +151,11 @@ ExportDialog::Scope ExportDialog::scope() const
 qint64 ExportDialog::groupId() const
 {
     return m_groupCombo->currentData().toLongLong();
+}
+
+ExportImportManager::ExportFormat ExportDialog::format() const
+{
+    return static_cast<ExportImportManager::ExportFormat>(m_formatCombo->currentData().toInt());
 }
 
 ImportDialog::ImportDialog(QWidget *parent)

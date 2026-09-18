@@ -44,6 +44,7 @@ public:
 
     QString filePath() const;
     Scope scope() const;
+    ExportImportManager::ExportFormat format() const;
     qint64 groupId() const;
 
 private:
@@ -54,6 +55,7 @@ private:
     QRadioButton *m_pinnedRadio = nullptr;
     QRadioButton *m_groupRadio = nullptr;
     QComboBox *m_groupCombo = nullptr;
+    QComboBox *m_formatCombo = nullptr;
 };
 
 class ImportDialog : public QDialog {

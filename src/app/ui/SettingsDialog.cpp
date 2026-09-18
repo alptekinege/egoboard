@@ -1206,6 +1206,7 @@ QWidget *SettingsDialog::buildStoragePage()
             return;
         ExportImportManager::ExportRequest request;
         request.path = dialog.filePath();
+        request.format = dialog.format();
         switch (dialog.scope()) {
         case ExportImportDialogs::ExportDialog::Everything:
             request.scope = ExportImportManager::Scope::Everything;

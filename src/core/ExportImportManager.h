@@ -27,8 +27,19 @@ public:
     };
     Q_ENUM(ImportMode)
 
+    // JSON is the only round-trip format; the others are for reading, sharing
+    // and spreadsheets and export the entries of the selected scope.
+    enum class ExportFormat {
+        Json,
+        Markdown,
+        Csv,
+        Html,
+    };
+    Q_ENUM(ExportFormat)
+
     struct ExportRequest {
         Scope scope = Scope::Everything;
+        ExportFormat format = ExportFormat::Json;
         qint64 groupId = 0; // for Scope::GroupSubtree
         QString path;
     };
@@ -84,6 +95,14 @@ public:
     static int exportFormatVersion() { return 2; }
 
 private:
+    // Entry-only writers for the reading formats (tags are looked up per entry).
+    bool writeCsvExport(const ExportRequest &request, const QVector<ClipboardRecord> &entries,
+                        QString *error) const;
+    bool writeMarkdownExport(const ExportRequest &request, const QVector<ClipboardRecord> &entries,
+                             QString *error) const;
+    bool writeHtmlExport(const ExportRequest &request, const QVector<ClipboardRecord> &entries,
+                         QString *error) const;
+
     StorageManager *m_storage = nullptr;
     BookmarkManager *m_bookmarks = nullptr;
     SnippetManager *m_snippets = nullptr;
