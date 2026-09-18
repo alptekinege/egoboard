@@ -1,8 +1,10 @@
 #include "ApplicationContext.h"
 
 #include "AutoPaster.h"
+#include "BackupService.h"
 #include "BookmarkManager.h"
 #include "ClipboardWatcher.h"
+#include "DatabaseSchema.h"
 #include "EgoboardDbusAdaptor.h"
 #include "ExpireScheduler.h"
 #include "ExportImportManager.h"
@@ -41,8 +43,11 @@
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QSqlDatabase>
+#include <QSqlError>
 #include <QStandardPaths>
 #include <QTextDocument>
+#include <QThreadPool>
 #include <QTimer>
 #include <QWidget>
 
@@ -305,7 +310,30 @@ void ApplicationContext::start()
     if (m_settings->startVisible())
         m_window->show();
 
+    // Automatic JSON backups: daily, on a worker thread with its own database
+    // connection, and only when the user enabled them.
+    m_backup = new BackupService(m_storage->databasePath(), m_settings, this);
+    m_backup->setKeyProvider([this] {
+        if (!m_settings->encryptionEnabled() || !m_encryption)
+            return QString();
+        QString key;
+        return m_encryption->readKey(&key) == EncryptionManager::Status::Ok ? key : QString();
+    });
+    connect(m_backup, &BackupService::finished, this,
+            [](bool ok, const QString &path, const QString &error) {
+                if (ok) {
+                    qInfo("egoboard: backup written to %s", qPrintable(path));
+                    return;
+                }
+                qWarning("egoboard: backup failed: %s", qPrintable(error));
+                KNotification::event(QStringLiteral("backupFailed"), QObject::tr("Backup failed"),
+                                     error, QStringLiteral("dialog-warning"),
+                                     KNotification::CloseOnTimeout);
+            });
+    m_backup->start();
+
     scheduleVacuumChecks();
+    scheduleIntegrityCheck();
 
     // Retention caps are enforced after capture bursts (every 25th capture);
     // this periodic pass catches the smaller bursts that never reach 25.
@@ -462,6 +490,50 @@ void ApplicationContext::scheduleVacuumChecks()
             vacuumNow();
     });
     m_vacuumTimer->start();
+}
+
+void ApplicationContext::scheduleIntegrityCheck()
+{
+    // One-shot background PRAGMA quick_check on a scratch connection: the GUI
+    // connection belongs to the GUI thread, and a damaged file is much easier
+    // to explain here than as scattered query errors later.
+    const QString path = m_storage->databasePath();
+    QString key;
+    if (m_settings->encryptionEnabled() && m_encryption)
+        m_encryption->readKey(&key);
+
+    QThreadPool::globalInstance()->start([path, key] {
+        static std::atomic_int counter{0};
+        const QString name =
+            QStringLiteral("egoboard-integrity-%1").arg(counter.fetch_add(1));
+        QString error;
+        bool ok = false;
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
+            db.setDatabaseName(path);
+            if (!db.open()) {
+                error = db.lastError().text();
+            } else {
+                if (!key.isEmpty() && !DatabaseSchema::setKey(db, key))
+                    error = QObject::tr("the encryption key was rejected");
+                else
+                    ok = DatabaseSchema::quickCheck(db, &error);
+                db.close();
+            }
+            db = QSqlDatabase(); // release the handle before removing the connection
+        }
+        QSqlDatabase::removeDatabase(name);
+        if (ok)
+            return;
+        QMetaObject::invokeMethod(qApp, [error] {
+            KNotification::event(
+                QStringLiteral("integrityProblem"),
+                QObject::tr("Database check failed"),
+                QObject::tr("%1\n\nStorage settings can rebuild the search index and restore a "
+                            "backup if needed.").arg(error),
+                QStringLiteral("security-low"), KNotification::CloseOnTimeout);
+        });
+    });
 }
 
 int ApplicationContext::benchmark(int entryCount)

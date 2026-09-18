@@ -5,6 +5,7 @@
 #include "SearchEngine.h"
 #include "StorageManager.h"
 
+#include <QFile>
 #include <QSqlQuery>
 #include <QTemporaryDir>
 
@@ -20,6 +21,8 @@ private slots:
     void createsPerformanceIndexes();
     void normalizesLegacyBlobHashesAndDedupes();
     void dedupesCaseInsensitiveSavedSearches();
+    void quickCheckReportsHealthyDatabase();
+    void rebuildSearchIndexRepairsMissingIndex();
 };
 
 void TestSchema::ensureIsIdempotentAndEnablesForeignKeys()
@@ -323,6 +326,63 @@ void TestSchema::dedupesCaseInsensitiveSavedSearches()
     QCOMPARE(storage.addSavedSearch(QStringLiteral("WORK"), filter), id);
     QCOMPARE(storage.savedSearches().size(), 1);
     QCOMPARE(storage.savedSearches().first().filter.searchText, QStringLiteral("x"));
+}
+
+void TestSchema::quickCheckReportsHealthyDatabase()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    StorageManager storage(dir.filePath(QStringLiteral("healthy.db")));
+    QString error;
+    QVERIFY(storage.quickCheck(&error));
+    QVERIFY(error.isEmpty());
+
+    // A file that is not a database at all fails the check with a reason.
+    const QString junkPath = dir.filePath(QStringLiteral("junk.db"));
+    QFile junk(junkPath);
+    QVERIFY(junk.open(QIODevice::WriteOnly));
+    junk.write("this file is not a SQLite database, not even close");
+    junk.close();
+    StorageManager broken(junkPath);
+    error.clear();
+    QVERIFY(!broken.quickCheck(&error));
+    QVERIFY(!error.isEmpty());
+}
+
+void TestSchema::rebuildSearchIndexRepairsMissingIndex()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    StorageManager storage(dir.filePath(QStringLiteral("repair.db")));
+    QSqlDatabase db = storage.database();
+    QVERIFY(SearchEngine::isFtsAvailable(db));
+
+    // Simulate a damaged/missing index: drop it and its triggers, then capture
+    // an entry while search indexing is unavailable.
+    QSqlQuery drop(db);
+    QVERIFY(drop.exec(QStringLiteral("DROP TRIGGER IF EXISTS entries_ai")));
+    QVERIFY(drop.exec(QStringLiteral("DROP TRIGGER IF EXISTS entries_ad")));
+    QVERIFY(drop.exec(QStringLiteral("DROP TRIGGER IF EXISTS entries_au")));
+    QVERIFY(drop.exec(QStringLiteral("DROP TABLE IF EXISTS entries_fts")));
+    QVERIFY(!SearchEngine::isFtsAvailable(db));
+
+    ClipboardRecord record;
+    record.hash = QByteArrayLiteral("repair-me");
+    record.type = ContentType::Text;
+    record.textData = QStringLiteral("missing index entry");
+    record.preview = record.textData;
+    record.timestamp = 1000;
+    QVERIFY(storage.insertOrUpdate(record) > 0);
+
+    // Repair: the index and triggers come back and cover the entry captured
+    // while they were missing.
+    QVERIFY(storage.rebuildSearchIndex());
+    QVERIFY(SearchEngine::isFtsAvailable(db));
+    FilterSpec filter;
+    filter.searchText = QStringLiteral("missing");
+    const auto hits = storage.fetchPage(filter, {}, 10);
+    QCOMPARE(hits.size(), 1);
+    QCOMPARE(hits.first().hash, QByteArrayLiteral("repair-me"));
 }
 
 QTEST_GUILESS_MAIN(TestSchema)

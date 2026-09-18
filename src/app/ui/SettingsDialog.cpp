@@ -1,6 +1,7 @@
 #include "SettingsDialog.h"
 
 #include "../ApplicationContext.h"
+#include "../BackupService.h"
 #include "../ColorSchemeIndex.h"
 #include "../HotkeyManager.h"
 #include "../IconThemeIndex.h"
@@ -978,6 +979,72 @@ QWidget *SettingsDialog::buildStoragePage()
     dbLayout->addWidget(pragmaLabel);
     layout->addWidget(dbInfoBox);
 
+    auto *backupBox = new QGroupBox(tr("Automatic backups"), page);
+    auto *backupLayout = new QVBoxLayout(backupBox);
+    m_backupEnabled = new QCheckBox(tr("Write a daily JSON backup"), backupBox);
+    m_backupEnabled->setToolTip(tr("Exports the whole history (including OCR text, tags, groups, snippets and saved searches) into the backup folder once a day."));
+    backupLayout->addWidget(m_backupEnabled);
+
+    auto *folderRow = new QHBoxLayout();
+    folderRow->addWidget(new QLabel(tr("Folder:"), backupBox));
+    m_backupFolder = new QLineEdit(backupBox);
+    m_backupFolder->setPlaceholderText(SettingsManager::defaultBackupFolder());
+    m_backupFolder->setToolTip(tr("Where backup files are written. Empty uses the default folder shown here."));
+    folderRow->addWidget(m_backupFolder, 1);
+    auto *browseBackupBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("folder-open")),
+                                            tr("Choose…"), backupBox);
+    connect(browseBackupBtn, &QPushButton::clicked, this, [this] {
+        const QString start = m_backupFolder->text().trimmed().isEmpty()
+            ? SettingsManager::defaultBackupFolder()
+            : m_backupFolder->text().trimmed();
+        const QString dir = QFileDialog::getExistingDirectory(this, tr("Backup folder"), start);
+        if (!dir.isEmpty())
+            m_backupFolder->setText(dir);
+    });
+    folderRow->addWidget(browseBackupBtn);
+    backupLayout->addLayout(folderRow);
+
+    auto *keepRow = new QHBoxLayout();
+    keepRow->addWidget(new QLabel(tr("Keep the newest:"), backupBox));
+    m_backupKeep = new QSpinBox(backupBox);
+    m_backupKeep->setRange(1, 100);
+    m_backupKeep->setSuffix(tr(" files"));
+    m_backupKeep->setToolTip(tr("Older backups beyond this count are deleted after each run."));
+    keepRow->addWidget(m_backupKeep);
+    keepRow->addStretch(1);
+    // Works even when the daily schedule is off.
+    m_backupNowBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-save")),
+                                     tr("Back up now"), backupBox);
+    keepRow->addWidget(m_backupNowBtn);
+    backupLayout->addLayout(keepRow);
+
+    m_backupStatus = makeStatusPanel(QString(), backupBox);
+    backupLayout->addWidget(m_backupStatus);
+    backupLayout->addWidget(makeHint(tr("Backups are plain JSON files — restore one with Import JSON… below. The export runs on a worker thread, so the window stays responsive."), backupBox));
+
+    connect(m_backupNowBtn, &QPushButton::clicked, this, [this] {
+        BackupService *service = m_ctx.backupService();
+        if (!service)
+            return;
+        m_backupNowBtn->setEnabled(false);
+        m_backupStatus->setText(tr("Backup running…"));
+        if (!service->runNow()) {
+            m_backupNowBtn->setEnabled(true);
+            m_backupStatus->setText(tr("A backup is already running."));
+        }
+    });
+    if (BackupService *service = m_ctx.backupService()) {
+        connect(service, &BackupService::finished, this,
+                [this](bool ok, const QString &path, const QString &error) {
+                    m_backupNowBtn->setEnabled(true);
+                    if (ok)
+                        m_backupStatus->setText(tr("Last backup: %1").arg(path));
+                    else
+                        m_backupStatus->setText(tr("Backup failed: %1").arg(error));
+                });
+    }
+    layout->addWidget(backupBox);
+
     auto *maintenanceBox = new QGroupBox(tr("Maintenance"), page);
     auto *maintenanceLayout = new QVBoxLayout(maintenanceBox);
     auto *row = new QHBoxLayout();
@@ -1013,6 +1080,46 @@ QWidget *SettingsDialog::buildStoragePage()
     row->addWidget(clearHistoryBtn);
     row->addStretch(1);
     maintenanceLayout->addLayout(row);
+    // Integrity: verify the file, and repair search without touching history.
+    auto *integrityRow = new QHBoxLayout();
+    auto *integrityBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("tools-wizard")),
+                                         tr("Check integrity"), maintenanceBox);
+    integrityBtn->setToolTip(tr("Runs PRAGMA quick_check and reports the first problem it finds."));
+    connect(integrityBtn, &QPushButton::clicked, this, [this] {
+        QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+        QString error;
+        const bool ok = m_ctx.storage()->quickCheck(&error);
+        QGuiApplication::restoreOverrideCursor();
+        if (ok) {
+            QMessageBox::information(this, tr("Integrity check"),
+                                     tr("PRAGMA quick_check reports no problems."));
+        } else {
+            QMessageBox::warning(
+                this, tr("Integrity check"),
+                tr("The database reported a problem:\n\n%1\n\nRebuilding the search index fixes a "
+                   "damaged index; for a damaged file, import the newest backup into a fresh "
+                   "database.").arg(error));
+        }
+    });
+    integrityRow->addWidget(integrityBtn);
+    auto *reindexBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("view-refresh")),
+                                       tr("Rebuild search index"), maintenanceBox);
+    reindexBtn->setToolTip(tr("Recreates the FTS5 index from the history. Safe: no entry data is touched."));
+    connect(reindexBtn, &QPushButton::clicked, this, [this] {
+        QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+        const bool ok = m_ctx.storage()->rebuildSearchIndex();
+        QGuiApplication::restoreOverrideCursor();
+        if (ok)
+            QMessageBox::information(this, tr("Search index"),
+                                     tr("The full-text index was rebuilt."));
+        else
+            QMessageBox::warning(this, tr("Search index"),
+                                 tr("The full-text index could not be rebuilt."));
+        refreshDiagnostics();
+    });
+    integrityRow->addWidget(reindexBtn);
+    integrityRow->addStretch(1);
+    maintenanceLayout->addLayout(integrityRow);
     maintenanceLayout->addWidget(makeHint(tr("Egoboard also compacts automatically once a day when the database grows past 50 MB. The VACUUM runs on a dedicated thread with its own connection so the UI stays responsive."), maintenanceBox));
     // export/import — full flows moved here from the main-window toolbar
     auto *ioRow = new QHBoxLayout();
@@ -1689,6 +1796,16 @@ void SettingsDialog::load()
     }
     if (m_ocrMaxChars) m_ocrMaxChars->setValue(m_ctx.settings()->ocrMaxChars());
     if (m_encryptionEnabled) m_encryptionEnabled->setChecked(m_ctx.settings()->encryptionEnabled());
+    if (m_backupEnabled) m_backupEnabled->setChecked(m_ctx.settings()->backupsEnabled());
+    if (m_backupFolder) m_backupFolder->setText(m_ctx.settings()->backupFolder());
+    if (m_backupKeep) m_backupKeep->setValue(m_ctx.settings()->backupKeep());
+    if (m_backupStatus) {
+        const qint64 last = m_ctx.settings()->lastBackupMs();
+        m_backupStatus->setText(last > 0
+            ? tr("Last backup: %1").arg(QDateTime::fromMSecsSinceEpoch(last).toString(
+                  QLocale::system().dateTimeFormat(QLocale::ShortFormat)))
+            : tr("No backup has run yet."));
+    }
     if (m_previewCode) m_previewCode->setChecked(m_ctx.settings()->previewCodeHighlight());
     if (m_previewLinks) m_previewLinks->setChecked(m_ctx.settings()->previewLinkify());
     if (m_previewColors) m_previewColors->setChecked(m_ctx.settings()->previewColorSwatches());
@@ -1795,6 +1912,9 @@ void SettingsDialog::save()
     if (m_ocrLang) m_ctx.settings()->setOcrLanguage(m_ocrLang->currentText());
     if (m_ocrMaxChars) m_ctx.settings()->setOcrMaxChars(m_ocrMaxChars->value());
     if (m_encryptionEnabled) applyEncryptionSetting();
+    if (m_backupEnabled) m_ctx.settings()->setBackupsEnabled(m_backupEnabled->isChecked());
+    if (m_backupFolder) m_ctx.settings()->setBackupFolder(m_backupFolder->text().trimmed());
+    if (m_backupKeep) m_ctx.settings()->setBackupKeep(m_backupKeep->value());
     if (m_previewCode) m_ctx.settings()->setPreviewCodeHighlight(m_previewCode->isChecked());
     if (m_previewLinks) m_ctx.settings()->setPreviewLinkify(m_previewLinks->isChecked());
     if (m_previewColors) m_ctx.settings()->setPreviewColorSwatches(m_previewColors->isChecked());

@@ -196,6 +196,21 @@ public:
     void addRecentSearch(const QString &query); // moves an existing entry to the front
     void clearRecentSearches();
 
+    // --- automatic backups ---------------------------------------------------
+    bool backupsEnabled() const;
+    void setBackupsEnabled(bool enabled);
+    QString backupFolder() const; // empty = use defaultBackupFolder()
+    void setBackupFolder(const QString &folder);
+    int backupKeep() const; // 1..100
+    void setBackupKeep(int keep);
+    // When the last automatic backup ran (0 = never); used to avoid re-running
+    // on every start.
+    qint64 lastBackupMs() const;
+    void setLastBackupMs(qint64 ms);
+    // ~/Documents/egoboard-backups when a Documents dir exists, else the app
+    // data dir.
+    static QString defaultBackupFolder();
+
     // Timestamp rendering in the list: "relative" | "absolute"
     QString timestampStyle() const;
     void setTimestampStyle(const QString &style);

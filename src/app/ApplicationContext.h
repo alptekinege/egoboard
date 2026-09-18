@@ -29,6 +29,7 @@ class TrayController;
 class EncryptionManager;
 class VacuumWorker;
 class WlrDataControlHelper;
+class BackupService;
 class OcrWorker;
 
 // Composition root: owns every subsystem and wires the signal/slot graph.
@@ -58,6 +59,7 @@ public:
     HotkeyManager *hotkeys() const { return m_hotkeys; }
     MainWindow *window() const { return m_window.get(); }
     QuickPasteMenu *quickPaste() const { return m_quickPaste; }
+    BackupService *backupService() const { return m_backup; }
 
     enum class PasteVariant {
         Normal, // as stored (still honors "always paste as plain text")
@@ -85,6 +87,8 @@ public:
 private:
     void onCaptured(const ClipboardRecord &record);
     void scheduleVacuumChecks();
+    // One-shot background PRAGMA quick_check; notifies only when it fails.
+    void scheduleIntegrityCheck();
 
     bool m_fullGui = true;
 
@@ -111,6 +115,7 @@ private:
     QTimer *m_retentionTimer = nullptr;
     OcrWorker *m_ocr = nullptr;
     EncryptionManager *m_encryption = nullptr;
+    BackupService *m_backup = nullptr;
     SystemThemeWatcher *m_systemTheme = nullptr;
     // Memoized so saving the settings dialog (one write per key) does not
     // re-apply the appearance once per changed setting.

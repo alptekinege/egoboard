@@ -51,6 +51,24 @@ public:
     bool exportToFile(const ExportRequest &request, QString *error = nullptr);
     ImportResult importFromFile(const QString &path, ImportMode mode);
 
+    // --- automatic backups ---------------------------------------------------
+    struct BackupResult {
+        bool ok = false;
+        QString path; // the file written
+        int pruned = 0; // old backups deleted
+        QString error;
+    };
+
+    // Writes a full JSON backup into `folder` as
+    // egoboard-backup-YYYYMMDD-HHmmss.json and keeps only the newest `keep`
+    // backups (0 = keep everything). The folder is created when missing.
+    BackupResult writeBackup(const QString &folder, int keep);
+
+    // Backup files in `folder`, newest first (name order: timestamps sort).
+    static QStringList listBackups(const QString &folder);
+    // Deletes all but the newest `keep` backups; returns how many were removed.
+    static int pruneBackups(const QString &folder, int keep);
+
     static QString exportFormatTag() { return QStringLiteral("egoboard-export"); }
     // v2 adds ocrText + tags per entry, the snippet library and saved searches.
     // v1 files stay importable (missing arrays are simply empty).

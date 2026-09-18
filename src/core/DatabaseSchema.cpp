@@ -103,6 +103,45 @@ static bool ensureFts(QSqlDatabase &db)
     return true;
 }
 
+bool quickCheck(QSqlDatabase &db, QString *error)
+{
+    QSqlQuery query(db);
+    if (!query.exec(QStringLiteral("PRAGMA quick_check"))) {
+        if (error)
+            *error = query.lastError().text();
+        return false;
+    }
+    // quick_check reports one row per problem; a healthy database says "ok".
+    bool first = true;
+    bool healthy = true;
+    while (query.next()) {
+        const QString message = query.value(0).toString();
+        if (message.compare(QLatin1String("ok"), Qt::CaseInsensitive) != 0) {
+            healthy = false;
+            if (error && first)
+                *error = message;
+        }
+        first = false;
+    }
+    if (error && healthy)
+        error->clear();
+    return healthy;
+}
+
+bool rebuildSearchIndex(QSqlDatabase &db)
+{
+    // Make sure the index and its triggers exist (a missing index is repaired
+    // too), then rebuild it from the entries table.
+    if (!ensureFts(db))
+        return false;
+    QSqlQuery query(db);
+    if (!query.exec(QStringLiteral("INSERT INTO entries_fts(entries_fts) VALUES('rebuild')"))) {
+        qWarning("egoboard: FTS rebuild failed: %s", qPrintable(query.lastError().text()));
+        return false;
+    }
+    return true;
+}
+
 bool isSqlCipherAvailable(QSqlDatabase &db)
 {
     QSqlQuery q(db);

@@ -27,6 +27,7 @@ private slots:
     void importBatchesSignalsIntoOneReset();
     void rejectsMalformedImportFiles();
     void reportsExportWriteErrors();
+    void writesAndPrunesAutomaticBackups();
 
 private:
     void seed(StorageManager *storage, BookmarkManager *bookmarks);
@@ -383,6 +384,46 @@ void TestExportImport::importBatchesSignalsIntoOneReset()
     QCOMPARE(resetSpy.count(), 1);
     QCOMPARE(m_storage->stats().entryCount, qint64(3));
     QCOMPARE(m_storage->savedSearches().size(), 0); // nothing pending from the bulk
+}
+
+void TestExportImport::writesAndPrunesAutomaticBackups()
+{
+    seed(m_storage, m_bookmarks);
+    const QString folder = m_dir.filePath(QStringLiteral("backups"));
+
+    // Keeps everything when prune is disabled, and creates the folder itself.
+    QStringList written;
+    for (int i = 0; i < 3; ++i) {
+        const auto result = m_io->writeBackup(folder, 0);
+        QVERIFY2(result.ok, qPrintable(result.error));
+        QVERIFY(QFile::exists(result.path));
+        QVERIFY(result.path.contains(QStringLiteral("egoboard-backup-")));
+        QCOMPARE(result.pruned, 0);
+        written << result.path;
+    }
+    const QStringList names = ExportImportManager::listBackups(folder);
+    QCOMPARE(names.size(), 3);
+    QCOMPARE(names.first(), written.last()); // newest first
+
+    // Pruning keeps the newest N and reports how many files it removed.
+    QCOMPARE(ExportImportManager::pruneBackups(folder, 1), 2);
+    const QStringList remaining = ExportImportManager::listBackups(folder);
+    QCOMPARE(remaining.size(), 1);
+    QCOMPARE(remaining.first(), written.last());
+    QVERIFY(QFile::exists(remaining.first()));
+
+    // The written file is a real export: importing it back into a fresh
+    // database restores the entries.
+    init();
+    const auto imported = m_io->importFromFile(remaining.first(),
+                                               ExportImportManager::ImportMode::Merge);
+    QVERIFY2(imported.ok, qPrintable(imported.error));
+    QCOMPARE(imported.entriesImported, 3);
+
+    // An unwritable/empty configuration is reported instead of crashing.
+    const auto noFolder = m_io->writeBackup(QString(), 3);
+    QVERIFY(!noFolder.ok);
+    QVERIFY(!noFolder.error.isEmpty());
 }
 
 void TestExportImport::rejectsMalformedImportFiles()

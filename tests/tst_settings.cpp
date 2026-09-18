@@ -40,6 +40,7 @@ private slots:
     void autostartCommandCanPointAtAnAppImage();
     void persistsAcrossInstances();
     void searchScopeAndRecentsPersist();
+    void backupSettingsPersist();
     void configMigrationsAreForwardOnly();
 
 private:
@@ -623,6 +624,47 @@ void TestSettings::searchScopeAndRecentsPersist()
         SettingsManager settings;
         settings.setSearchScope(99);
         QCOMPARE(settings.searchScope(), 0);
+    }
+}
+
+void TestSettings::backupSettingsPersist()
+{
+    {
+        SettingsManager settings;
+        // Defaults: off, default folder, a week of daily files, never run.
+        QCOMPARE(settings.backupsEnabled(), false);
+        QCOMPARE(settings.backupFolder(), QString());
+        QCOMPARE(settings.backupKeep(), 7);
+        QCOMPARE(settings.lastBackupMs(), qint64(0));
+        QVERIFY(!settings.defaultBackupFolder().isEmpty());
+
+        settings.setBackupsEnabled(true);
+        settings.setBackupFolder(QStringLiteral("/tmp/egoboard-backups"));
+        settings.setBackupKeep(3);
+        settings.setLastBackupMs(123456789);
+    }
+    {
+        SettingsManager loaded;
+        QCOMPARE(loaded.backupsEnabled(), true);
+        QCOMPARE(loaded.backupFolder(), QStringLiteral("/tmp/egoboard-backups"));
+        QCOMPARE(loaded.backupKeep(), 3);
+        QCOMPARE(loaded.lastBackupMs(), qint64(123456789));
+    }
+    // The setter clamps to the supported range...
+    {
+        SettingsManager settings;
+        settings.setBackupKeep(0);
+        QCOMPARE(settings.backupKeep(), 1);
+        settings.setBackupKeep(1000);
+        QCOMPARE(settings.backupKeep(), 100);
+    }
+    // ...while a hand-edited out-of-range value reads back as the default.
+    {
+        KConfig config(QStringLiteral("egoboardrc"), KConfig::NoGlobals);
+        config.group(QStringLiteral("Backups")).writeEntry(QStringLiteral("Keep"), 1000);
+        config.sync();
+        SettingsManager settings;
+        QCOMPARE(settings.backupKeep(), 7);
     }
 }
 

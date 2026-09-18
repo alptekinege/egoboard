@@ -52,6 +52,13 @@ target_link_libraries(tst_expire PRIVATE KF6::ConfigCore Qt6::Gui)
 
 egoboard_add_test(tst_bookmarks)
 egoboard_add_test(tst_exportimport)
+
+# Automatic backups: service + worker thread + export pipeline end to end
+add_executable(tst_backupservice tst_backupservice.cpp ../src/app/BackupService.cpp ../src/app/SettingsManager.cpp ../src/app/ColorSchemeIndex.cpp ../src/app/IconThemeIndex.cpp)
+target_include_directories(tst_backupservice PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(tst_backupservice PRIVATE egoboard::core Qt6::Test Qt6::Gui KF6::ConfigCore)
+target_compile_options(tst_backupservice PRIVATE -Wall -Wextra)
+add_test(NAME tst_backupservice COMMAND tst_backupservice)
 egoboard_add_test(tst_transforms)
 egoboard_add_test(tst_snippets)
 egoboard_add_test(tst_encryption)

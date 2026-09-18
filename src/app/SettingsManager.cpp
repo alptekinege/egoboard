@@ -20,9 +20,13 @@ const QString kGroupPreview = QStringLiteral("Preview");
 const QString kGroupOcr = QStringLiteral("Ocr");
 const QString kGroupAutomation = QStringLiteral("Automation");
 const QString kGroupUi = QStringLiteral("Ui");
+const QString kGroupBackups = QStringLiteral("Backups");
 
 constexpr int kDefaultQuickPasteCount = 9;
 constexpr int kDefaultDebounceMs = 250;
+// Automatic backups: keep a week of daily files by default.
+constexpr int kDefaultBackupKeep = 7;
+constexpr int kMaxBackupKeep = 100;
 // Text size can be nudged up for readability, but not far enough to wreck the
 // carefully sized list rows and toolbar.
 constexpr int kMinFontPointDelta = -2;
@@ -828,6 +832,60 @@ void SettingsManager::clearRecentSearches()
 {
     m_config->group(kGroupUi).writeEntry("RecentSearches", QStringList());
     save();
+}
+
+bool SettingsManager::backupsEnabled() const
+{
+    return m_config->group(kGroupBackups).readEntry("Enabled", false);
+}
+
+void SettingsManager::setBackupsEnabled(bool enabled)
+{
+    m_config->group(kGroupBackups).writeEntry("Enabled", enabled);
+    save();
+}
+
+QString SettingsManager::backupFolder() const
+{
+    return m_config->group(kGroupBackups).readEntry("Folder", QString());
+}
+
+void SettingsManager::setBackupFolder(const QString &folder)
+{
+    m_config->group(kGroupBackups).writeEntry("Folder", folder.trimmed());
+    save();
+}
+
+int SettingsManager::backupKeep() const
+{
+    const int keep = m_config->group(kGroupBackups).readEntry("Keep", kDefaultBackupKeep);
+    return (keep >= 1 && keep <= kMaxBackupKeep) ? keep : kDefaultBackupKeep;
+}
+
+void SettingsManager::setBackupKeep(int keep)
+{
+    m_config->group(kGroupBackups).writeEntry("Keep", qBound(1, keep, kMaxBackupKeep));
+    save();
+}
+
+qint64 SettingsManager::lastBackupMs() const
+{
+    return m_config->group(kGroupBackups).readEntry<qint64>("LastRunMs", qint64(0));
+}
+
+void SettingsManager::setLastBackupMs(qint64 ms)
+{
+    m_config->group(kGroupBackups).writeEntry<qint64>("LastRunMs", ms);
+    save();
+}
+
+QString SettingsManager::defaultBackupFolder()
+{
+    const QString documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    if (!documents.isEmpty())
+        return documents + QStringLiteral("/egoboard-backups");
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+        + QStringLiteral("/backups");
 }
 
 QString SettingsManager::timestampStyle() const

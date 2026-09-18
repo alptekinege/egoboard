@@ -46,7 +46,7 @@ The architecture is clean: `egoboard_core` stays `QtCore+Sql` only, platform sea
 
 Phase 6 (hardening) and Phase 7 (Search 2.0) are delivered, so the fundamentals are no longer the gap. What remains is portability and integration work plus a few documented leftovers:
 
-* **Track I — data portability & durability**: importers for CopyQ/Klipper exports, scheduled/compressed backups, `PRAGMA quick_check` on open with a guided repair path (export v2 itself already round-trips OCR, tags, snippets and saved searches).
+* **Track I — data portability & durability** (first batch delivered): ~~scheduled backups~~ ✅ and ~~startup integrity (`quick_check` + index repair)~~ ✅; still open: importers for CopyQ/Klipper exports, a dedicated restore flow, `.zip` archives, and a pre-migration file copy.
 * **Track J — integration 2.0**: `xdg-desktop-portal` RemoteDesktop paste on Wayland, global snippet hotkeys (the stored `snippet.shortcut` is still unbound), KRunner/palette/tray upgrades, pause-capture on lock/screencast.
 * **Track K — workflow delight** (multi-select, undo toast, paste queue, stats) and **Track L — release engineering** (CI pipeline, Flatpak/AUR, screenshots).
 * **Phase 5 leftover**: Quick paste 2.0 (search-as-you-type inside the popup, two-line previews, multi-monitor memory).
@@ -119,6 +119,11 @@ Everything below shipped; kept for the record as single lines.
 * ~~Scope selector: preview / full text / OCR / all text, persisted, part of saved searches and mapped to FTS5 column filters (LIKE fallback picks the same columns).~~
 * ~~Search stats + explain: the settings tester shows parsed filters, rejected values, the resulting FTS5 expression, the hit count and elapsed milliseconds.~~
 
+**Phase 8 — Portability & integration (Track I, first batch) — delivered 2026-09-18**
+* ~~**Automatic backups**: daily JSON export into a configurable folder (default `~/Documents/egoboard-backups`), "keep the newest N" pruning, a manual "Back up now" that also works with the schedule off, and an immediate first backup when the feature is enabled. The export runs on a worker thread with its own database connection (`BackupService`/`BackupWorker`), failures raise a notification, and the settings dialog shows the last run.~~
+* ~~**Startup integrity**: one-shot background `PRAGMA quick_check` on a scratch connection after start — silent when healthy, notifying with guidance when not — plus "Check integrity" and "Rebuild search index" actions in Storage settings, and `StorageManager::rebuildSearchIndex()` as the safe repair path.~~
+* ~~**Tests**: backup write/prune/name-ordering + import-back round trip (`tst_exportimport`), service + worker thread end to end (`tst_backupservice`), quick-check and index-repair (`tst_schema`).~~
+
 **Packaging & verification (2026-09-18)**
 * ~~AppImage rebuilt from the hardened tree and passed `scripts/validate-appimage.sh`: desktop/icon/metadata checks, Qt platform plugins (XCB + Wayland), SQLite driver, SVG formats, 198 bundled shared libraries, and a headless `--smoke` run inside the AppImage.~~
 * ~~`--smoke` / `--bench` now force console logging, so their reports stay visible when the output is piped or captured (the AppImage validator greps for them).~~
@@ -175,7 +180,7 @@ public:
 * **Noise filter** — skip whitespace-only, single-character or very short copies (`minTextLength`, default 0).
 * **Ignore private windows** — never record from incognito/private browser windows.
 * **Clipboard ↔ selection sync** — optional X11 mode that mirrors clipboard to primary selection.
-* **Auto-backups** — daily JSON export into a configurable folder, keep last N.
+* ~~**Auto-backups** — daily JSON export into a configurable folder, keep last N — delivered with Phase 8 (`BackupService`, worker thread, pruning, manual "Back up now").~~
 * **Move history DB** — override the database path from Settings (with a safe move + reopen flow).
 
 ### 3.2 List & reading
@@ -266,8 +271,8 @@ public:
 * ~~**Import completeness**: `Overwrite` clears all user data it replaces; one transaction with batched (suppressed) signals and a single refresh — delivered with Phase 6 (G4/G5). A cancelable progress UI is still open (wait cursor today).~~
 * **More export formats**: Markdown / HTML / CSV, plus "export selection" from multi-select (Track K).
 * **Importers for other managers**: CopyQ JSON export, Klipper history file — all funneled through the existing content-hash dedup path so imports merge cleanly.
-* **Scheduled backups** (from §3.1) with a restore flow and an optional compressed (`.zip`) archive.
-* **Startup integrity**: `PRAGMA quick_check` on open, pre-migration backup copy, and a guided auto-repair path.
+* ~~**Scheduled backups** (from §3.1) — delivered with Phase 8 (`BackupService`: daily, configurable folder, keep-N pruning, manual run). Still open: a dedicated restore flow (importing the JSON works today) and an optional compressed (`.zip`) archive.~~
+* ~~**Startup integrity** — delivered with Phase 8: `PRAGMA quick_check` after start (background, notify-on-failure), "Check integrity" + "Rebuild search index" actions, and `rebuildSearchIndex()`. Still open: an automatic pre-migration file copy.~~
 
 ### Track J — Desktop integration 2.0
 
@@ -312,7 +317,7 @@ Keep it iterative. Each phase ships and is usable on its own — no big-bang rew
 | **Phase 5 — Ergonomics** ◐ | Settings & QoL | §3 backlog: paste behavior ✅, list density ✅, saved searches & tags ✅; Quick paste 2.0 still open |
 | **Phase 6 — Hardening** ✅ | Correctness first | G1–G5 defects, G4 index + signal fixes, G6 LICENSE/docs — all delivered 2026-09-18 (§4) |
 | **Phase 7 — Search & scale** ✅ | Retrieval | Track H (field filters, phrases/AND-OR/NOT, guarded regex, highlight, recent searches, scope, query explain) + `--bench` budgets — delivered 2026-09-18 (§5) |
-| **Phase 8 — Portability & integration** ← *next* | Backup & platform | Track I (CopyQ/Klipper importers, scheduled backups, startup integrity), Track J (portal paste, snippet hotkeys, KRunner/palette/tray) |
+| **Phase 8 — Portability & integration** ◐ *in progress* | Backup & platform | Track I first batch ✅ (automatic backups, startup integrity, index repair); open: CopyQ/Klipper importers, `.zip` backups, Track J (portal paste, snippet hotkeys, KRunner/palette/tray) |
 | **Phase 9 — Release & delight** | Polish | Track L (CI, Flatpak, docs), Track K (multi-select, undo, paste queue, stats) |
 | **Tracks A / D** | Long-term | Semantic search (Track A), LAN sync + browser companion (Track D) |
 
@@ -387,4 +392,4 @@ QT_QPA_PLATFORM=offscreen ./build/egoboard --smoke
 
 ---
 
-*Last updated: 2026-09-18 (Phase 6 hardening + Phase 7 Search 2.0 delivered; roadmap condensed to match the tree) · Maintainer: local development · Next review: after the Phase 8 batch — remaining long-term: semantic search (Track A), browser/LAN sync (Track D), Track I/J/K/L items above.*
+*Last updated: 2026-09-18 (Phase 6 + Phase 7 delivered; Phase 8 Track I first batch: automatic backups, startup integrity) · Maintainer: local development · Next review: after the next Phase 8 batch — remaining long-term: semantic search (Track A), browser/LAN sync (Track D), Track I/J/K/L items above.*

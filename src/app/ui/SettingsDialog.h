@@ -114,6 +114,13 @@ private:
     QPushButton *m_encryptionSetupBtn = nullptr;
     QPushButton *m_encryptionRemoveBtn = nullptr;
 
+    // Storage page: automatic backups.
+    QCheckBox *m_backupEnabled = nullptr;
+    QLineEdit *m_backupFolder = nullptr;
+    QSpinBox *m_backupKeep = nullptr;
+    QPushButton *m_backupNowBtn = nullptr;
+    QLabel *m_backupStatus = nullptr;
+
     // History (retention)
     QSpinBox *m_maxEntries = nullptr;
     QSpinBox *m_diskCapMb = nullptr;

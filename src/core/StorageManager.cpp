@@ -1096,6 +1096,24 @@ bool StorageManager::requiresEncryptionKey() const
     return !m_encrypted && fileLooksEncrypted(m_path);
 }
 
+bool StorageManager::quickCheck(QString *error) const
+{
+    if (!m_db.isOpen()) {
+        if (error)
+            *error = tr("the database is not open");
+        return false;
+    }
+    QSqlDatabase db = m_db;
+    return DatabaseSchema::quickCheck(db, error);
+}
+
+bool StorageManager::rebuildSearchIndex()
+{
+    if (!m_db.isOpen())
+        return false;
+    return DatabaseSchema::rebuildSearchIndex(m_db);
+}
+
 bool StorageManager::isSqlCipherAvailable() const
 {
     QSqlDatabase db = m_db;

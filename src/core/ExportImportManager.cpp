@@ -1,14 +1,34 @@
 #include "ExportImportManager.h"
 
 #include <QDateTime>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSqlError>
 #include <QSqlQuery>
 
+#include <algorithm>
+
 namespace {
+
+// Automatic backups: egoboard-backup-20260918-034512.json (name order is
+// chronological, which is what pruning relies on).
+constexpr auto kBackupPrefix = "egoboard-backup-";
+
+QStringList backupFiles(const QString &folder)
+{
+    QDir dir(folder);
+    const QStringList names = dir.entryList(
+        {QString::fromLatin1(kBackupPrefix) + QStringLiteral("*.json")}, QDir::Files, QDir::Name);
+    QStringList paths;
+    paths.reserve(names.size());
+    for (const QString &name : names)
+        paths << dir.absoluteFilePath(name);
+    return paths; // ascending by name == oldest first
+}
 
 ContentType typeFromTag(const QString &tag)
 {
@@ -507,5 +527,67 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode)
 
     emit m_storage->storageReset(); // one reload for the whole import
     result.ok = true;
+    return result;
+}
+
+QStringList ExportImportManager::listBackups(const QString &folder)
+{
+    QStringList newestFirst = backupFiles(folder);
+    std::reverse(newestFirst.begin(), newestFirst.end());
+    return newestFirst;
+}
+
+int ExportImportManager::pruneBackups(const QString &folder, int keep)
+{
+    if (keep <= 0)
+        return 0; // 0 = keep everything
+    const QStringList files = backupFiles(folder); // oldest first
+    if (files.size() <= keep)
+        return 0;
+    int removed = 0;
+    for (int i = 0; i < files.size() - keep; ++i) {
+        if (QFile::remove(files.at(i)))
+            ++removed;
+    }
+    return removed;
+}
+
+ExportImportManager::BackupResult ExportImportManager::writeBackup(const QString &folder, int keep)
+{
+    BackupResult result;
+    if (folder.trimmed().isEmpty()) {
+        result.error = tr("No backup folder is configured.");
+        return result;
+    }
+    QDir dir(folder);
+    if (!dir.exists() && !dir.mkpath(QStringLiteral("."))) {
+        result.error = tr("Cannot create the backup folder %1.").arg(folder);
+        return result;
+    }
+
+    // Millisecond precision plus a zero-padded sequence keeps name order
+    // chronological even when several backups land in the same millisecond.
+    const QString stamp = QDateTime::currentDateTime().toString(
+        QStringLiteral("yyyyMMdd-HHmmss-zzz"));
+    QString path;
+    for (int sequence = 1;; ++sequence) {
+        path = dir.filePath(QString::fromLatin1(kBackupPrefix) + stamp
+                            + QStringLiteral("-%1.json").arg(sequence, 3, 10, QLatin1Char('0')));
+        if (!QFile::exists(path))
+            break;
+    }
+
+    ExportRequest request;
+    request.scope = Scope::Everything;
+    request.path = path;
+    QString error;
+    if (!exportToFile(request, &error)) {
+        result.error = error;
+        return result;
+    }
+
+    result.ok = true;
+    result.path = path;
+    result.pruned = pruneBackups(folder, keep);
     return result;
 }

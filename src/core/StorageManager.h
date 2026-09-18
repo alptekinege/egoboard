@@ -70,6 +70,12 @@ public:
     // is SQLCipher's random salt), i.e. it can only be opened with a key.
     bool requiresEncryptionKey() const;
 
+    // PRAGMA quick_check: false when the file is damaged; *error carries the
+    // first reported problem. Runs on the caller's (GUI) connection.
+    bool quickCheck(QString *error = nullptr) const;
+    // Rebuilds the FTS index; repairs search without touching the history.
+    bool rebuildSearchIndex();
+
     // Batched writes (imports, bulk edits): one outer transaction plus
     // suppression of the per-row signals, so an import is a single commit and
     // a single refresh instead of thousands of signals. Always pair with
