@@ -1016,6 +1016,33 @@ QWidget *SettingsDialog::buildStoragePage()
     m_backupNowBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-save")),
                                      tr("Back up now"), backupBox);
     keepRow->addWidget(m_backupNowBtn);
+    auto *restoreBackupBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-revert")),
+                                             tr("Restore…"), backupBox);
+    restoreBackupBtn->setToolTip(tr("Pick one of the backups in the folder and apply it."));
+    connect(restoreBackupBtn, &QPushButton::clicked, this, [this] {
+        BackupService *service = m_ctx.backupService();
+        if (!service)
+            return;
+        const QString folder = service->folder();
+        const QStringList backups = ExportImportManager::listBackups(folder);
+        if (backups.isEmpty()) {
+            QMessageBox::information(this, tr("Restore"),
+                                     tr("No backups found in %1.").arg(folder));
+            return;
+        }
+        ExportImportDialogs::RestoreBackupDialog dialog(backups, this);
+        if (dialog.exec() != QDialog::Accepted)
+            return;
+        const QString path = dialog.selectedPath();
+        if (path.isEmpty())
+            return;
+        if (!service->restoreNow(path, dialog.mode())) {
+            QMessageBox::information(this, tr("Restore"), tr("A backup or restore is already running."));
+            return;
+        }
+        m_backupStatus->setText(tr("Restoring %1…").arg(QFileInfo(path).fileName()));
+    });
+    keepRow->addWidget(restoreBackupBtn);
     backupLayout->addLayout(keepRow);
 
     m_backupStatus = makeStatusPanel(QString(), backupBox);
@@ -1041,6 +1068,21 @@ QWidget *SettingsDialog::buildStoragePage()
                         m_backupStatus->setText(tr("Last backup: %1").arg(path));
                     else
                         m_backupStatus->setText(tr("Backup failed: %1").arg(error));
+                });
+        connect(service, &BackupService::restoreFinished, this,
+                [this](bool ok, const QString &path, const QString &error, int imported,
+                       int merged, int skipped) {
+                    m_backupNowBtn->setEnabled(true);
+                    if (ok) {
+                        m_backupStatus->setText(
+                            tr("Restored %1 — %2 added, %3 merged, %4 skipped.")
+                                .arg(QFileInfo(path).fileName())
+                                .arg(imported)
+                                .arg(merged)
+                                .arg(skipped));
+                    } else {
+                        m_backupStatus->setText(tr("Restore failed: %1").arg(error));
+                    }
                 });
     }
     layout->addWidget(backupBox);

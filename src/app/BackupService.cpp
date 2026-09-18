@@ -34,28 +34,69 @@ void BackupWorker::requestRun(const QString &folder, int keep, const QString &en
         Qt::QueuedConnection);
 }
 
+void BackupWorker::requestRestore(const QString &path, ExportImportManager::ImportMode mode,
+                                  const QString &encryptionKey)
+{
+    if (QThread::currentThread() == thread()) {
+        restore(path, mode, encryptionKey);
+        return;
+    }
+    QMetaObject::invokeMethod(
+        this, [this, path, mode, encryptionKey] { restore(path, mode, encryptionKey); },
+        Qt::QueuedConnection);
+}
+
+bool BackupWorker::ensureStorage(const QString &encryptionKey)
+{
+    if (m_storage)
+        return true;
+    // First use on this thread: create the connection here so every run reuses
+    // it without touching the GUI connection.
+    m_storage = std::make_unique<StorageManager>(m_databasePath);
+    if (!m_storage->database().isOpen()) {
+        m_storage.reset();
+        return false;
+    }
+    if (!encryptionKey.isEmpty() && !m_storage->setEncryptionKey(encryptionKey)) {
+        m_storage.reset();
+        return false;
+    }
+    m_bookmarks = std::make_unique<BookmarkManager>(m_storage->database());
+    m_snippets = std::make_unique<SnippetManager>(m_storage->database());
+    m_io = std::make_unique<ExportImportManager>(m_storage.get(), m_bookmarks.get(),
+                                                 m_snippets.get());
+    return true;
+}
+
 void BackupWorker::run(const QString &folder, int keep, const QString &encryptionKey)
 {
-    if (!m_storage) {
-        // First run on this thread: create the connection here so every backup
-        // reuses it without touching the GUI connection.
-        m_storage = std::make_unique<StorageManager>(m_databasePath);
-        if (!m_storage->database().isOpen()) {
-            emit finished(false, {}, tr("Cannot open the history database."));
-            return;
-        }
-        if (!encryptionKey.isEmpty() && !m_storage->setEncryptionKey(encryptionKey)) {
-            emit finished(false, {}, tr("Cannot unlock the encrypted history database."));
-            return;
-        }
-        m_bookmarks = std::make_unique<BookmarkManager>(m_storage->database());
-        m_snippets = std::make_unique<SnippetManager>(m_storage->database());
-        m_io = std::make_unique<ExportImportManager>(m_storage.get(), m_bookmarks.get(),
-                                                     m_snippets.get());
+    if (!ensureStorage(encryptionKey)) {
+        const bool locked = !encryptionKey.isEmpty();
+        emit finished(false, {},
+                      locked ? tr("Cannot unlock the encrypted history database.")
+                             : tr("Cannot open the history database."));
+        return;
     }
 
     const ExportImportManager::BackupResult result = m_io->writeBackup(folder, keep);
     emit finished(result.ok, result.path, result.error);
+}
+
+void BackupWorker::restore(const QString &path, ExportImportManager::ImportMode mode,
+                           const QString &encryptionKey)
+{
+    if (!ensureStorage(encryptionKey)) {
+        const bool locked = !encryptionKey.isEmpty();
+        emit restoreFinished(false, path,
+                             locked ? tr("Cannot unlock the encrypted history database.")
+                                    : tr("Cannot open the history database."),
+                             0, 0, 0);
+        return;
+    }
+
+    const ExportImportManager::ImportResult result = m_io->importFromFile(path, mode);
+    emit restoreFinished(result.ok, path, result.error, result.entriesImported,
+                         result.entriesMerged, result.entriesSkipped);
 }
 
 BackupService::BackupService(const QString &databasePath, SettingsManager *settings, QObject *parent)
@@ -94,6 +135,13 @@ void BackupService::start()
                     emit finished(ok, path, error);
                     schedule();
                 });
+        connect(m_worker, &BackupWorker::restoreFinished, this,
+                [this](bool ok, const QString &path, const QString &error, int imported,
+                       int merged, int skipped) {
+                    m_running = false;
+                    emit restoreFinished(ok, path, error, imported, merged, skipped);
+                    schedule();
+                });
         m_thread->start();
     }
 
@@ -114,9 +162,22 @@ bool BackupService::runNow()
     if (!m_worker || m_running)
         return false;
     m_running = true;
-    const QString key = m_keyProvider ? m_keyProvider() : QString();
-    m_worker->requestRun(folder(), m_settings->backupKeep(), key);
+    m_worker->requestRun(folder(), m_settings->backupKeep(), walletKey());
     return true;
+}
+
+bool BackupService::restoreNow(const QString &path, ExportImportManager::ImportMode mode)
+{
+    if (!m_worker || m_running || path.trimmed().isEmpty())
+        return false;
+    m_running = true;
+    m_worker->requestRestore(path.trimmed(), mode, walletKey());
+    return true;
+}
+
+QString BackupService::walletKey() const
+{
+    return m_keyProvider ? m_keyProvider() : QString();
 }
 
 void BackupService::schedule()

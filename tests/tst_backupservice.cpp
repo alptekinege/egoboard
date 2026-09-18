@@ -20,6 +20,7 @@ class TestBackupService : public QObject
 private slots:
     void initTestCase();
     void serviceBacksUpOffThreadAndPrunes();
+    void serviceRestoresBackupOverwrite();
 
 private:
     QTemporaryDir m_configDir;
@@ -85,6 +86,77 @@ void TestBackupService::serviceBacksUpOffThreadAndPrunes()
     QVERIFY2(imported.ok, qPrintable(imported.error));
     QCOMPARE(imported.entriesImported, 1);
     QCOMPARE(restored.stats().entryCount, qint64(1));
+}
+
+void TestBackupService::serviceRestoresBackupOverwrite()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString dbPath = dir.filePath(QStringLiteral("history.db"));
+    const auto insert = [](const QString &path, const char *hash, const QString &text) {
+        StorageManager storage(path);
+        ClipboardRecord record;
+        record.hash = QByteArray(hash);
+        record.type = ContentType::Text;
+        record.textData = text;
+        record.preview = text;
+        record.timestamp = 1000;
+        return storage.insertOrUpdate(record);
+    };
+    QVERIFY(insert(dbPath, "before-restore", QStringLiteral("original entry")) > 0);
+
+    SettingsManager settings;
+    settings.setBackupsEnabled(true);
+    settings.setBackupFolder(dir.filePath(QStringLiteral("backups")));
+    settings.setBackupKeep(5);
+
+    BackupService service(dbPath, &settings);
+    QSignalSpy backupSpy(&service, &BackupService::finished);
+    service.start();
+    QVERIFY(service.runNow());
+    QVERIFY(backupSpy.wait(15000));
+    QVERIFY2(backupSpy.first().at(0).toBool(), qPrintable(backupSpy.first().at(2).toString()));
+    const QString backupPath = backupSpy.first().at(1).toString();
+    QVERIFY(QFile::exists(backupPath));
+
+    // Diverge from the backup: drop everything and add a different entry.
+    {
+        StorageManager storage(dbPath);
+        QCOMPARE(storage.clearHistory(true), 1);
+        QVERIFY(storage.insertOrUpdate([&] {
+            ClipboardRecord record;
+            record.hash = QByteArrayLiteral("after-backup");
+            record.type = ContentType::Text;
+            record.textData = QStringLiteral("different entry");
+            record.preview = record.textData;
+            record.timestamp = 2000;
+            return record;
+        }()) > 0);
+    }
+
+    // Restoring replaces the current history with the backed-up state.
+    QSignalSpy restoreSpy(&service, &BackupService::restoreFinished);
+    QVERIFY(service.restoreNow(backupPath, ExportImportManager::ImportMode::Overwrite));
+    QVERIFY(restoreSpy.wait(15000));
+    QCOMPARE(restoreSpy.count(), 1);
+    QVERIFY2(restoreSpy.first().at(0).toBool(), qPrintable(restoreSpy.first().at(2).toString()));
+    QCOMPARE(restoreSpy.first().at(3).toInt(), 1); // entries imported
+
+    StorageManager restored(dbPath);
+    QCOMPARE(restored.stats().entryCount, qint64(1));
+    FilterSpec filter;
+    filter.searchText = QStringLiteral("original");
+    const auto hits = restored.fetchPage(filter, {}, 10);
+    QCOMPARE(hits.size(), 1);
+    QCOMPARE(hits.first().hash, QByteArrayLiteral("before-restore"));
+
+    // A missing file fails cleanly instead of crashing the worker.
+    QSignalSpy failedSpy(&service, &BackupService::restoreFinished);
+    QVERIFY(service.restoreNow(dir.filePath(QStringLiteral("nope.json")),
+                               ExportImportManager::ImportMode::Merge));
+    QVERIFY(failedSpy.wait(15000));
+    QCOMPARE(failedSpy.count(), 1);
+    QCOMPARE(failedSpy.first().at(0).toBool(), false);
 }
 
 QTEST_GUILESS_MAIN(TestBackupService)

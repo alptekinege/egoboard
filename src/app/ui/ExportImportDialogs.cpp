@@ -7,10 +7,14 @@
 #include <QDateTime>
 #include <QDialogButtonBox>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
+#include <QLocale>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QVBoxLayout>
@@ -177,6 +181,60 @@ ExportImportManager::ImportMode ImportDialog::mode() const
     if (m_skipRadio->isChecked())
         return ExportImportManager::ImportMode::SkipDuplicates;
     return ExportImportManager::ImportMode::Merge;
+}
+
+RestoreBackupDialog::RestoreBackupDialog(const QStringList &backupPaths, QWidget *parent)
+    : QDialog(parent)
+{
+    setWindowTitle(tr("Restore from backup"));
+
+    auto *layout = new QVBoxLayout(this);
+
+    m_list = new QListWidget(this);
+    m_list->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_list->setAlternatingRowColors(true);
+    for (const QString &path : backupPaths) {
+        const QFileInfo info(path);
+        const QString when = info.lastModified().toString(
+            QLocale::system().dateTimeFormat(QLocale::ShortFormat));
+        auto *item = new QListWidgetItem(
+            tr("%1 — %2").arg(when, QLocale::system().formattedDataSize(info.size())), m_list);
+        item->setData(Qt::UserRole, path);
+    }
+    if (m_list->count() > 0)
+        m_list->setCurrentRow(0); // newest first
+    layout->addWidget(m_list, 1);
+
+    auto *modeBox = new QGroupBox(tr("How to apply it"), this);
+    auto *modeLayout = new QVBoxLayout(modeBox);
+    m_overwriteRadio = new QRadioButton(
+        tr("Replace the current history with the backup"), modeBox);
+    m_overwriteRadio->setChecked(true);
+    m_mergeRadio = new QRadioButton(
+        tr("Merge — keep the newer copy of duplicates and combine groups"), modeBox);
+    modeLayout->addWidget(m_overwriteRadio);
+    modeLayout->addWidget(m_mergeRadio);
+    layout->addWidget(modeBox);
+    layout->addWidget(new QLabel(tr("Replacing cannot be undone; the current history is not "
+                                    "backed up automatically before a restore."),
+                                 this));
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    layout->addWidget(buttons);
+}
+
+QString RestoreBackupDialog::selectedPath() const
+{
+    const QListWidgetItem *item = m_list->currentItem();
+    return item ? item->data(Qt::UserRole).toString() : QString();
+}
+
+ExportImportManager::ImportMode RestoreBackupDialog::mode() const
+{
+    return m_overwriteRadio->isChecked() ? ExportImportManager::ImportMode::Overwrite
+                                         : ExportImportManager::ImportMode::Merge;
 }
 
 } // namespace ExportImportDialogs

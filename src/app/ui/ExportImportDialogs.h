@@ -7,6 +7,7 @@
 class QComboBox;
 class QDateEdit;
 class QLineEdit;
+class QListWidget;
 class QRadioButton;
 
 // Small dialogs for JSON export/import and custom date-range filtering.
@@ -70,6 +71,21 @@ private:
     QRadioButton *m_mergeRadio = nullptr;
     QRadioButton *m_overwriteRadio = nullptr;
     QRadioButton *m_skipRadio = nullptr;
+};
+
+// Picks one of the automatic backups (newest first) and how to apply it.
+class RestoreBackupDialog : public QDialog {
+    Q_OBJECT
+public:
+    RestoreBackupDialog(const QStringList &backupPaths, QWidget *parent);
+
+    QString selectedPath() const;
+    ExportImportManager::ImportMode mode() const;
+
+private:
+    QListWidget *m_list = nullptr;
+    QRadioButton *m_overwriteRadio = nullptr;
+    QRadioButton *m_mergeRadio = nullptr;
 };
 
 } // namespace ExportImportDialogs

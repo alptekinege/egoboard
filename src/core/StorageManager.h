@@ -76,6 +76,10 @@ public:
     // Rebuilds the FTS index; repairs search without touching the history.
     bool rebuildSearchIndex();
 
+    // Announces an out-of-band change (e.g. a backup restored on a worker
+    // thread) so models and views reload from page one.
+    void notifyStorageReset() { emit storageReset(); }
+
     // Batched writes (imports, bulk edits): one outer transaction plus
     // suppression of the per-row signals, so an import is a single commit and
     // a single refresh instead of thousands of signals. Always pair with

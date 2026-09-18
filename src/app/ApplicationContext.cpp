@@ -330,6 +330,29 @@ void ApplicationContext::start()
                                      error, QStringLiteral("dialog-warning"),
                                      KNotification::CloseOnTimeout);
             });
+    // A restore happens on the worker thread against its own connection, so the
+    // GUI models are told to reload from scratch afterwards.
+    connect(m_backup, &BackupService::restoreFinished, this,
+            [this](bool ok, const QString &path, const QString &error, int imported, int merged,
+                   int skipped) {
+                if (!ok) {
+                    qWarning("egoboard: restore failed: %s", qPrintable(error));
+                    KNotification::event(QStringLiteral("restoreFailed"),
+                                         QObject::tr("Restore failed"), error,
+                                         QStringLiteral("dialog-warning"),
+                                         KNotification::CloseOnTimeout);
+                    return;
+                }
+                qInfo("egoboard: restored %s (%d added, %d merged, %d skipped)",
+                      qPrintable(path), imported, merged, skipped);
+                m_storage->notifyStorageReset();
+                KNotification::event(QStringLiteral("restoreFinished"),
+                                     QObject::tr("Backup restored"),
+                                     QObject::tr("%1 entries added, %2 merged, %3 skipped.")
+                                         .arg(imported).arg(merged).arg(skipped),
+                                     QStringLiteral("document-revert"),
+                                     KNotification::CloseOnTimeout);
+            });
     m_backup->start();
 
     scheduleVacuumChecks();
