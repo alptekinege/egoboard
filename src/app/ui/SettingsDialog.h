@@ -90,6 +90,7 @@ private:
     // Capture
     QCheckBox *m_primarySelection = nullptr;
     QList<QCheckBox *> m_captureTypeBoxes; // one per recorded ContentType
+    QCheckBox *m_pauseOnLock = nullptr;
     QSpinBox *m_quickPasteCount = nullptr;
     QSpinBox *m_debounce = nullptr;
     QSpinBox *m_maxItemMb = nullptr;

@@ -227,6 +227,9 @@ void ClipboardWatcher::onClipboardChanged(QClipboard::Mode mode)
 
 void ClipboardWatcher::processPending()
 {
+    if (m_paused)
+        return; // capture paused (manual or session locked)
+
     if (m_pendingSelfSets > 0) {
         if (QDateTime::currentMSecsSinceEpoch() <= m_selfSetDeadlineMs) {
             // Our own paste-back write; consume its token and stop.

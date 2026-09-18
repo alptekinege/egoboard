@@ -5,6 +5,7 @@
 #include <QObject>
 
 class KStatusNotifierItem;
+class QAction;
 class QMenu;
 class QSystemTrayIcon;
 class StorageManager;
@@ -20,6 +21,9 @@ public:
 
     static bool statusNotifierHostAvailable();
 
+    // Reflects the capture state on the checkable "Pause capture" menu entry.
+    void setPaused(bool paused);
+
 signals:
     void toggleRequested();
     void quickPasteRequested();
@@ -27,6 +31,7 @@ signals:
     void clearRequested();
     void quitRequested();
     void pasteRequested(qint64 entryId);
+    void pauseToggled(bool paused);
 
 private:
     void rebuildMenu();
@@ -35,5 +40,7 @@ private:
     KStatusNotifierItem *m_sni = nullptr;
     QSystemTrayIcon *m_fallbackIcon = nullptr;
     QMenu *m_menu = nullptr;
+    QAction *m_pauseAction = nullptr;
+    bool m_paused = false;
     static constexpr int kRecentCount = 8;
 };

@@ -198,6 +198,17 @@ void SettingsManager::setCaptureFiles(bool enabled)
     save();
 }
 
+bool SettingsManager::pauseOnLock() const
+{
+    return m_config->group(kGroupCapture).readEntry("PauseOnLock", true);
+}
+
+void SettingsManager::setPauseOnLock(bool pause)
+{
+    m_config->group(kGroupCapture).writeEntry("PauseOnLock", pause);
+    save();
+}
+
 bool SettingsManager::captureTypeEnabled(ContentType type) const
 {
     switch (type) {

@@ -76,6 +76,11 @@ public:
     void deleteLastEntry(); // drop the newest capture (global hotkey)
     void vacuumNow();
 
+    // Pauses/resumes recording on both capture paths (tray, global shortcut or
+    // the session being locked). Lock pauses are lifted when the lock ends.
+    void setCapturePaused(bool paused, bool fromLock = false);
+    bool isCapturePaused() const { return m_capturePaused; }
+
     // Installs a color scheme, an icon theme and the text appearance into the
     // running app (palette, icon search paths, UI font, repaint nudge). Startup,
     // settings changes and Plasma's own theme changes all go through here; the
@@ -84,11 +89,17 @@ public:
     void applyThemes(const QString &colorTheme, const QString &iconTheme,
                      const TextAppearance::Overrides &text, bool force = false);
 
+private slots:
+    // DBus ScreenSaver ActiveChanged → pause/resume while locked.
+    void onSessionLockChanged(bool locked) { setCapturePaused(locked, true); }
+
 private:
     void onCaptured(const ClipboardRecord &record);
     void scheduleVacuumChecks();
     // One-shot background PRAGMA quick_check; notifies only when it fails.
     void scheduleIntegrityCheck();
+    // Subscribes to the session's screen-lock signal for pause-on-lock.
+    void watchSessionLock();
 
     bool m_fullGui = true;
 
@@ -123,4 +134,7 @@ private:
     QString m_appliedIconTheme;
     TextAppearance::Overrides m_appliedText;
     int m_captureCounter = 0;
+    bool m_capturePaused = false;
+    bool m_manualPause = false; // set by tray/hotkey, survives lock pauses
+    bool m_lockPause = false;
 };

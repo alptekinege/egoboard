@@ -299,6 +299,7 @@ void WlrDataControlHelper::onOfferMime(void *offerId, const QString &mime) {
 void WlrDataControlHelper::handleSelection(void *offerId, bool primary) {
     Q_UNUSED(primary)
     if (!offerId) return;
+    if (m_paused) return; // capture paused (manual or session locked)
     if (QDateTime::currentMSecsSinceEpoch() < m_suppressUntilMs) return;
 
     auto it = m_offers.find(offerId);

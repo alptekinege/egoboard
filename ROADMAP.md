@@ -47,7 +47,7 @@ The architecture is clean: `egoboard_core` stays `QtCore+Sql` only, platform sea
 Phase 6 (hardening) and Phase 7 (Search 2.0) are delivered, so the fundamentals are no longer the gap. What remains is portability and integration work plus a few documented leftovers:
 
 * **Track I — data portability & durability** (backup story + Klipper import delivered): ~~scheduled backups~~ ✅, ~~restore flow~~ ✅, ~~Klipper importer~~ ✅ and ~~startup integrity (`quick_check` + index repair)~~ ✅; still open: CopyQ `.cpq` reader (versioned binary container — see §5), `.zip` archives, pre-migration file copy.
-* **Track J — integration 2.0**: `xdg-desktop-portal` RemoteDesktop paste on Wayland, global snippet hotkeys (the stored `snippet.shortcut` is still unbound), KRunner/palette/tray upgrades, pause-capture on lock/screencast.
+* **Track J — integration 2.0**: ~~pause-capture + lock awareness~~ ✅ (Phase 8); open: `xdg-desktop-portal` RemoteDesktop paste on Wayland, global snippet hotkeys (the stored `snippet.shortcut` is still unbound), KRunner/palette/tray upgrades, screencast awareness.
 * **Track K — workflow delight** (multi-select, undo toast, paste queue, stats) and **Track L — release engineering** (CI pipeline, Flatpak/AUR, screenshots).
 * **Phase 5 leftover**: Quick paste 2.0 (search-as-you-type inside the popup, two-line previews, multi-monitor memory).
 * **§4 tail**: qtkeychain fallback (plan only), wlr-data-control mime reads still happen on the GUI thread (bounded by a shared read budget), import/export shows a wait cursor but no progress dialog, and the app/UI layer still has thinner test coverage than `src/core`.
@@ -124,6 +124,7 @@ Everything below shipped; kept for the record as single lines.
 * ~~**Restore flow**: `Restore…` in Storage settings lists the backups in the folder (date + size, newest first), lets the user pick one and apply it as **Replace** (default, with a warning) or **Merge** — the import runs on the same worker thread, then the GUI models reload and a notification reports added/merged/skipped counts.~~
 * ~~**Klipper importer**: `Import Klipper…` reads Klipper's current `history3.sqlite` (KF6 schema) **read-only**, so a running Klipper is undisturbed. Text entries import through the normal content-hash dedup path in one transaction (starred items become pinned, Klipper's `added_time` is preserved), image-only rows are reported as skipped, and a file that is not a Klipper database is rejected with a reason.~~
 * ~~**Reading formats**: the export dialog can write **Markdown**, **CSV** (RFC 4180) and **HTML** beside JSON; only JSON round-trips, which the dialog states.~~
+* ~~**Capture pause + lock awareness** (Track J start): tray entry, `Meta+Shift+P` global shortcut and session-lock auto-pause, composed into one capture state and enforced by both capture paths.~~
 * ~~**Startup integrity**: one-shot background `PRAGMA quick_check` on a scratch connection after start — silent when healthy, notifying with guidance when not — plus "Check integrity" and "Rebuild search index" actions in Storage settings, and `StorageManager::rebuildSearchIndex()` as the safe repair path.~~
 * ~~**Tests**: backup write/prune/name-ordering + import-back round trip, Klipper fixture import (merge/skip, pinning, timestamps, idempotence, failure paths), and format escaping (CSV quoting/newlines, Markdown fences, HTML escaping) in `tst_exportimport`; backup-settings persistence in `tst_settings`; service + worker thread end to end (`tst_backupservice`); quick-check and index-repair (`tst_schema`).~~
 
@@ -179,7 +180,7 @@ public:
 
 ### 3.1 Capture & history
 
-* **Pause capture** — tray menu entry + global shortcut; optional auto-pause while a fullscreen app is active (presentations, games).
+* ~~**Pause capture** — tray menu entry + global shortcut (`Meta+Shift+P`) — delivered with Phase 8, plus **auto-pause while the session is locked** (`ScreenSaver.ActiveChanged` on the session bus, default on; both pauses compose and both capture paths honour them). Still open: optional auto-pause while a fullscreen app is active (presentations, games).~~
 * **Noise filter** — skip whitespace-only, single-character or very short copies (`minTextLength`, default 0).
 * **Ignore private windows** — never record from incognito/private browser windows.
 * **Clipboard ↔ selection sync** — optional X11 mode that mirrors clipboard to primary selection.
@@ -283,7 +284,7 @@ public:
 * **Global snippet hotkeys** (Track C/§3.6-adjacent): bind snippet shortcuts through `KGlobalAccel`, finishing the stored-but-unbound `shortcut` field.
 * **KRunner improvements**: ~~configurable launch command (AppImage-friendly) — delivered with Phase 6 (G3): KService/`findExecutable` launch~~; still open: richer results (app/type/source, pinned marker), extra actions (pin, copy, delete) and live preview.
 * **Palette commands**: ~~`>pin`, `>copy` — delivered with Phase 6 (G3)~~; still open: `>delete`, `>tag`, `>group`, `>export`, `>pause`, `>settings`, `>clean` with argument completion and recent-command memory.
-* **Tray/system**: configurable left-click, wheel-to-cycle recent (from §3.7), plus pause-capture and lock/screencast awareness (§3.1/§3.4).
+* **Tray/system**: configurable left-click, wheel-to-cycle recent (from §3.7); ~~pause-capture and lock awareness (§3.1)~~ ✅ delivered with Phase 8 — screencast awareness still open (§3.4).
 
 ### Track K — Workflow delight
 
@@ -320,7 +321,7 @@ Keep it iterative. Each phase ships and is usable on its own — no big-bang rew
 | **Phase 5 — Ergonomics** ◐ | Settings & QoL | §3 backlog: paste behavior ✅, list density ✅, saved searches & tags ✅; Quick paste 2.0 still open |
 | **Phase 6 — Hardening** ✅ | Correctness first | G1–G5 defects, G4 index + signal fixes, G6 LICENSE/docs — all delivered 2026-09-18 (§4) |
 | **Phase 7 — Search & scale** ✅ | Retrieval | Track H (field filters, phrases/AND-OR/NOT, guarded regex, highlight, recent searches, scope, query explain) + `--bench` budgets — delivered 2026-09-18 (§5) |
-| **Phase 8 — Portability & integration** ◐ *in progress* | Backup & platform | Track I: backups ✅, restore ✅, Klipper import ✅, startup integrity ✅; open: CopyQ `.cpq` reader, `.zip` backups, Track J (portal paste, snippet hotkeys, KRunner/palette/tray) |
+| **Phase 8 — Portability & integration** ◐ *in progress* | Backup & platform | Track I: backups/restore ✅, Klipper import ✅, Markdown/CSV/HTML export ✅, startup integrity ✅; Track J started (pause capture + lock awareness ✅); open: CopyQ `.cpq` reader, `.zip` backups, portal paste, snippet hotkeys, KRunner/palette/tray |
 | **Phase 9 — Release & delight** | Polish | Track L (CI, Flatpak, docs), Track K (multi-select, undo, paste queue, stats) |
 | **Tracks A / D** | Long-term | Semantic search (Track A), LAN sync + browser companion (Track D) |
 
@@ -395,4 +396,4 @@ QT_QPA_PLATFORM=offscreen ./build/egoboard --smoke
 
 ---
 
-*Last updated: 2026-09-18 (Phase 6 + 7 delivered; Phase 8 Track I: backups + restore, Klipper import, Markdown/CSV/HTML export, startup integrity) · Maintainer: local development · Next review: after the next Phase 8 batch — remaining long-term: semantic search (Track A), browser/LAN sync (Track D), Track I/J/K/L items above.*
+*Last updated: 2026-09-18 (Phase 6 + 7 delivered; Phase 8: Track I backups/restore/Klipper/export formats/integrity + Track J capture pause & lock awareness) · Maintainer: local development · Next review: after the next Phase 8 batch — remaining long-term: semantic search (Track A), browser/LAN sync (Track D), Track I/J/K/L items above.*

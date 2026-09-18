@@ -455,6 +455,9 @@ QWidget *SettingsDialog::buildCapturePage()
         m_captureTypeBoxes.append(box);
     }
     recordLayout->addWidget(makeHint(tr("Unticked types are skipped at capture time — they never reach the database. Existing entries are kept."), recordBox));
+    m_pauseOnLock = new QCheckBox(tr("Pause recording while the session is locked"), recordBox);
+    m_pauseOnLock->setToolTip(tr("Locking the screen (or switching users) stops capture until the session is unlocked. Manual pause is in the tray menu and on a global shortcut."));
+    recordLayout->addWidget(m_pauseOnLock);
     layout->addWidget(recordBox);
 
     auto *limitsBox = new QGroupBox(tr("Limits"), page);
@@ -1446,22 +1449,35 @@ QWidget *SettingsDialog::buildHotkeysPage()
             });
     hotkeyForm->addRow(tr("Delete last entry:"), deleteKey);
 
+    auto *pauseKey = new KKeySequenceWidget(hotkeyBox);
+    pauseKey->setKeySequence(
+        KGlobalAccel::self()->shortcut(m_ctx.hotkeys()->pauseAction()).value(0));
+    connect(pauseKey, &KKeySequenceWidget::keySequenceChanged, this,
+            [this, pauseKey](const QKeySequence &sequence) {
+                KGlobalAccel::self()->setShortcut(m_ctx.hotkeys()->pauseAction(), {sequence},
+                                                  KGlobalAccel::NoAutoloading);
+            });
+    hotkeyForm->addRow(tr("Pause/resume capture:"), pauseKey);
+
     auto *paletteKey = new QLabel(QStringLiteral("Ctrl+K"), hotkeyBox);
     paletteKey->setTextInteractionFlags(Qt::TextSelectableByMouse);
     paletteKey->setStyleSheet(QStringLiteral("font-family: monospace; background: palette(midlight); padding: 2px 6px; border-radius: 4px;"));
     hotkeyForm->addRow(tr("Command palette (in-app):"), paletteKey);
 
-    auto *resetKeys = new QPushButton(tr("Reset to defaults (Meta+V quick paste / Meta+Shift+V window / Meta+Shift+D)"), hotkeyBox);
-    connect(resetKeys, &QPushButton::clicked, this, [this, toggleKey, quickKey, deleteKey] {
+    auto *resetKeys = new QPushButton(tr("Reset to defaults (Meta+V quick paste / Meta+Shift+V window / Meta+Shift+D / Meta+Shift+P pause)"), hotkeyBox);
+    connect(resetKeys, &QPushButton::clicked, this, [this, toggleKey, quickKey, deleteKey, pauseKey] {
         KGlobalAccel::self()->setShortcut(m_ctx.hotkeys()->toggleAction(),
                                           HotkeyManager::defaultToggleShortcut());
         KGlobalAccel::self()->setShortcut(m_ctx.hotkeys()->quickPasteAction(),
                                           HotkeyManager::defaultQuickPasteShortcut());
         KGlobalAccel::self()->setShortcut(m_ctx.hotkeys()->deleteLastAction(),
                                           HotkeyManager::defaultDeleteLastShortcut());
+        KGlobalAccel::self()->setShortcut(m_ctx.hotkeys()->pauseAction(),
+                                          HotkeyManager::defaultPauseShortcut());
         toggleKey->setKeySequence(HotkeyManager::defaultToggleShortcut().value(0));
         quickKey->setKeySequence(HotkeyManager::defaultQuickPasteShortcut().value(0));
         deleteKey->setKeySequence(HotkeyManager::defaultDeleteLastShortcut().value(0));
+        pauseKey->setKeySequence(HotkeyManager::defaultPauseShortcut().value(0));
     });
     hotkeyForm->addRow(QString(), resetKeys);
     auto *hotkeyHint = new QLabel(tr("Shortcuts are registered with KWin via KGlobalAccel. They work even when Egoboard is hidden. The palette (Ctrl+K) is local to the window and needs no registration."), hotkeyBox);
@@ -1804,6 +1820,7 @@ void SettingsDialog::load()
     m_startVisible->setChecked(m_ctx.settings()->startVisible());
     m_hideOnFocusOut->setChecked(m_ctx.settings()->hideOnFocusOut());
     m_primarySelection->setChecked(m_ctx.settings()->monitorPrimarySelection());
+    if (m_pauseOnLock) m_pauseOnLock->setChecked(m_ctx.settings()->pauseOnLock());
     m_quickPasteCount->setValue(m_ctx.settings()->quickPasteCount());
     m_autostart->setChecked(m_ctx.settings()->autostartEnabled());
     if (m_autostartCommand) {
@@ -1941,6 +1958,7 @@ void SettingsDialog::save()
     m_ctx.settings()->setStartVisible(m_startVisible->isChecked());
     m_ctx.settings()->setHideOnFocusOut(m_hideOnFocusOut->isChecked());
     m_ctx.settings()->setMonitorPrimarySelection(m_primarySelection->isChecked());
+    if (m_pauseOnLock) m_ctx.settings()->setPauseOnLock(m_pauseOnLock->isChecked());
     m_ctx.settings()->setQuickPasteCount(m_quickPasteCount->value());
     m_ctx.settings()->setAutostartEnabled(m_autostart->isChecked());
     // Same order as buildCapturePage(): Text / RichText / Image / Files.

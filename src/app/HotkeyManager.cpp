@@ -20,6 +20,16 @@ QList<QKeySequence> HotkeyManager::defaultDeleteLastShortcut()
     return {QKeySequence(QStringLiteral("Meta+Shift+D"))};
 }
 
+QList<QKeySequence> HotkeyManager::defaultPauseShortcut()
+{
+    return {QKeySequence(QStringLiteral("Meta+Shift+P"))};
+}
+
+void HotkeyManager::setPaused(bool paused)
+{
+    m_pause->setChecked(paused); // setChecked does not emit triggered()
+}
+
 HotkeyManager::HotkeyManager(QObject *parent)
     : QObject(parent)
 {
@@ -43,4 +53,12 @@ HotkeyManager::HotkeyManager(QObject *parent)
     KGlobalAccel::self()->setDefaultShortcut(m_deleteLast, defaultDeleteLastShortcut());
     KGlobalAccel::self()->setShortcut(m_deleteLast, defaultDeleteLastShortcut());
     connect(m_deleteLast, &QAction::triggered, this, &HotkeyManager::deleteLastRequested);
+
+    m_pause = collection->addAction(QStringLiteral("pausecapture"));
+    m_pause->setText(tr("Pause/Resume Clipboard Capture"));
+    m_pause->setCheckable(true);
+    KGlobalAccel::self()->setDefaultShortcut(m_pause, defaultPauseShortcut());
+    KGlobalAccel::self()->setShortcut(m_pause, defaultPauseShortcut());
+    connect(m_pause, &QAction::triggered, this,
+            [this](bool checked) { emit pauseToggleRequested(checked); });
 }

@@ -49,6 +49,10 @@ public:
     // Shared by both capture paths (QClipboard watcher and wlr-data-control).
     bool captureTypeEnabled(ContentType type) const;
 
+    // Pause recording while the session is locked (default on).
+    bool pauseOnLock() const;
+    void setPauseOnLock(bool pause);
+
     // General
     bool startVisible() const;
     void setStartVisible(bool visible);

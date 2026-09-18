@@ -62,6 +62,16 @@ TrayController::TrayController(StorageManager *storage, QObject *parent)
     }
 }
 
+void TrayController::setPaused(bool paused)
+{
+    m_paused = paused;
+    if (m_pauseAction) {
+        // State is set here; the toggled() signal is for user clicks only.
+        const QSignalBlocker blocker(m_pauseAction);
+        m_pauseAction->setChecked(paused);
+    }
+}
+
 void TrayController::rebuildMenu()
 {
     // Rebuild the whole menu on aboutToShow (the DBusMenu host asks for the
@@ -90,6 +100,19 @@ void TrayController::rebuildMenu()
 
     QAction *quick = m_menu->addAction(tr("Quick Paste…"));
     connect(quick, &QAction::triggered, this, &TrayController::quickPasteRequested);
+
+    m_pauseAction = m_menu->addAction(tr("Pause capture"));
+    m_pauseAction->setCheckable(true);
+    {
+        const QSignalBlocker blocker(m_pauseAction); // rebuilding must not re-toggle
+        m_pauseAction->setChecked(m_paused);
+    }
+    m_pauseAction->setToolTip(tr("Stops recording new clipboard entries until resumed. "
+                                 "Also pinned to a global shortcut."));
+    connect(m_pauseAction, &QAction::toggled, this, [this](bool paused) {
+        m_paused = paused;
+        emit pauseToggled(paused);
+    });
 
     m_menu->addSeparator();
     QAction *settings = m_menu->addAction(QIcon::fromTheme(QStringLiteral("configure")),

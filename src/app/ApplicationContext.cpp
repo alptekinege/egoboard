@@ -35,6 +35,7 @@
 #include <QCryptographicHash>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDBusConnection>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -355,6 +356,14 @@ void ApplicationContext::start()
             });
     m_backup->start();
 
+    // Capture pause: tray entry, global shortcut and (optionally) the session
+    // lock all funnel into one state.
+    connect(m_tray, &TrayController::pauseToggled, this,
+            [this](bool paused) { setCapturePaused(paused); });
+    connect(m_hotkeys, &HotkeyManager::pauseToggleRequested, this,
+            [this](bool paused) { setCapturePaused(paused); });
+    watchSessionLock();
+
     scheduleVacuumChecks();
     scheduleIntegrityCheck();
 
@@ -557,6 +566,56 @@ void ApplicationContext::scheduleIntegrityCheck()
                 QStringLiteral("security-low"), KNotification::CloseOnTimeout);
         });
     });
+}
+
+void ApplicationContext::setCapturePaused(bool paused, bool fromLock)
+{
+    // Two independent reasons to pause: the user asked for it, or the session
+    // is locked. Capture stays off while either applies.
+    if (fromLock)
+        m_lockPause = paused;
+    else
+        m_manualPause = paused;
+    const bool effective = m_manualPause || m_lockPause;
+    const bool changed = effective != m_capturePaused;
+    m_capturePaused = effective;
+
+    if (m_watcher)
+        m_watcher->setPaused(effective);
+    if (m_dataControl)
+        m_dataControl->setPaused(effective);
+    if (m_tray)
+        m_tray->setPaused(effective);
+    if (m_hotkeys)
+        m_hotkeys->setPaused(effective);
+
+    if (changed && m_fullGui) {
+        KNotification::event(effective ? QStringLiteral("capturePaused")
+                                       : QStringLiteral("captureResumed"),
+                             effective ? QObject::tr("Clipboard capture paused")
+                                       : QObject::tr("Clipboard capture resumed"),
+                             fromLock ? (effective
+                                             ? QObject::tr("The session is locked.")
+                                             : QObject::tr("The session was unlocked."))
+                                      : QObject::tr("Toggle it again with the tray icon or the "
+                                                    "global shortcut."),
+                             QStringLiteral("edit-paste"), KNotification::CloseOnTimeout);
+    }
+}
+
+void ApplicationContext::watchSessionLock()
+{
+    if (!m_settings->pauseOnLock())
+        return;
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    if (!bus.isConnected())
+        return;
+    // KDE's screen locker (and the freedesktop interface generally) announces
+    // lock state on the session bus; a missing service simply means no lock
+    // awareness and the connect does nothing.
+    bus.connect(QStringLiteral("org.freedesktop.ScreenSaver"), QStringLiteral("/ScreenSaver"),
+                QStringLiteral("org.freedesktop.ScreenSaver"), QStringLiteral("ActiveChanged"),
+                this, SLOT(onSessionLockChanged(bool)));
 }
 
 int ApplicationContext::benchmark(int entryCount)

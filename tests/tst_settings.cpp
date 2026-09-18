@@ -40,6 +40,7 @@ private slots:
     void autostartCommandCanPointAtAnAppImage();
     void persistsAcrossInstances();
     void searchScopeAndRecentsPersist();
+    void pauseOnLockSettingPersists();
     void backupSettingsPersist();
     void configMigrationsAreForwardOnly();
 
@@ -625,6 +626,19 @@ void TestSettings::searchScopeAndRecentsPersist()
         settings.setSearchScope(99);
         QCOMPARE(settings.searchScope(), 0);
     }
+}
+
+void TestSettings::pauseOnLockSettingPersists()
+{
+    {
+        SettingsManager settings;
+        QCOMPARE(settings.pauseOnLock(), true); // on by default
+        settings.setPauseOnLock(false);
+    }
+    SettingsManager loaded;
+    QCOMPARE(loaded.pauseOnLock(), false);
+    loaded.setPauseOnLock(true);
+    QCOMPARE(loaded.pauseOnLock(), true);
 }
 
 void TestSettings::backupSettingsPersist()

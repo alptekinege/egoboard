@@ -26,6 +26,7 @@ private slots:
     void clipboardChangeDoesNotProcessSynchronously();
     void suppressesOwnClipboardWrites();
     void ignoresPrimarySelectionWhenDisabled();
+    void pausedWatcherSkipsCapturesUntilResumed();
 
 private:
     class Tracker final : public IActiveWindowTracker
@@ -263,6 +264,36 @@ void TestClipboardWatcher::ignoresPrimarySelectionWhenDisabled()
                                       Q_ARG(QClipboard::Mode, QClipboard::Selection)));
     QTest::qWait(200);
     QCOMPARE(capturedSpy.count(), 0);
+}
+
+void TestClipboardWatcher::pausedWatcherSkipsCapturesUntilResumed()
+{
+    SettingsManager settings;
+    settings.setSensitiveMode(SettingsManager::SensitiveMode::Off);
+    settings.setIgnoredSourceApps({});
+    Tracker tracker;
+    ClipboardWatcher watcher(QGuiApplication::clipboard(), &settings, &tracker);
+    QSignalSpy capturedSpy(&watcher, &ClipboardWatcher::captured);
+
+    // Paused: copies are ignored entirely (no record, no signal).
+    watcher.setPaused(true);
+    QVERIFY(watcher.isPaused());
+    setClipboardText(watcher, QStringLiteral("while paused"));
+    QCOMPARE(capturedSpy.count(), 0);
+    QCOMPARE(capturedWithText(capturedSpy, QStringLiteral("while paused")), -1);
+
+    // Resuming captures again, including content copied while paused as soon as
+    // something new arrives.
+    watcher.setPaused(false);
+    QVERIFY(!watcher.isPaused());
+    setClipboardText(watcher, QStringLiteral("after resume"));
+    QCOMPARE(capturedWithText(capturedSpy, QStringLiteral("after resume")), 0);
+    QCOMPARE(capturedSpy.count(), 1);
+
+    // Pausing after a capture does not "un-capture" it.
+    watcher.setPaused(true);
+    setClipboardText(watcher, QStringLiteral("paused again"));
+    QCOMPARE(capturedSpy.count(), 1);
 }
 
 QTEST_MAIN(TestClipboardWatcher)

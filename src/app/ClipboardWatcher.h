@@ -22,6 +22,11 @@ public:
     void start();
     void setDebounceInterval(int ms) { m_debounce.setInterval(qBound(50, ms, 5000)); }
 
+    // Paused capture: clipboard changes are ignored until resumed (manual pause
+    // in the tray/hotkey, or the session being locked).
+    void setPaused(bool paused) { m_paused = paused; }
+    bool isPaused() const { return m_paused; }
+
     // Marks one upcoming clipboard write as egoboard's own (paste-back), so
     // the change event it causes is not recorded as a new history entry.
     // A token is consumed by the next change event, bounded by a short grace
@@ -48,4 +53,5 @@ private:
     QClipboard::Mode m_pendingMode = QClipboard::Clipboard;
     int m_pendingSelfSets = 0;
     qint64 m_selfSetDeadlineMs = 0;
+    bool m_paused = false;
 };

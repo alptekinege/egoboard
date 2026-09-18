@@ -31,6 +31,10 @@ public:
     void stop();
     void suppressOwnSets();
 
+    // Paused capture: new selections are ignored until resumed.
+    void setPaused(bool paused) { m_paused = paused; }
+    bool isPaused() const { return m_paused; }
+
 signals:
     void captured(const ClipboardRecord &record);
     void excludedSensitive(const QString &reason);
@@ -67,6 +71,7 @@ private:
 
     qint64 m_suppressUntilMs = 0;
     bool m_started = false;
+    bool m_paused = false;
     friend class Device;
     friend class Offer;
 };
