@@ -5,8 +5,10 @@
 #include "SnippetManager.h"
 #include "StorageManager.h"
 
+#include <QCryptographicHash>
 #include <QFile>
 #include <QRandomGenerator>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 
 class TestExportImport : public QObject
@@ -28,6 +30,7 @@ private slots:
     void rejectsMalformedImportFiles();
     void reportsExportWriteErrors();
     void writesAndPrunesAutomaticBackups();
+    void importsKlipperHistory();
 
 private:
     void seed(StorageManager *storage, BookmarkManager *bookmarks);
@@ -424,6 +427,88 @@ void TestExportImport::writesAndPrunesAutomaticBackups()
     const auto noFolder = m_io->writeBackup(QString(), 3);
     QVERIFY(!noFolder.ok);
     QVERIFY(!noFolder.error.isEmpty());
+}
+
+void TestExportImport::importsKlipperHistory()
+{
+    // Build a database shaped like Klipper's history3.sqlite (KF6 schema).
+    const QString klipperPath = m_dir.filePath(QStringLiteral("history3.sqlite"));
+    const QString connectionName = QStringLiteral("klipper-fixture");
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+        db.setDatabaseName(klipperPath);
+        QVERIFY(db.open());
+        QSqlQuery query(db);
+        QVERIFY(query.exec(QStringLiteral(
+            "CREATE TABLE main (uuid char(40) PRIMARY KEY, added_time REAL NOT NULL,"
+            " last_used_time REAL, mimetypes TEXT NOT NULL, text NTEXT, starred BOOLEAN)")));
+        QVERIFY(query.exec(QStringLiteral("CREATE TABLE version (db_version INT NOT NULL)")));
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO version (db_version) VALUES (3)")));
+        QVERIFY(query.exec(QStringLiteral(
+            "INSERT INTO main (uuid, added_time, last_used_time, mimetypes, text, starred)"
+            " VALUES ('a', 1500000000.5, 1500000100.0, 'text/plain', 'first klipper entry', 0)")));
+        QVERIFY(query.exec(QStringLiteral(
+            "INSERT INTO main (uuid, added_time, last_used_time, mimetypes, text, starred)"
+            " VALUES ('b', 1500000500.0, 1500000600.0, 'text/plain', 'starred klipper entry', 1)")));
+        // Image items have no text and are skipped.
+        QVERIFY(query.exec(QStringLiteral(
+            "INSERT INTO main (uuid, added_time, last_used_time, mimetypes, text, starred)"
+            " VALUES ('c', 1500000700.0, 1500000700.0, 'image/png', NULL, 0)")));
+        db.close();
+        db = QSqlDatabase();
+        QSqlDatabase::removeDatabase(connectionName);
+    }
+
+    // An entry that also exists in the local history must merge, not duplicate.
+    // The importer hashes tag + NUL + payload (same as live captures do).
+    ClipboardRecord existing;
+    existing.type = ContentType::Text;
+    existing.textData = QStringLiteral("first klipper entry");
+    existing.preview = existing.textData;
+    existing.timestamp = 1000;
+    existing.hash = QCryptographicHash::hash(QByteArrayLiteral("text\0first klipper entry"),
+                                             QCryptographicHash::Sha256)
+                        .toHex();
+    QVERIFY(m_storage->insertOrUpdate(existing) > 0);
+
+    const auto result = m_io->importKlipperHistory(klipperPath);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.entriesImported, 1); // the starred one
+    QCOMPARE(result.entriesMerged, 1); // the one already present
+    QCOMPARE(result.entriesSkipped, 1); // the imageless row
+
+    const auto rows = m_storage->fetchAll(FilterSpec{});
+    QCOMPARE(rows.size(), 2);
+
+    // Starred becomes pinned, Klipper's copy time is preserved (seconds → ms).
+    FilterSpec pinned;
+    pinned.pinnedOnly = true;
+    const auto pinnedRows = m_storage->fetchAll(pinned);
+    QCOMPARE(pinnedRows.size(), 1);
+    QCOMPARE(pinnedRows.first().preview, QStringLiteral("starred klipper entry"));
+    QCOMPARE(pinnedRows.first().timestamp, qint64(1500000500) * 1000);
+    QCOMPARE(pinnedRows.first().sourceApp, QStringLiteral("klipper"));
+
+    // Importing again changes nothing (content-hash dedup) and reports merges.
+    const auto again = m_io->importKlipperHistory(klipperPath);
+    QVERIFY2(again.ok, qPrintable(again.error));
+    QCOMPARE(again.entriesImported, 0);
+    QCOMPARE(m_storage->fetchAll(FilterSpec{}).size(), 2);
+
+    // A file that is not a Klipper database is rejected with a reason.
+    const QString junk = m_dir.filePath(QStringLiteral("not-klipper.sqlite"));
+    {
+        QFile file(junk);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("not a database");
+    }
+    const auto bad = m_io->importKlipperHistory(junk);
+    QVERIFY(!bad.ok);
+    QVERIFY(!bad.error.isEmpty());
+
+    const auto missing = m_io->importKlipperHistory(m_dir.filePath(QStringLiteral("absent.sqlite")));
+    QVERIFY(!missing.ok);
+    QVERIFY(!missing.error.isEmpty());
 }
 
 void TestExportImport::rejectsMalformedImportFiles()

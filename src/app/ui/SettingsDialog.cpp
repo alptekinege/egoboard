@@ -1169,6 +1169,35 @@ QWidget *SettingsDialog::buildStoragePage()
     auto *importBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-open")), tr("Import JSON…"), maintenanceBox);
     ioRow->addWidget(exportBtn);
     ioRow->addWidget(importBtn);
+    auto *importKlipperBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-paste")),
+                                             tr("Import Klipper…"), maintenanceBox);
+    importKlipperBtn->setToolTip(tr("Imports the text entries of Klipper's history3.sqlite. "
+                                    "Starred items become pinned; duplicates merge."));
+    connect(importKlipperBtn, &QPushButton::clicked, this, [this] {
+        const QString defaultPath = ExportImportManager::defaultKlipperPath();
+        const QString start = QFileInfo::exists(defaultPath)
+            ? defaultPath
+            : QFileInfo(defaultPath).absolutePath();
+        const QString path = QFileDialog::getOpenFileName(
+            this, tr("Import Klipper history"), start,
+            tr("Klipper history (history3.sqlite *.sqlite);;All files (*)"));
+        if (path.isEmpty())
+            return;
+        QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+        const auto result = m_ctx.io()->importKlipperHistory(path);
+        QGuiApplication::restoreOverrideCursor();
+        if (!result.ok) {
+            QMessageBox::warning(this, tr("Klipper import"), result.error);
+            return;
+        }
+        QMessageBox::information(this, tr("Klipper import"),
+                                 tr("Imported %1, merged %2, skipped %3 entries.")
+                                     .arg(result.entriesImported)
+                                     .arg(result.entriesMerged)
+                                     .arg(result.entriesSkipped));
+        refreshDiagnostics();
+    });
+    ioRow->addWidget(importKlipperBtn);
     ioRow->addStretch(1);
     maintenanceLayout->addLayout(ioRow);
     connect(exportBtn, &QPushButton::clicked, this, [this]{

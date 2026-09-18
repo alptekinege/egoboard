@@ -51,6 +51,15 @@ public:
     bool exportToFile(const ExportRequest &request, QString *error = nullptr);
     ImportResult importFromFile(const QString &path, ImportMode mode);
 
+    // Imports the text entries of a Klipper database (`history3.sqlite`, the
+    // current Klipper format). Starred items become pinned and Klipper's copy
+    // times are preserved; duplicates merge through the normal content hash.
+    // The file is opened read-only, so a running Klipper is not disturbed.
+    ImportResult importKlipperHistory(const QString &databasePath);
+
+    // Where Klipper keeps its history on this system (may not exist).
+    static QString defaultKlipperPath();
+
     // --- automatic backups ---------------------------------------------------
     struct BackupResult {
         bool ok = false;

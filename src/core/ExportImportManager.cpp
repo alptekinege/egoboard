@@ -1,5 +1,8 @@
 #include "ExportImportManager.h"
 
+#include "ContentType.h"
+
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -9,14 +12,25 @@
 #include <QJsonObject>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QStandardPaths>
 
 #include <algorithm>
+#include <atomic>
 
 namespace {
 
 // Automatic backups: egoboard-backup-20260918-034512.json (name order is
 // chronological, which is what pruning relies on).
 constexpr auto kBackupPrefix = "egoboard-backup-";
+
+// One list line for an imported entry, matching the capture previews.
+QString singleLinePreview(const QString &text, int maxLength = 180)
+{
+    QString line = text.simplified();
+    if (line.size() > maxLength)
+        line = line.left(maxLength - 1) + QChar(0x2026);
+    return line;
+}
 
 QStringList backupFiles(const QString &folder)
 {
@@ -526,6 +540,96 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode)
         m_storage->endBulk(true);
 
     emit m_storage->storageReset(); // one reload for the whole import
+    result.ok = true;
+    return result;
+}
+
+QString ExportImportManager::defaultKlipperPath()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+        + QStringLiteral("/klipper/history3.sqlite");
+}
+
+ExportImportManager::ImportResult ExportImportManager::importKlipperHistory(const QString &databasePath)
+{
+    ImportResult result;
+    if (!QFile::exists(databasePath)) {
+        result.error = tr("Klipper history not found: %1").arg(databasePath);
+        return result;
+    }
+
+    // Read-only: Klipper may be running and holding its own connection.
+    static std::atomic_int connectionCounter{0};
+    const QString connectionName =
+        QStringLiteral("egoboard-klipper-%1").arg(connectionCounter.fetch_add(1));
+    QVector<ClipboardRecord> records;
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+        db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
+        db.setDatabaseName(databasePath);
+        if (!db.open()) {
+            result.error = tr("Cannot open %1: %2").arg(databasePath, db.lastError().text());
+        } else {
+            // The KF6 Klipper schema: main(uuid, added_time, last_used_time,
+            // mimetypes, text, starred). Anything else is not a Klipper file.
+            QSqlQuery query(db);
+            if (!query.exec(QStringLiteral(
+                    "SELECT text, added_time, last_used_time, starred FROM main"))) {
+                result.error = tr("%1 is not a Klipper history database (%2)")
+                                   .arg(databasePath, query.lastError().text());
+            } else {
+                while (query.next()) {
+                    const QString text = query.value(0).toString();
+                    if (text.trimmed().isEmpty()) {
+                        ++result.entriesSkipped; // image items carry no text
+                        continue;
+                    }
+                    double added = query.value(1).toDouble();
+                    const double used = query.value(2).toDouble();
+                    if (added <= 0)
+                        added = used;
+
+                    ClipboardRecord record;
+                    record.type = ContentType::Text;
+                    record.textData = text;
+                    record.preview = singleLinePreview(text);
+                    record.sizeBytes = text.toUtf8().size();
+                    record.timestamp = qMax<qint64>(1, qint64(added * 1000.0));
+                    record.sourceApp = QStringLiteral("klipper");
+                    record.pinned = query.value(3).toBool();
+                    record.hash = QCryptographicHash::hash(
+                                      QByteArray(contentTypeTag(record.type)) + '\0'
+                                          + text.toUtf8(),
+                                      QCryptographicHash::Sha256)
+                                      .toHex();
+                    records.append(record);
+                }
+            }
+            db.close();
+        }
+        db = QSqlDatabase(); // release the handle before removing the connection
+    }
+    QSqlDatabase::removeDatabase(connectionName);
+    if (!result.error.isEmpty())
+        return result;
+
+    // One transaction and one refresh for the whole import.
+    const bool bulk = m_storage->beginBulk();
+    for (const ClipboardRecord &record : records) {
+        bool updatedExisting = false;
+        if (m_storage->insertOrUpdate(record, &updatedExisting) == 0) {
+            ++result.entriesSkipped;
+            continue;
+        }
+        if (updatedExisting)
+            ++result.entriesMerged;
+        else
+            ++result.entriesImported;
+    }
+    if (bulk)
+        m_storage->endBulk(true);
+
+    emit m_storage->storageReset();
     result.ok = true;
     return result;
 }
