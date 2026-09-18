@@ -8,6 +8,7 @@
 
 #include <QAbstractListModel>
 #include <QApplication>
+#include <QSet>
 #include <QDateTime>
 #include <QKeyEvent>
 #include <QLabel>
@@ -30,6 +31,8 @@ public:
         m_query = query;
         m_transforms.clear();
         m_snippets.clear();
+        m_commands.clear();
+        m_arguments.clear();
         endResetModel();
     }
     void setTransforms(const QVector<TransformItem> &items, const QString &query) {
@@ -39,6 +42,8 @@ public:
         m_query = query;
         m_recs.clear();
         m_snippets.clear();
+        m_commands.clear();
+        m_arguments.clear();
         endResetModel();
     }
     void setSnippets(const QVector<SnippetItem> &items, const QString &query) {
@@ -48,12 +53,38 @@ public:
         m_query = query;
         m_recs.clear();
         m_transforms.clear();
+        m_commands.clear();
+        m_arguments.clear();
+        endResetModel();
+    }
+    void setCommands(const QVector<CommandItem> &items, const QString &query) {
+        beginResetModel();
+        m_mode = Mode::Commands;
+        m_commands = items;
+        m_query = query;
+        m_recs.clear();
+        m_transforms.clear();
+        m_snippets.clear();
+        m_arguments.clear();
+        endResetModel();
+    }
+    void setArguments(const QStringList &items, const QString &query) {
+        beginResetModel();
+        m_mode = Mode::Argument;
+        m_arguments = items;
+        m_query = query;
+        m_recs.clear();
+        m_transforms.clear();
+        m_snippets.clear();
+        m_commands.clear();
         endResetModel();
     }
     int rowCount(const QModelIndex &p = {}) const override {
         if (p.isValid()) return 0;
         if (m_mode == Mode::Transforms) return m_transforms.size();
         if (m_mode == Mode::Snippets) return m_snippets.size();
+        if (m_mode == Mode::Commands) return m_commands.size();
+        if (m_mode == Mode::Argument) return m_arguments.size();
         return m_recs.size();
     }
     QVariant data(const QModelIndex &idx, int role) const override {
@@ -74,6 +105,21 @@ public:
             if (role == Qt::UserRole + 1) return s.name;
             return {};
         }
+        if (m_mode == Mode::Commands) {
+            if (idx.row() >= m_commands.size()) return {};
+            const auto &c = m_commands.at(idx.row());
+            if (role == Qt::DisplayRole) return QStringLiteral("%1 — %2").arg(c.usage, c.description);
+            if (role == Qt::UserRole) return c.id;
+            if (role == Qt::UserRole + 1) return c.usage;
+            return {};
+        }
+        if (m_mode == Mode::Argument) {
+            if (idx.row() >= m_arguments.size()) return {};
+            const QString value = m_arguments.at(idx.row());
+            if (role == Qt::DisplayRole) return value;
+            if (role == Qt::UserRole) return value;
+            return {};
+        }
         if (idx.row() >= m_recs.size()) return {};
         const auto &r = m_recs.at(idx.row());
         if (role == Qt::DisplayRole) return r.preview.isEmpty() ? QStringLiteral("—") : r.preview;
@@ -88,6 +134,8 @@ private:
     QVector<ClipboardRecord> m_recs;
     QVector<TransformItem> m_transforms;
     QVector<SnippetItem> m_snippets;
+    QVector<CommandItem> m_commands;
+    QStringList m_arguments;
     QString m_query;
 };
 
@@ -105,7 +153,7 @@ CommandPalette::CommandPalette(IClipboardStorage *storage, QWidget *parent)
     layout->setSpacing(8);
 
     m_input = new QLineEdit(this);
-    m_input->setPlaceholderText(tr("Type to search history…  •  >transform  >snippet  •  >pin etc."));
+    m_input->setPlaceholderText(tr("Type to search history…  •  > for commands (>tag, >export, >pause…)"));
     m_input->setClearButtonEnabled(true);
     m_input->setAccessibleName(tr("Command palette search"));
     QFont f = m_input->font();
@@ -128,6 +176,7 @@ CommandPalette::CommandPalette(IClipboardStorage *storage, QWidget *parent)
     layout->addWidget(m_hint);
 
     connect(m_input, &QLineEdit::textChanged, this, &CommandPalette::onTextChanged);
+    m_input->installEventFilter(this); // Tab completes the highlighted argument
     // activated() only. clicked() must NOT also be connected: on KDE/Plasma
     // (activate-on-single-click) one mouse click emits BOTH, double-executing
     // the entry (double clipboard set + double paste).
@@ -168,65 +217,74 @@ void CommandPalette::refreshResults(const QString &query)
     if (!m_storage) return;
 
     const QString trimmed = query.trimmed();
-    const bool isCommand = trimmed.startsWith(QLatin1Char('>'));
+    const PaletteCommands::Parsed parsed = PaletteCommands::parse(trimmed);
 
-    if (isCommand) {
-        QString after = trimmed.mid(1).trimmed();
-        // Split command + args
-        QString cmd;
-        QString args;
-        const int sp = after.indexOf(QLatin1Char(' '));
-        if (sp >= 0) {
-            cmd = after.left(sp).trimmed().toLower();
-            args = after.mid(sp + 1).trimmed();
-        } else {
-            cmd = after.toLower();
-            args = {};
-        }
+    if (parsed.hasPrefix) {
+        const PaletteCommands::Command *command = parsed.command;
 
-        // Normalize aliases
-        const bool isTransform = (cmd == QStringLiteral("transform") || cmd == QStringLiteral("t") || cmd == QStringLiteral("tr") || cmd.startsWith(QStringLiteral("transform")) || cmd == QStringLiteral("xform"));
-        const bool isSnippet = (cmd == QStringLiteral("snippet") || cmd == QStringLiteral("s") || cmd == QStringLiteral("snip") || cmd.startsWith(QStringLiteral("snippet")));
-
-        if (isTransform || cmd.isEmpty()) {
-            // If bare ">" with no command, show hint but also treat as transform? We show history hint.
-            if (cmd.isEmpty() && args.isEmpty()) {
-                // Show all transforms as preview? Instead show history with hint
-                // Fall through to history hint handling below — but we set mode to Transforms with no filter still useful
-                // We'll show transforms when cmd empty? Better show hint only.
-                // For now if user typed just ">", show transform+snippet hint in updateHint, but keep history results
-            }
-            if (isTransform) {
-                m_mode = Mode::Transforms;
-                QVector<TransformItem> items;
-                const QString filter = args.toLower();
-                for (const auto &d : TransformEngine::allDescriptors()) {
-                    if (!filter.isEmpty() && !d.label.toLower().contains(filter) && !d.name.contains(filter) && !d.description.toLower().contains(filter))
+        // Unknown (or still ambiguous) word: offer the commands that match, so
+        // ">de" leads to ">delete" instead of an empty list.
+        if (!command) {
+            m_mode = Mode::Commands;
+            m_pending = nullptr;
+            m_commandItems.clear();
+            if (parsed.ambiguous) {
+                for (const PaletteCommands::Command &candidate : PaletteCommands::suggest(parsed.word))
+                    m_commandItems.append({candidate.id, candidate.usage, candidate.description});
+            } else if (parsed.word.isEmpty()) {
+                // Bare ">" lists what was used before, then the rest.
+                QSet<QString> listed;
+                for (const QString &id : m_recentCommands) {
+                    const PaletteCommands::Command *recent = PaletteCommands::find(id);
+                    if (!recent || listed.contains(recent->id))
                         continue;
-                    items.append({d.name, d.label, d.description});
+                    listed.insert(recent->id);
+                    m_commandItems.append({recent->id, recent->usage, recent->description});
                 }
-                if (m_scripts) {
-                    // reload to pick up new files
-                    m_scripts->reload();
-                    for (const auto &sa : m_scripts->actions()) {
-                        if (!filter.isEmpty() && !sa.label.toLower().contains(filter) && !sa.id.toLower().contains(filter))
-                            continue;
-                        items.append({sa.id, QStringLiteral("[JS] %1").arg(sa.label), sa.filePath});
-                    }
+                for (const PaletteCommands::Command &candidate : PaletteCommands::all()) {
+                    if (listed.contains(candidate.id))
+                        continue;
+                    m_commandItems.append({candidate.id, candidate.usage, candidate.description});
                 }
-                // Also if filter empty show all; if no matches show empty
-                m_transformItems = items;
-                m_model->setTransforms(m_transformItems, trimmed);
-                if (!m_transformItems.isEmpty())
-                    m_list->setCurrentIndex(m_model->index(0, 0));
-                updateHint();
-                return;
             }
+            m_model->setCommands(m_commandItems, trimmed);
+            if (!m_commandItems.isEmpty())
+                m_list->setCurrentIndex(m_model->index(0, 0));
+            updateHint();
+            return;
         }
-        if (isSnippet) {
+
+        if (command->id == QLatin1String("transform")) {
+            m_mode = Mode::Transforms;
+            m_pending = nullptr;
+            QVector<TransformItem> items;
+            const QString filter = parsed.argument.toLower();
+            for (const auto &d : TransformEngine::allDescriptors()) {
+                if (!filter.isEmpty() && !d.label.toLower().contains(filter) && !d.name.contains(filter) && !d.description.toLower().contains(filter))
+                    continue;
+                items.append({d.name, d.label, d.description});
+            }
+            if (m_scripts) {
+                // reload to pick up new files
+                m_scripts->reload();
+                for (const auto &sa : m_scripts->actions()) {
+                    if (!filter.isEmpty() && !sa.label.toLower().contains(filter) && !sa.id.toLower().contains(filter))
+                        continue;
+                    items.append({sa.id, QStringLiteral("[JS] %1").arg(sa.label), sa.filePath});
+                }
+            }
+            m_transformItems = items;
+            m_model->setTransforms(m_transformItems, trimmed);
+            if (!m_transformItems.isEmpty())
+                m_list->setCurrentIndex(m_model->index(0, 0));
+            updateHint();
+            return;
+        }
+        if (command->id == QLatin1String("snippet")) {
             m_mode = Mode::Snippets;
+            m_pending = nullptr;
             QVector<SnippetItem> items;
-            const QString filter = args.toLower();
+            const QString filter = parsed.argument.toLower();
             if (m_snippets) {
                 for (const auto &s : m_snippets->snippets()) {
                     if (!filter.isEmpty() && !s.name.toLower().contains(filter) && !s.templateText.toLower().contains(filter))
@@ -241,27 +299,37 @@ void CommandPalette::refreshResults(const QString &query)
             updateHint();
             return;
         }
-        // Commands that act on the entry selected in the main window.
-        const bool isCopy = (cmd == QStringLiteral("copy") || cmd == QStringLiteral("c"));
-        const bool isPin = (cmd == QStringLiteral("pin") || cmd == QStringLiteral("p"));
-        if (isCopy || isPin) {
-            m_mode = Mode::Command;
-            m_pendingCommand = isCopy ? QStringLiteral("copy") : QStringLiteral("pin");
-            m_results.clear();
-            m_model->setRecords(m_results, trimmed);
-            m_list->setCurrentIndex(QModelIndex());
+
+        if (command->takesArgument()) {
+            // Argument completion: tags and groups come from the window, the
+            // export formats are fixed.
+            m_mode = Mode::Argument;
+            m_pending = command;
+            const QStringList candidates = command->argument == PaletteCommands::Argument::Tag
+                ? m_tagCandidates
+                : command->argument == PaletteCommands::Argument::Group
+                    ? m_groupCandidates
+                    : PaletteCommands::staticCandidates(command->argument);
+            m_argumentItems =
+                PaletteCommands::completions(command->argument, candidates, parsed.argument);
+            m_model->setArguments(m_argumentItems, trimmed);
+            if (!m_argumentItems.isEmpty())
+                m_list->setCurrentIndex(m_model->index(0, 0));
             updateHint();
             return;
         }
 
-        // Unknown command — show no results, the hint lists the commands.
-        m_mode = Mode::History;
+        // Argument-less command: it acts on the entry selected in the main
+        // window, so there is nothing to list.
+        m_mode = Mode::Command;
+        m_pending = command;
         m_results.clear();
         m_model->setRecords(m_results, trimmed);
+        m_list->setCurrentIndex(QModelIndex());
         updateHint();
         return;
     }
-    m_pendingCommand.clear();
+    m_pending = nullptr;
 
     // History mode
     m_mode = Mode::History;
@@ -290,9 +358,36 @@ void CommandPalette::refreshResults(const QString &query)
 void CommandPalette::updateHint()
 {
     if (m_mode == Mode::Command) {
-        m_hint->setText(m_pendingCommand == QLatin1String("copy")
-                            ? tr("⏎ copy the entry selected in the main window to the clipboard  •  Esc close")
-                            : tr("⏎ pin/unpin the entry selected in the main window  •  Esc close"));
+        if (!m_pending) {
+            m_hint->setText(tr("Esc close"));
+            return;
+        }
+        m_hint->setText(tr("⏎ %1  •  Esc close").arg(m_pending->description));
+        return;
+    }
+    if (m_mode == Mode::Commands) {
+        if (m_commandItems.isEmpty())
+            m_hint->setText(tr("No command matches — type > to list them all"));
+        else
+            m_hint->setText(tr("%1 command(s) — ⏎ open/run  •  Esc close  •  Tab completes")
+                                .arg(m_commandItems.size()));
+        return;
+    }
+    if (m_mode == Mode::Argument) {
+        if (!m_pending) {
+            m_hint->setText(tr("Esc close"));
+            return;
+        }
+        const QString example = m_pending->argument == PaletteCommands::Argument::Tag
+            ? tr("tags")
+            : m_pending->argument == PaletteCommands::Argument::Group ? tr("groups") : tr("formats");
+        if (m_argumentItems.isEmpty())
+            m_hint->setText(tr("%1: type a name — \"%2\" is new and will be created")
+                                .arg(m_pending->usage, m_input->text().section(QLatin1Char(' '), 1).trimmed()));
+        else
+            m_hint->setText(tr("%1 %2 — Tab or ⏎ completes  •  ⏎ again runs %3")
+                                .arg(QString::number(m_argumentItems.size()), example,
+                                     m_pending->id));
         return;
     }
     if (m_mode == Mode::Transforms) {
@@ -319,14 +414,12 @@ void CommandPalette::updateHint()
         : QStringLiteral("  •  ") + details.join(QStringLiteral("  •  "));
 
     if (m_results.isEmpty()) {
-        if (m_currentQuery.trimmed().startsWith(QLatin1Char('>')))
-            m_hint->setText(tr("Commands:  >transform [filter]  >snippet [filter]  >pin  >copy  •  Esc close"));
-        else if (m_currentQuery.trimmed().isEmpty())
-            m_hint->setText(tr("Showing recent entries  •  ⏎ paste  •  Esc close  •  Type > for commands (>transform, >snippet)"));
+        if (m_currentQuery.trimmed().isEmpty())
+            m_hint->setText(tr("Showing recent entries  •  ⏎ paste  •  Esc close  •  Type > for commands (>tag, >export, >pause…)"));
         else
             m_hint->setText(tr("No matches — try fewer words, or use app: type: tag: pinned: has:ocr before:/after: and -exclude"));
     } else {
-        m_hint->setText(tr("%1 result(s)  •  ⏎ paste  •  Esc close  •  >transform / >snippet for actions")
+        m_hint->setText(tr("%1 result(s)  •  ⏎ paste  •  Esc close  •  > for commands")
                             .arg(m_results.size())
                         + detailSuffix);
     }
@@ -367,21 +460,147 @@ void CommandPalette::onActivated(const QModelIndex &index)
         emit snippetRequested(sid, 0);
         return;
     }
+    if (m_mode == Mode::Commands) {
+        const int row = index.row();
+        if (row < 0 || row >= m_commandItems.size()) return;
+        const PaletteCommands::Command *command = PaletteCommands::find(m_commandItems.at(row).id);
+        if (!command)
+            return;
+        if (command->takesArgument()) {
+            // Complete the input and let the user type/pick the argument.
+            const QString completed = QStringLiteral(">%1 ").arg(command->id);
+            m_input->setText(completed);
+            m_input->setCursorPosition(completed.size());
+            return;
+        }
+        runCommand(*command, {});
+        return;
+    }
+    if (m_mode == Mode::Argument) {
+        completeFromSelection();
+        return;
+    }
     const qint64 id = index.data(Qt::UserRole).toLongLong();
     if (id == 0) return;
     accept();
     emit pasteRequested(id);
 }
 
+bool CommandPalette::completeFromSelection()
+{
+    const QModelIndex current = m_list->currentIndex();
+    if (!current.isValid())
+        return false;
+    const QString candidate = current.data(Qt::UserRole).toString();
+    if (candidate.isEmpty())
+        return false;
+
+    if (m_mode == Mode::Commands) {
+        // Tab on a command row only completes the word; Enter runs it.
+        const QString completed = QStringLiteral(">%1 ").arg(candidate);
+        m_input->setText(completed);
+        m_input->setCursorPosition(completed.size());
+        return true;
+    }
+
+    // Replace only the argument, keeping ">command " intact.
+    const QString word = PaletteCommands::parse(m_input->text()).word;
+    const QString completed = QStringLiteral(">%1 %2").arg(word, candidate);
+    m_input->setText(completed);
+    m_input->setCursorPosition(completed.size());
+    return true;
+}
+
+void CommandPalette::runCommand(const PaletteCommands::Command &command, const QString &argument)
+{
+    accept();
+    emit commandExecuted(command.id);
+
+    if (command.id == QLatin1String("copy")) {
+        emit copyRequested(0); // 0 = the entry selected in the main window
+    } else if (command.id == QLatin1String("pin")) {
+        emit pinRequested(0);
+    } else if (command.id == QLatin1String("delete")) {
+        emit deleteRequested();
+    } else if (command.id == QLatin1String("tag")) {
+        emit tagRequested(argument);
+    } else if (command.id == QLatin1String("group")) {
+        emit groupRequested(argument);
+    } else if (command.id == QLatin1String("export")) {
+        emit exportRequested(argument);
+    } else if (command.id == QLatin1String("pause")) {
+        emit togglePauseRequested();
+    } else if (command.id == QLatin1String("settings")) {
+        emit settingsRequested();
+    } else if (command.id == QLatin1String("clean")) {
+        emit clearHistoryRequested();
+    }
+}
+
+void CommandPalette::keyPressEvent(QKeyEvent *event)
+{
+    if (event->key() == Qt::Key_Tab && (m_mode == Mode::Argument || m_mode == Mode::Commands)) {
+        if (completeFromSelection()) {
+            event->accept();
+            return;
+        }
+    }
+    QDialog::keyPressEvent(event);
+}
+
+bool CommandPalette::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_input && event->type() == QEvent::KeyPress) {
+        auto *keyEvent = static_cast<QKeyEvent *>(event);
+        if (keyEvent->key() == Qt::Key_Tab && keyEvent->modifiers() == Qt::NoModifier
+            && (m_mode == Mode::Argument || m_mode == Mode::Commands)) {
+            if (completeFromSelection())
+                return true; // consume: Tab completes, it does not move focus
+        }
+    }
+    return QDialog::eventFilter(watched, event);
+}
+
 void CommandPalette::executeCurrent()
 {
-    if (m_mode == Mode::Command && !m_pendingCommand.isEmpty()) {
-        const QString command = m_pendingCommand;
-        accept();
-        if (command == QLatin1String("copy"))
-            emit copyRequested(0); // 0 = the entry selected in the main window
-        else
-            emit pinRequested(0);
+    if (m_mode == Mode::Command && m_pending) {
+        runCommand(*m_pending, {});
+        return;
+    }
+    if (m_mode == Mode::Argument && m_pending) {
+        const QString argument = PaletteCommands::parse(m_input->text()).argument;
+        if (m_pending->argument == PaletteCommands::Argument::Format) {
+            // The formats are a closed set: run with a value that exists, prefer
+            // an exact match, then the highlighted row, then the only one left.
+            QString chosen;
+            for (const QString &candidate : m_argumentItems) {
+                if (candidate.compare(argument, Qt::CaseInsensitive) == 0) {
+                    chosen = candidate;
+                    break;
+                }
+            }
+            if (chosen.isEmpty() && m_list->currentIndex().isValid())
+                chosen = m_list->currentIndex().data(Qt::UserRole).toString();
+            if (chosen.isEmpty() && !m_argumentItems.isEmpty())
+                chosen = m_argumentItems.first();
+            if (!chosen.isEmpty())
+                runCommand(*m_pending, chosen);
+            return;
+        }
+        // Tags and groups accept new names, so a typed argument runs as-is;
+        // Enter with nothing typed completes the highlighted candidate first.
+        if (argument.isEmpty()) {
+            completeFromSelection();
+            return;
+        }
+        runCommand(*m_pending, argument);
+        return;
+    }
+    if (m_mode == Mode::Commands) {
+        const QModelIndex current = m_list->currentIndex().isValid() ? m_list->currentIndex()
+                                                                    : (m_model->rowCount() > 0 ? m_model->index(0, 0) : QModelIndex());
+        if (current.isValid())
+            onActivated(current);
         return;
     }
     const QModelIndex cur = m_list->currentIndex();

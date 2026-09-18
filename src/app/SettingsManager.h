@@ -200,6 +200,10 @@ public:
     void addRecentSearch(const QString &query); // moves an existing entry to the front
     void clearRecentSearches();
 
+    // Palette commands that were executed, most recent first (cap 10).
+    QStringList recentPaletteCommands() const;
+    void addRecentPaletteCommand(const QString &commandId);
+
     // --- automatic backups ---------------------------------------------------
     bool backupsEnabled() const;
     void setBackupsEnabled(bool enabled);

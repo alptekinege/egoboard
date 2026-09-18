@@ -40,6 +40,7 @@ private slots:
     void autostartCommandCanPointAtAnAppImage();
     void persistsAcrossInstances();
     void searchScopeAndRecentsPersist();
+    void recentPaletteCommandsPersist();
     void pauseOnLockSettingPersists();
     void backupSettingsPersist();
     void configMigrationsAreForwardOnly();
@@ -626,6 +627,30 @@ void TestSettings::searchScopeAndRecentsPersist()
         settings.setSearchScope(99);
         QCOMPARE(settings.searchScope(), 0);
     }
+}
+
+void TestSettings::recentPaletteCommandsPersist()
+{
+    {
+        SettingsManager settings;
+        QVERIFY(settings.recentPaletteCommands().isEmpty());
+        settings.addRecentPaletteCommand(QStringLiteral("tag"));
+        settings.addRecentPaletteCommand(QStringLiteral("export"));
+        settings.addRecentPaletteCommand(QStringLiteral("tag")); // moves to front
+        settings.addRecentPaletteCommand(QStringLiteral("   ")); // ignored
+        for (int i = 0; i < 12; ++i)
+            settings.addRecentPaletteCommand(QStringLiteral("cmd%1").arg(i));
+    }
+    SettingsManager loaded;
+    const QStringList recents = loaded.recentPaletteCommands();
+    QCOMPARE(recents.size(), 10); // same cap as recent searches
+    QCOMPARE(recents.first(), QStringLiteral("cmd11"));
+    QCOMPARE(recents.count(QStringLiteral("tag")), 0); // pushed out by 12 newer ones
+    QCOMPARE(loaded.recentPaletteCommands().count(QStringLiteral("cmd11")), 1);
+
+    loaded.addRecentPaletteCommand(QStringLiteral("tag"));
+    QCOMPARE(loaded.recentPaletteCommands().first(), QStringLiteral("tag"));
+    QCOMPARE(loaded.recentPaletteCommands().size(), 10);
 }
 
 void TestSettings::pauseOnLockSettingPersists()

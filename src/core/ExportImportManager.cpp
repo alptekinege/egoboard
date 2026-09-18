@@ -163,6 +163,21 @@ ExportImportManager::ExportImportManager(StorageManager *storage, BookmarkManage
 {
 }
 
+QString ExportImportManager::formatId(ExportFormat format)
+{
+    switch (format) {
+    case ExportFormat::Json:
+        return QStringLiteral("json");
+    case ExportFormat::Markdown:
+        return QStringLiteral("markdown");
+    case ExportFormat::Csv:
+        return QStringLiteral("csv");
+    case ExportFormat::Html:
+        return QStringLiteral("html");
+    }
+    return QStringLiteral("json");
+}
+
 bool ExportImportManager::exportToFile(const ExportRequest &request, QString *error)
 {
     const QVector<BookmarkGroup> allGroups = m_bookmarks->groups();

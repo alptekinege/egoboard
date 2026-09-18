@@ -46,6 +46,8 @@ public:
     Scope scope() const;
     ExportImportManager::ExportFormat format() const;
     qint64 groupId() const;
+    // Preselects a format (used by the palette's ">export markdown").
+    void setFormat(ExportImportManager::ExportFormat format);
 
 private:
     void pickPath();

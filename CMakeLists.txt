@@ -120,6 +120,7 @@ add_executable(egoboard
     src/app/ui/SettingsDialog.cpp
     src/app/ui/ExportImportDialogs.cpp
     src/app/ui/CommandPalette.cpp
+    src/app/ui/PaletteCommands.cpp
     src/app/ui/TimelineStrip.cpp
     src/app/ui/SnippetDialog.cpp
     src/app/ui/TransformChainDialog.cpp

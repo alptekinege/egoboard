@@ -37,6 +37,10 @@ public:
     };
     Q_ENUM(ExportFormat)
 
+    // Lowercase id of a format ("json", "markdown", "csv", "html") — the value
+    // the palette completes for ">export" and the one the dialog round-trips.
+    static QString formatId(ExportFormat format);
+
     struct ExportRequest {
         Scope scope = Scope::Everything;
         ExportFormat format = ExportFormat::Json;

@@ -37,6 +37,8 @@ public:
     void applySavedSearch(const FilterSpec &filter);
     void openSettings();
     void clearHistory();
+    // Palette ">export [format]": opens the export dialog, preselected.
+    void exportHistoryToFormat(const QString &format);
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;

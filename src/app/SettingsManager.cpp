@@ -845,6 +845,28 @@ void SettingsManager::clearRecentSearches()
     save();
 }
 
+QStringList SettingsManager::recentPaletteCommands() const
+{
+    QStringList list = m_config->group(kGroupUi).readEntry("RecentPaletteCommands", QStringList());
+    if (list.size() > kMaxRecentSearches)
+        list = list.mid(0, kMaxRecentSearches);
+    return list;
+}
+
+void SettingsManager::addRecentPaletteCommand(const QString &commandId)
+{
+    const QString trimmed = commandId.trimmed();
+    if (trimmed.isEmpty())
+        return;
+    QStringList list = recentPaletteCommands();
+    list.removeAll(trimmed);
+    list.prepend(trimmed);
+    if (list.size() > kMaxRecentSearches)
+        list = list.mid(0, kMaxRecentSearches);
+    m_config->group(kGroupUi).writeEntry("RecentPaletteCommands", list);
+    save();
+}
+
 bool SettingsManager::backupsEnabled() const
 {
     return m_config->group(kGroupBackups).readEntry("Enabled", false);

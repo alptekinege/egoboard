@@ -1020,7 +1020,6 @@ void MainWindow::openPalette()
 {
     if (!m_palette) {
         m_palette = new CommandPalette(m_ctx.storage(), this);
-        // Wire snippet/script managers for >transform / >snippet commands
         m_palette->setSnippetManager(m_ctx.snippets());
         m_palette->setScriptManager(m_ctx.scripts());
         connect(m_palette, &CommandPalette::pasteRequested, this, &MainWindow::pasteEntry);
@@ -1039,6 +1038,44 @@ void MainWindow::openPalette()
                 QSignalBlocker blocker(m_pinAction);
                 m_pinAction->setChecked(!rec.pinned);
             }
+        });
+        // Whole-command palette entries act on the main window's selection.
+        connect(m_palette, &CommandPalette::deleteRequested, this, &MainWindow::deleteSelected);
+        connect(m_palette, &CommandPalette::tagRequested, this, [this](const QString &tag){
+            const QString name = tag.trimmed();
+            if (name.isEmpty() || m_selectedId == 0)
+                return;
+            if (m_ctx.storage()->addTag(m_selectedId, name)) {
+                refreshTagFilter();
+                if (!m_tagCombo->currentData().toString().isEmpty())
+                    applyCurrentFilter(); // only when the list is tag-filtered
+            }
+        });
+        connect(m_palette, &CommandPalette::groupRequested, this, [this](const QString &group){
+            const QString name = group.trimmed();
+            if (name.isEmpty() || m_selectedId == 0)
+                return;
+            qint64 groupId = 0;
+            for (const BookmarkGroup &existing : m_ctx.bookmarks()->groups()) {
+                if (existing.name.compare(name, Qt::CaseInsensitive) == 0) {
+                    groupId = existing.id;
+                    break;
+                }
+            }
+            if (groupId == 0)
+                groupId = m_ctx.bookmarks()->createGroup(name);
+            if (groupId != 0 && m_ctx.bookmarks()->assignEntry(m_selectedId, groupId))
+                m_delegate->clearGroupCache(); // signals may not fire for a group we just created
+        });
+        connect(m_palette, &CommandPalette::exportRequested, this,
+                &MainWindow::exportHistoryToFormat);
+        connect(m_palette, &CommandPalette::togglePauseRequested, this, [this]{
+            m_ctx.setCapturePaused(!m_ctx.isCapturePaused());
+        });
+        connect(m_palette, &CommandPalette::settingsRequested, this, &MainWindow::openSettings);
+        connect(m_palette, &CommandPalette::clearHistoryRequested, this, &MainWindow::clearHistory);
+        connect(m_palette, &CommandPalette::commandExecuted, this, [this](const QString &id){
+            m_ctx.settings()->addRecentPaletteCommand(id);
         });
         connect(m_palette, &CommandPalette::transformRequested, this, [this](const QString &name, qint64 entryId){
             // Resolve transform name -> apply
@@ -1082,7 +1119,62 @@ void MainWindow::openPalette()
             QGuiApplication::clipboard()->setText(out);
         });
     }
+    // Argument completion works on the current tags/groups, so refresh them
+    // right before the palette is shown.
+    m_palette->setTagCandidates(m_ctx.storage()->allTags());
+    QStringList groupNames;
+    for (const BookmarkGroup &group : m_ctx.bookmarks()->groups())
+        groupNames.append(group.name);
+    groupNames.sort(Qt::CaseInsensitive);
+    m_palette->setGroupCandidates(groupNames);
+    m_palette->setRecentCommands(m_ctx.settings()->recentPaletteCommands());
     m_palette->openPalette();
+}
+
+// ">export [format]": with a format the export runs straight away, without one
+// the regular export dialog opens (preselected when a format was given).
+void MainWindow::exportHistoryToFormat(const QString &format)
+{
+    ExportImportDialogs::ExportDialog dialog(m_ctx.bookmarks(), this);
+    if (!format.trimmed().isEmpty()) {
+        const QString wanted = format.trimmed().toLower();
+        const QVector<ExportImportManager::ExportFormat> formats = {
+            ExportImportManager::ExportFormat::Json, ExportImportManager::ExportFormat::Markdown,
+            ExportImportManager::ExportFormat::Csv, ExportImportManager::ExportFormat::Html};
+        for (ExportImportManager::ExportFormat candidate : formats) {
+            if (ExportImportManager::formatId(candidate) == wanted) {
+                dialog.setFormat(candidate);
+                break;
+            }
+        }
+    }
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    ExportImportManager::ExportRequest request;
+    request.path = dialog.filePath();
+    request.format = dialog.format();
+    switch (dialog.scope()) {
+    case ExportImportDialogs::ExportDialog::Everything:
+        request.scope = ExportImportManager::Scope::Everything;
+        break;
+    case ExportImportDialogs::ExportDialog::PinnedOnly:
+        request.scope = ExportImportManager::Scope::PinnedOnly;
+        break;
+    case ExportImportDialogs::ExportDialog::GroupSubtree:
+        request.scope = ExportImportManager::Scope::GroupSubtree;
+        request.groupId = dialog.groupId();
+        break;
+    }
+    QString error;
+    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+    const bool exported = m_ctx.io()->exportToFile(request, &error);
+    QGuiApplication::restoreOverrideCursor();
+    if (!exported)
+        QMessageBox::warning(this, tr("Export failed"), error);
+    else
+        QMessageBox::information(this, tr("Export finished"),
+                                 tr("History exported to %1.").arg(request.path));
 }
 
 void MainWindow::openSnippetDialog()

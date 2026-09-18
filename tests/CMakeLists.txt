@@ -144,3 +144,21 @@ target_include_directories(tst_hotkeys PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sr
 target_link_libraries(tst_hotkeys PRIVATE egoboard::core Qt6::Test Qt6::Gui KF6::GlobalAccel KF6::XmlGui)
 target_compile_options(tst_hotkeys PRIVATE -Wall -Wextra)
 add_test(NAME tst_hotkeys COMMAND tst_hotkeys)
+
+# The palette's '>' command language: parsing, aliases, completion — no widgets
+add_executable(tst_palette tst_palette.cpp ../src/app/ui/PaletteCommands.cpp)
+target_include_directories(tst_palette PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/app/ui ${CMAKE_CURRENT_SOURCE_DIR}/../src/core)
+target_link_libraries(tst_palette PRIVATE Qt6::Core Qt6::Test)
+target_compile_options(tst_palette PRIVATE -Wall -Wextra)
+add_test(NAME tst_palette COMMAND tst_palette)
+
+# The palette widget itself: mode switching, argument completion, signals.
+# Runs offscreen and against a temporary database.
+add_executable(tst_paletteui tst_paletteui.cpp
+    ../src/app/ui/CommandPalette.cpp
+    ../src/app/ui/PaletteCommands.cpp
+    ../src/app/ScriptActionManager.cpp)
+target_include_directories(tst_paletteui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/app/ui ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(tst_paletteui PRIVATE egoboard::core Qt6::Widgets Qt6::Test Qt6::Qml)
+target_compile_options(tst_paletteui PRIVATE -Wall -Wextra)
+add_test(NAME tst_paletteui COMMAND tst_paletteui)

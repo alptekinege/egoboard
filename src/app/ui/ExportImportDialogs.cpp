@@ -109,6 +109,13 @@ ExportDialog::ExportDialog(BookmarkManager *bookmarks, QWidget *parent)
     layout->addWidget(buttons);
 }
 
+void ExportDialog::setFormat(ExportImportManager::ExportFormat format)
+{
+    const int index = m_formatCombo->findData(int(format));
+    if (index >= 0)
+        m_formatCombo->setCurrentIndex(index);
+}
+
 void ExportDialog::pickPath()
 {
     QString filter = tr("Egoboard export (*.json);;All files (*)");
