@@ -4,7 +4,7 @@
 
 **Status:** `v0.1.0` · Qt 6 + KF6 · local-only · MIT · no compilation required for this document.
 
-**Revision 2026-09-17:** merged the previous roadmap (every entry preserved; delivered work compressed to struck-through single lines) with a full line-by-line review of `src/core`, `src/app`, `src/app/ui`, `tests/`, `docs/`, packaging and repo hygiene. New in this revision: **Phase 6 — Correctness & hardening (Track G)** from the review findings, plus new tracks **H (Search 2.0)**, **I (Data portability)**, **J (Desktop integration 2.0)**, **K (Workflow delight)**, **L (Release engineering & CI)**. Carried-over backlog: semantic search (Track A), LAN sync / browser companion (Track D), Settings & QoL (§3).
+**Revision 2026-09-18:** **Phase 6 (correctness & hardening, Track G) and Phase 7 (Track H — Search 2.0) are delivered.** §4 and §5 are condensed to struck-through records with the handful of remaining optional items listed at the end of §4; §1.3 now describes what is actually left. Phase 8 (Track I/J — portability & integration) is the next phase; Track L (CI, packaging, docs) follows. Previous revision 2026-09-17: merged the prior roadmap (every entry preserved; delivered work compressed to struck-through single lines) with a full line-by-line review of `src/core`, `src/app`, `src/app/ui`, `tests/`, `docs/`, packaging and repo hygiene. Carried-over backlog: semantic search (Track A), LAN sync / browser companion (Track D), Settings & QoL (§3).
 
 ---
 
@@ -44,7 +44,14 @@ The architecture is clean: `egoboard_core` stays `QtCore+Sql` only, platform sea
 
 ### 1.3 What needs work
 
-The review found the fundamentals sound but flagged real (mostly latent) defects, missing indexes, dead wiring, and thin coverage of the app/UI layer. The concrete list is §4; the prioritized hit list is §7. The headline gaps: tray Settings/Clear History buttons are dead, `fetchAll` silently truncates under `MostUsed`, JS transforms can hang the GUI with no timeout, export/import drops OCR text + tags + snippets + saved searches, `SingleInstanceGuard` can wedge on a stale lock after a crash, the wlr-data-control path ignores capture-type filters and reads clipboard payloads on the GUI thread, accessibility is essentially absent, there is no CI and no LICENSE file, and `docs/build.md` / `agent.md` have drifted from the code.
+Phase 6 (hardening) and Phase 7 (Search 2.0) are delivered, so the fundamentals are no longer the gap. What remains is portability and integration work plus a few documented leftovers:
+
+* **Track I — data portability & durability**: importers for CopyQ/Klipper exports, scheduled/compressed backups, `PRAGMA quick_check` on open with a guided repair path (export v2 itself already round-trips OCR, tags, snippets and saved searches).
+* **Track J — integration 2.0**: `xdg-desktop-portal` RemoteDesktop paste on Wayland, global snippet hotkeys (the stored `snippet.shortcut` is still unbound), KRunner/palette/tray upgrades, pause-capture on lock/screencast.
+* **Track K — workflow delight** (multi-select, undo toast, paste queue, stats) and **Track L — release engineering** (CI pipeline, Flatpak/AUR, screenshots).
+* **Phase 5 leftover**: Quick paste 2.0 (search-as-you-type inside the popup, two-line previews, multi-monitor memory).
+* **§4 tail**: qtkeychain fallback (plan only), wlr-data-control mime reads still happen on the GUI thread (bounded by a shared read budget), import/export shows a wait cursor but no progress dialog, and the app/UI layer still has thinner test coverage than `src/core`.
+* Long-term: semantic search (Track A), LAN sync + browser companion (Track D).
 
 ### 1.4 Guiding principles for every future feature
 
@@ -94,6 +101,27 @@ Everything below shipped; kept for the record as single lines.
 * ~~KWin global cursor anchoring for the quick-paste popup (Wayland).~~
 * ~~Settings dialog rebuilt with an icon sidebar; storage/diagnostics pages; D-Bus automation seam (`Search`, `Paste`, `ShowQuickPaste`, `ReportCursorPos`, `Ping`).~~
 * ~~Shortcut default swap (`Meta+V` → quick paste, `Meta+Shift+V` → toggle).~~
+
+**Phase 6 — Correctness & hardening (Track G) — delivered 2026-09-18**
+* ~~G1 data layer: `fetchAll` keyset cursor carries `useCount` (MostUsed no longer truncates at 500 rows); dedup touch is monotonic and refreshes payload/flags/OCR ("latest copy wins", pins preserved); `removeEntries`/`clearHistory` emit only real changes; `addSavedSearch` is a true upsert on `name`; `VacuumWorker` resets its handle and uses a per-run connection name.~~
+* ~~G1 schema: indexes for `use_count`, `entry_groups(group_id)` and pinned/sensitive partials; legacy BLOB `content_hash` rows normalized to TEXT; `saved_searches.name` unique `COLLATE NOCASE`; `ExpirePolicy` rejects out-of-range content types; `BookmarkManager` group names unique per parent (case-insensitive) with transactional `deleteGroup`; `GroupTreeModel::parent` walks parent pointers.~~
+* ~~G2 runtime: tray Settings/Clear History wired; stale-lock recovery restored (60 s) and listen failures surfaced; JS transforms run under a watchdog thread (arrow functions supported, cached source); CSPRNG database key; wallet results surfaced; **encryption lifecycle** — key applied before the schema, in-place `PRAGMA rekey` enable/decrypt flow with confirmations and status, startup reconciles setting ↔ disk; KWin script unload/cleanup; wlr-data-control capture-type gating + offer destruction + shared read budget; Wayland toplevel reset on global withdrawal; token-based clipboard self-suppression; X display reuse and paste-failure notifications.~~
+* ~~G3 UI: `Ctrl+K` registered once; `>pin`/`>copy` implemented (palette emits `copyRequested`); TimelineStrip hover + per-bar tooltip; PreviewPane widget-based pages and guards; `useCount` badge matches the stored count; Settings storage link fixed, FTS tester explains the query with hit count and timing, shortcuts page scrolls, import/export shows a wait cursor; accessible names/descriptions across list, search, palette, quick paste and dialogs; KRunner launches via KService/`findExecutable` (AppImage-friendly) with translated strings; dead declarations removed.~~
+* ~~G4 scale: `ClipboardListModel` patches rows incrementally instead of resetting per capture; tray menu rebuilds lazily from summary rows; imports run as one transaction with suppressed per-row signals and `fetchAllFull` pages payloads in single queries (export 6.1 s → 3.9 s at 50k); `--bench[=N]` synthetic scale harness with budgets (insert, page, deep paging, most-used, FTS, export); `idx_entries_use_count` added.~~
+* ~~G5 privacy: export/import round-trips OCR, tags, snippets and saved searches and `Overwrite` clears everything it replaces; one shared sensitive-scan path for both capture sources.~~
+* ~~G6 hygiene: LICENSE (MIT); `docs/build.md` dependency set completed (`qt6-declarative`, Wayland tooling, krunner, kwallet+sqlcipher, libxtst, layer-shell-qt, flags); `agent.md` module map brought in line with `src/`; settings schema versioning (`[General] ConfigVersion`, forward-only migrations with tests); `--smoke` wipes its scratch DB so runs are repeatable.~~
+
+**Phase 7 — Search 2.0 (Track H) — delivered 2026-09-18**
+* ~~Field filters in the search box and palette: `app:`, `type:`, `tag:`, `pinned:`, `sensitive:`, `has:ocr`, `before:`/`after:` (ISO dates, `today`/`yesterday`, `30m/12h/3d/2w`), quoted values, unknown fields left as text; typed fields override the toolbar presets and the applied set is shown as a hint.~~
+* ~~Query syntax: quoted phrases become real FTS5 phrases, `-term` and uppercase `NOT` exclusions, uppercase `OR` alternatives (AND binds tighter), and a guarded `/regex/` mode validated at parse time — matched client-side per scope with a 20k-row scan cap, 200-row batches and a 20k-character subject cap per field.~~
+* ~~Search highlight: matched ranges drawn in the list delegate and marked in the text preview, palette-aware (selection-aware colors, no hardcoded values).~~
+* ~~Recent searches: up to 10 committed queries (Enter, menu pick, or paste while searching) with a clear action, persisted in `egoboardrc`.~~
+* ~~Scope selector: preview / full text / OCR / all text, persisted, part of saved searches and mapped to FTS5 column filters (LIKE fallback picks the same columns).~~
+* ~~Search stats + explain: the settings tester shows parsed filters, rejected values, the resulting FTS5 expression, the hit count and elapsed milliseconds.~~
+
+**Packaging & verification (2026-09-18)**
+* ~~AppImage rebuilt from the hardened tree and passed `scripts/validate-appimage.sh`: desktop/icon/metadata checks, Qt platform plugins (XCB + Wayland), SQLite driver, SVG formats, 198 bundled shared libraries, and a headless `--smoke` run inside the AppImage.~~
+* ~~`--smoke` / `--bench` now force console logging, so their reports stay visible when the output is piped or captured (the AppImage validator greps for them).~~
 
 ---
 
@@ -160,7 +188,7 @@ public:
 * ~~**Geometry memory** — remember window size/position and splitter ratio; restore last filter on start — delivered (geometry/splitter always remembered; last filter is opt-in).~~
 * ~~**Saved searches ("smart folders")** — pin a filter combination (e.g. "unpinned images from GIMP") — delivered ("Searches" menu in the filter bar: apply, save current filter, delete).~~
 * ~~**Tags** — user labels per entry with case-insensitive unique names, tag filter combo, right-click "Tags ▸" submenu — delivered; palette `>tag` support and filter chips still pending.~~
-* **Search highlight + recent searches** — mark matched substrings in results; dropdown of previous queries.
+* ~~**Search highlight + recent searches** — matched ranges marked in the list delegate and preview; recent-query menu with a clear action; delivered with Track H (Phase 7).~~
 
 ### 3.3 Pasting
 
@@ -200,101 +228,42 @@ public:
 
 ---
 
-## 4. Phase 6 — Correctness & hardening (Track G) — from the 2026-09 review
+## 4. Phase 6 — Correctness & hardening (Track G) — ✅ delivered (2026-09-18)
 
-> Recommended next phase. These are real defects and gaps found in the current tree; each is small enough to ship independently. File references are to the reviewed revision (`092126e`).
+> Every G1–G6 defect from the 2026-09-17 review is fixed; the detailed archive is in §2. The leftovers are deliberate, not forgotten:
 
-### G1 — Data layer correctness (`src/core`)
+* **Plan only**: a qtkeychain-backed fallback for the deprecated KWallet framework.
+* **Mitigated, not removed**: wlr-data-control mime reads still run on the GUI thread — capture-type gating, a single shared read budget and payload-free early exits bound the stall; moving protocol I/O off the QPA thread needs its own design.
+* **Optional / out of scope**: pause capture while the session is locked or a screencast is active; a real progress dialog for import/export (a wait cursor ships today).
+* **Coverage**: `src/core` is well covered (storage, schema/search, export/import, list model, expiry, snippets, transforms, scripts, vacuum, encryption, bookmarks, group tree, settings migrations); the app/UI layer has widget tests but still no `ApplicationContext` integration test.
+* **CI**: a GitHub Actions workflow was added and then removed by the maintainer; the item is carried into Track L (§5) rather than re-added here.
 
-* **`fetchAll` drops `useCount` from the keyset cursor** (`StorageManager.cpp:264`) → under `SortMode::MostUsed` the second page returns nothing and `fetchAll` silently truncates at 500 rows. Fix the cursor construction; add a per-sort-mode `fetchAll` regression test.
-* **Dedup path rewrites `timestamp_ms` with the incoming (possibly older) timestamp** and never refreshes payload/flags (`StorageManager.cpp:39-126`) → a re-copied old item can jump *down* in Newest order. Define "latest copy wins", refresh `preview`/`text_data`/`sensitive`/`ocr_text` on touch, and clamp the timestamp monotonic.
-* **`removeEntries` ignores the transaction result** and emits `entriesRemoved(ids)` even for rows that did not exist; `clearHistory` emits `storageReset` but no `entriesRemoved` → model/caches drift. Make signals reflect actual changes.
-* **`addSavedSearch` uses `INSERT OR REPLACE` but documents "keeps the row id"** (`StorageManager.cpp:531-542`) → the returned id is a new row id. Implement a true upsert on `name` (UPDATE … WHERE name = :name) or correct the contract and callers.
-* **`VacuumWorker` removes its QSqlDatabase connection while the handle is still in scope** (`VacuumWorker.cpp:31-34`) and uses a fixed connection name → Qt "connection is still in use" warning and concurrent-run clobbering. Adopt the StorageManager reset-then-remove pattern; use a per-run connection name.
-* **Schema/index gaps** (additive migration):
-  * no index for the `MostUsed` sort (`use_count`);
-  * no index on `entry_groups(group_id)` (only the `(entry_id, group_id)` PK), so group lookups scan;
-  * no index supporting `pinned` / `sensitive` filters;
-  * `content_hash` is declared `TEXT` but bound as a BLOB — normalize the declaration/typing;
-  * `saved_searches.name` is case-sensitive `UNIQUE` while queries use `COLLATE NOCASE` — align with `tags` (`UNIQUE COLLATE NOCASE`).
-* **`ExpirePolicy::parseContentType` accepts out-of-range numerics** (`ExpirePolicy.cpp`) that then match nothing; validate and drop invalid rules.
-* **Minor**: `BookmarkManager::deleteGroup` proceeds when `transaction()` fails and allows duplicate names; `GroupTreeModel::parent()` does an O(n) recursive scan; `GroupTreeModel.cpp` remains the lone QtGui include in `src/core` (documented exception, excluded from the core target).
-* **Dead code / doc drift**: unused `StorageManager::exec` and `m_insertCounter` (its comment describes enforcement that isn't wired); `TransformEngine::htmlUnescape` unused iterator; `HtmlEscape` label claims `'`-escaping though `toHtmlEscaped()` does not escape it; `SnippetManager` header says placeholders are case-sensitive while the implementation is case-insensitive.
+### Delivered, by area
 
-### G2 — Runtime & platform correctness (`src/app`)
-
-* **Tray buttons are dead**: `TrayController::settingsRequested` / `clearRequested` are emitted (`TrayController.cpp:105,109`) but never connected in `ApplicationContext.cpp:224-228` → "Settings…" and "Clear History…" do nothing.
-* **`SingleInstanceGuard` sets `setStaleLockTime(0)`** (`SingleInstanceGuard.cpp:21`) → after a crash the lock file is never considered stale and startup is blocked forever; a failed `listen()` is also ignored. Re-enable stale-lock recovery with a sane age and surface listen failures.
-* **JS transform sandbox has no timeout**: `ScriptActionManager::apply` calls `transform()` directly (`ScriptActionManager.cpp:178`) while the header claims a "2 s logical timeout" (`ScriptActionManager.h:18`) → `while(true){}` freezes the GUI thread. Add interrupt/termination (worker thread or `QJSEngine` interrupt) and enforce the documented budget. `hasTransform = source.contains("function transform")` misses arrow-function actions; the script file is re-read on every apply (TOCTOU vs the cached list).
-* **Encryption hardening**:
-  * `EncryptionManager::generateKey` uses the non-CSPRNG `QRandomGenerator::global()` (`EncryptionManager.cpp:120`) — use a CSPRNG-backed source for the DB key;
-  * `removeKey` ignores the wallet result and always reports Ok;
-  * KWallet is a deprecated framework — plan a qtkeychain-backed fallback.
-* **Encryption lifecycle**: the key is applied after `StorageManager` has already opened and initialized the database, so an existing plaintext DB cannot actually be encrypted, and key failures are `qWarning`-only with no user-visible state. Add a documented "encrypt existing DB" flow (reopen with key, `PRAGMA rekey`), plus explicit error/status reporting.
-* **`KWinCursorTracker`**: the unload name may not match the loaded plugin name after a retry (`KWinCursorTracker.cpp:114-131`) → leaked KWin scripts; the temp JS file is never removed and uses a fixed, racy name. Track the exact plugin name, clean up on finish/failure.
-* **`WlrDataControlHelper`**: ignores `captureText` / `captureImages` / `captureFiles` toggles (unlike `ClipboardWatcher`), never destroys `zwlr_data_control_offer_v1` objects on selection change (map/offer leak), and reads mime payloads with a blocking pipe poll on the GUI thread (up to ~1.2 s per mime). Gate by capture type, destroy offers, move reads off the GUI thread.
-* **`WaylandActiveWindowTracker`** does not handle the manager's `finished` event → stale toplevel handles if the compositor withdraws the global.
-* **`ClipboardWatcher`**: the fixed 2000 ms self-suppression window can swallow genuine rapid user copies; `suppressedOwnChange` is declared but never emitted; the forced `formats()` fetch is heuristic. Prefer an ownership token over a time window.
-* **`AutoPaster`**: opens a new X display per XTest call; `failed` is declared but never connected; `copyToClipboard` duplicates the paste-set path.
-* **`ApplicationContext`**: `quickPasteCount` changes are not applied live (the popup is built once, parentless) → stale until restart; retention caps are enforced only every 25th capture (a sub-25 burst never enforces); `OcrWorker` default `maxChars = 8000` disagrees with the settings default 8192.
-
-### G3 — UI correctness & accessibility (`src/app/ui`)
-
-* **`Ctrl+K` is bound three times** (toolbar action `MainWindow.cpp:260`, `QShortcut` `:311`, `keyPressEvent`) — collapse to one registration.
-* **Command palette advertises unimplemented commands**: `>pin / >copy (soon)` (`CommandPalette.cpp:293`) are not implemented; `CommandPalette::copyRequested` is declared and connected (`MainWindow.cpp:879`) but never emitted; `m_query` is a dead member.
-* **`TimelineStrip` hover is dead**: `m_hovered` is read in `paintEvent` (`TimelineStrip.cpp:116,130`) but never assigned (no `mouseMoveEvent` despite `setMouseTracking(true)`); the count-on-hover block is an empty stub and the tooltip promises hover info. Implement per-bar hover count/tooltip or remove the hover code.
-* **`PreviewPane`**: image page selected via magic index (`setCurrentIndex(3)`, `PreviewPane.cpp:454`) — use `setCurrentWidget`; duplicate `#include`; redundant `wasTransformed` branches; `humanSize` has no guard for `<= 0`.
-* **`EntryDelegate`** displays `useCount + 1` — align the label with the stored count or document the intent.
-* **`MainWindow`**: `m_ignoreHideOnFocusOut` is declared but never used (`MainWindow.h:94`); `Escape`-to-hide and keyboard paste only work when the list does not have focus — route window-level shortcuts through one consistent path.
-* **`SettingsDialog`**: the Storage page's database-path label has no `<a href>` anchor so the connected `linkActivated` never fires (`SettingsDialog.cpp:904-911`) — dead "open folder"; the FTS query tester shows tokenization only (no hit count); import/export run without progress UI; the Shortcuts page is the only non-scrolling page.
-* **Snippets**: the `shortcut` field is stored but never bound ("not yet bound", `SnippetDialog.cpp:36`) — implement global snippet hotkeys (Track J) or drop the field.
-* **Accessibility pass**: no `setAccessibleName`/`Description` anywhere in the reviewed UI files; the delegate, `TimelineStrip` and `QuickPasteMenu` convey state by color/number only; no `setBuddy`/mnemonics on dynamically built forms.
-* **KRunner plugin**: launches the literal command `"egoboard"` (`EgoboardRunner.cpp`) → fails for AppImage installs; several user-facing strings are raw `QStringLiteral` (no `i18n`) — same for two diagnostics strings in `SettingsDialog.cpp:1254,1425`.
-* **Dead declaration**: `ExportDialog::updatePath()` is declared (`ExportImportDialogs.h:49`) but never defined.
-
-### G4 — Performance & scale
-
-* **`ClipboardListModel` resets the whole model on every storage signal** (`entryAdded` / `entryTouched` / `entriesRemoved` / `storageReset`) → scroll position and selection are discarded on each capture. Insert/patch/remove incrementally; keep full reset for `storageReset` only.
-* **Tray menu rebuilds call `fetchFull` per recent entry on every `entryAdded`** (`TrayController.cpp:64`) → per-capture cost. Cache previews from the summary record instead.
-* **`ExportImportManager` is N+1** (`fetchAllFull` → `fetchFull` per id) and emits `entryAdded` per row plus a final `storageReset` during import → thousands of signals. Batch inserts in one transaction with silent mode, then a single refresh.
-* **"Most used" sort has no index** (see G1) → full scan + sort; measure and add `idx_entries_use_count`.
-* **Scale benchmark**: add a synthetic 100k-entry harness to `tests/` (or a `--bench` mode) with budgets for page fetch, FTS query, insertion and export; run `INSERT INTO entries_fts(entries_fts) VALUES('optimize')` after bulk import and revisit the WAL checkpoint policy.
-
-### G5 — Privacy & security
-
-* CSPRNG key generation, encryption error surfacing, qtkeychain fallback (see G2).
-* Script sandbox execution limit + a documented capability statement (see G2).
-* **Export/import completeness** (also Track I): export omits `ocr_text`, tags, snippets and saved searches; `Overwrite` import wipes only `entries` + `groups` (`ExportImportManager.cpp:232`), leaving stale tags/snippets/saved searches behind. A "self-contained backup" must round-trip *all* user data and clear what it claims to.
-* Sensitive-mode parity on the wlr-data-control path (detection currently runs twice; capture-type gating missing) — one shared scan path for both capture sources.
-* **Optional**: pause capture while the session is locked or a screencast is active (ties into §3.4).
-
-### G6 — Repo, docs & release hygiene
-
-* **No `LICENSE` file** despite README and the KRunner metadata declaring MIT — add it.
-* **No CI at all** (no `.github/`, no `.gitlab-ci.yml`): add a workflow that installs the documented dependency set, builds, runs `ctest --output-on-failure`, runs `--smoke` under `QT_QPA_PLATFORM=offscreen`, and (on tags) builds + validates the AppImage.
-* **`docs/build.md` is incomplete**: missing required `qt6-declarative` (Qt6 Qml is `REQUIRED`), the Wayland scanner/protocol tooling, optional `kf6-krunner`, `kf6-kwallet` + `sqlcipher`, `libxtst`, `layer-shell-qt`; no mention of `-DBUILD_TESTING` or `-DEGOBOARD_USE_SQLCIPHER`.
-* **`agent.md` is stale**: its module tree describes `src/{storage,bookmarks,io,hotkeys,tray}/` directories that no longer exist, omits ~15 current modules, and its smoke command (`./build/src/egoboard --smoke`) does not match the actual binary (`./build/egoboard`).
-* **Test coverage gaps**: no tests for `ApplicationContext`, `HotkeyManager`, `TrayController`, `KWinCursorTracker`, `X11/WaylandActiveWindowTracker`, the KRunner runner itself, and nearly all UI widgets (`MainWindow`, `EntryDelegate`, `PreviewPane`, `QuickPasteMenu`, `GroupsDock`, `SettingsDialog`, `CommandPalette`, `TimelineStrip`, dialogs). Add at least smoke-level widget tests and an `ApplicationContext` integration test.
-* **Settings schema versioning**: there is no config version/migration framework (only ad-hoc fallbacks). Add `[General] ConfigVersion` + forward-only migrations with tests.
-* **Asset policy**: the app ships no colors or icons of its own (only the app SVG); theme assets stay user/system-owned, are discovered at runtime and are never modified — keep it that way as the theme subsystem grows.
+* ~~**G1 — Data layer** (`src/core`): keyset-cursor fix, dedup monotonicity + payload refresh, signals that reflect real changes, true saved-search upsert, vacuum connection hygiene, index/schema normalization (`use_count`, `entry_groups(group_id)`, pinned/sensitive partials, `content_hash` typing, NOCASE saved searches), expiry validation, bookmark duplicates + transactional delete, group-tree parent pointers, dead-code/doc cleanup.~~
+* ~~**G2 — Runtime & platform** (`src/app`): tray wiring, single-instance stale-lock recovery, JS transform watchdog (arrow functions, cached source), CSPRNG key + full encryption lifecycle (key before schema, in-place `PRAGMA rekey`, decrypt flow, status/notifications), KWin script lifecycle, wlr gating/offer destruction, Wayland toplevel reset, token-based clipboard self-suppression, X display reuse + paste-failure signal, live quick-paste count, retention timer, OCR default alignment.~~
+* ~~**G3 — UI & accessibility**: one `Ctrl+K` registration, palette `>pin`/`>copy`, timeline hover + tooltip, preview-page/delegate fixes, settings storage link + query tester + scrolling, wait cursor for import/export, accessible names across list/search/palette/quick-paste/dialogs, KRunner launch that works for AppImage installs, removed dead declarations.~~
+* ~~**G4 — Performance & scale**: incremental list-model updates, lazy tray menu from summary rows, single-transaction imports with one refresh, single-query full fetches, `--bench[=N]` budgets (insert, page, deep paging, most-used, FTS, export).~~
+* ~~**G5 — Privacy & security**: export/import round-trips OCR + tags + snippets + saved searches, `Overwrite` clears everything it replaces, one shared sensitive scan for both capture paths.~~
+* ~~**G6 — Repo & docs**: LICENSE (MIT), refreshed `docs/build.md` and `agent.md`, settings `ConfigVersion` migrations, repeatable `--smoke` scratch DB.~~
 
 ---
 
 ## 5. New feature tracks (beyond the carried-over backlog)
 
-### Track H — Search 2.0 (all offline)
+### Track H — Search 2.0 (all offline) — ✅ delivered (2026-09-18)
 
-* **Field filters in the search box / palette**: `app:`, `type:`, `before:`/`after:`, `tag:`, `pinned:`, `has:ocr` — mapped onto the existing `FilterSpec` fields.
-* **Query syntax**: quoted phrases (FTS5 already), `-term` exclusion, AND/OR, and an optional guarded regex mode (debounced, capped, clear error on invalid pattern).
-* **Search highlight**: matched ranges marked in the list delegate and preview (extends the §3.2 item).
-* **Recent searches** dropdown + a "scope" selector (preview / full text / OCR / all).
-* **Search stats + query explain**: result count, elapsed time, and the token list produced by `SearchEngine::buildFtsQuery` (finishes the settings-dialog tester).
+* ~~**Field filters in the search box / palette**: `app:`, `type:`, `tag:`, `pinned:`, `sensitive:`, `has:ocr`, `before:`/`after:` — mapped onto `FilterSpec`, overriding the toolbar presets, with a live "filtering by …" hint and rejected values called out.~~
+* ~~**Query syntax**: quoted phrases (real FTS5 phrases), `-term`/`NOT` exclusion, uppercase `OR` alternatives, and the guarded `/regex/` mode (parse-time validation, clear errors, capped scan + batch + subject length).~~
+* ~~**Search highlight**: matched ranges marked in the list delegate and the text preview, palette-aware.~~
+* ~~**Recent searches** menu + a **scope selector** (preview / full text / OCR / all); both persisted, scope is part of saved searches.~~
+* ~~**Search stats + query explain**: the settings-dialog tester shows the parsed filters, the FTS5 expression, the hit count and elapsed time.~~
 * Semantic search stays long-term (Track A).
 
 ### Track I — Data portability & durability
 
-* **Export format v2**: include OCR text, tags, snippet library and saved searches; group memberships by path; versioned (`formatVersion: 2`), forward-compatible reader that still imports v1 files.
-* **Import completeness**: `Overwrite` clears all user data it replaces; single transaction; batched signal emission; cancelable progress UI.
+* ~~**Export format v2**: OCR text, tags, snippet library and saved searches round-trip; group memberships exported; versioned with a reader that still imports v1 files — delivered with Phase 6 (G5).~~
+* ~~**Import completeness**: `Overwrite` clears all user data it replaces; one transaction with batched (suppressed) signals and a single refresh — delivered with Phase 6 (G4/G5). A cancelable progress UI is still open (wait cursor today).~~
 * **More export formats**: Markdown / HTML / CSV, plus "export selection" from multi-select (Track K).
 * **Importers for other managers**: CopyQ JSON export, Klipper history file — all funneled through the existing content-hash dedup path so imports merge cleanly.
 * **Scheduled backups** (from §3.1) with a restore flow and an optional compressed (`.zip`) archive.
@@ -304,8 +273,8 @@ public:
 
 * **Wayland auto-paste via `xdg-desktop-portal` RemoteDesktop**: opt-in, per-session consent, real keystroke delivery instead of the notification-only fallback. This is the missing piece of full Wayland parity.
 * **Global snippet hotkeys** (Track C/§3.6-adjacent): bind snippet shortcuts through `KGlobalAccel`, finishing the stored-but-unbound `shortcut` field.
-* **KRunner improvements**: configurable launch command (AppImage-friendly), richer results (app/type/source, pinned marker), extra actions (pin, copy, delete) and live preview.
-* **Palette commands**: implement `>pin`, `>copy`, and add `>delete`, `>tag`, `>group`, `>export`, `>pause`, `>settings`, `>clean` with argument completion and recent-command memory.
+* **KRunner improvements**: ~~configurable launch command (AppImage-friendly) — delivered with Phase 6 (G3): KService/`findExecutable` launch~~; still open: richer results (app/type/source, pinned marker), extra actions (pin, copy, delete) and live preview.
+* **Palette commands**: ~~`>pin`, `>copy` — delivered with Phase 6 (G3)~~; still open: `>delete`, `>tag`, `>group`, `>export`, `>pause`, `>settings`, `>clean` with argument completion and recent-command memory.
 * **Tray/system**: configurable left-click, wheel-to-cycle recent (from §3.7), plus pause-capture and lock/screencast awareness (§3.1/§3.4).
 
 ### Track K — Workflow delight
@@ -340,35 +309,37 @@ Keep it iterative. Each phase ships and is usable on its own — no big-bang rew
 | **Phase 2 — Understanding** ✅ | Content smarts | OCR worker (Tesseract), link/color previews, per-app ignore rules |
 | **Phase 3 — Automation** ✅ | Daily-driver loop | Transform actions (sandboxed JS), snippet templates, KRunner plugin |
 | **Phase 4 — Platform** ✅ | Wayland & capture | Layer-shell popup, optional `wlr-data-control` helper |
-| **Phase 5 — Ergonomics** | Settings & QoL | §3 backlog in batches: paste behavior + list density first, then saved searches & tags, then Quick paste 2.0 |
-| **Phase 6 — Hardening** ← *next* | Correctness first | G1–G3 defects (dead tray wiring, fetchAll cursor, vacuum connection, JS timeout, encryption key lifecycle, wlr-data-control gating), G4 index + signal fixes, G6 LICENSE/CI/docs |
-| **Phase 7 — Search & scale** | Retrieval | Track H (field filters, regex, highlight, recent searches) + G4 benchmark budgets |
-| **Phase 8 — Portability & integration** | Backup & platform | Track I (export v2, importers, integrity check), Track J (portal paste, snippet hotkeys, KRunner/palette/tray) |
+| **Phase 5 — Ergonomics** ◐ | Settings & QoL | §3 backlog: paste behavior ✅, list density ✅, saved searches & tags ✅; Quick paste 2.0 still open |
+| **Phase 6 — Hardening** ✅ | Correctness first | G1–G5 defects, G4 index + signal fixes, G6 LICENSE/docs — all delivered 2026-09-18 (§4) |
+| **Phase 7 — Search & scale** ✅ | Retrieval | Track H (field filters, phrases/AND-OR/NOT, guarded regex, highlight, recent searches, scope, query explain) + `--bench` budgets — delivered 2026-09-18 (§5) |
+| **Phase 8 — Portability & integration** ← *next* | Backup & platform | Track I (CopyQ/Klipper importers, scheduled backups, startup integrity), Track J (portal paste, snippet hotkeys, KRunner/palette/tray) |
 | **Phase 9 — Release & delight** | Polish | Track L (CI, Flatpak, docs), Track K (multi-select, undo, paste queue, stats) |
 | **Tracks A / D** | Long-term | Semantic search (Track A), LAN sync + browser companion (Track D) |
 
-> Phases are sequential by default, but §3 batches and Track K items can be reordered freely by need — every batch ships independently. Phase 6 items are individually small and can be cherry-picked directly from §4.
+> Phases are sequential by default, but §3 batches and Track K items can be reordered freely by need — every batch ships independently.
 
 ---
 
-## 7. Suggested immediate fixes (prioritized)
+## 7. Suggested immediate fixes (prioritized) — ✅ all landed
 
-| Priority | Item | Where |
-|----------|------|-------|
-| **P0** | Connect tray `settingsRequested` / `clearRequested` | `ApplicationContext.cpp:224-228` |
-| **P0** | Fix `fetchAll` keyset cursor (`useCount`) — silent 500-row truncation on `MostUsed` | `StorageManager.cpp:264` |
-| **P0** | Reset `QSqlDatabase` before `removeDatabase` in the vacuum worker; per-run connection name | `VacuumWorker.cpp:31-34` |
-| **P0** | Export/import round-trip parity (OCR, tags, snippets, saved searches; clear-all on Overwrite) | `ExportImportManager.cpp` |
-| **P0** | Restore stale-lock recovery in the single-instance guard | `SingleInstanceGuard.cpp:21` |
-| **P1** | JS transform execution timeout (matches the documented 2 s budget) | `ScriptActionManager.cpp:178` |
-| **P1** | CSPRNG key generation + encryption error surfacing | `EncryptionManager.cpp:120` |
-| **P1** | KWin script unload/cleanup lifecycle | `KWinCursorTracker.cpp:114-131` |
-| **P1** | wlr-data-control: capture-type gating, offer destruction, off-thread reads | `WlrDataControlHelper.cpp` |
-| **P1** | Add missing indexes (`use_count`, `entry_groups(group_id)`, pinned/sensitive) — additive migration | `DatabaseSchema.cpp` |
-| **P1** | Dedup timestamp policy + payload refresh on touch | `StorageManager.cpp:39-126` |
-| **P2** | Single `Ctrl+K` registration; implement or remove `>pin`/`>copy`; TimelineStrip hover | `MainWindow.cpp`, `CommandPalette.cpp`, `TimelineStrip.cpp` |
-| **P2** | Accessibility names for delegate/list/popup/dialogs + Settings storage link fix | `src/app/ui/*` |
-| **P2** | LICENSE, CI workflow, `docs/build.md` deps, `agent.md` module map | repo root, `docs/` |
+The P0–P2 list from the 2026-09-17 review is implemented (details in §2 and the per-area summary in §4). The single exception is the CI workflow: it was added, then removed by the maintainer, and now lives in Track L.
+
+| Priority | Item | Status |
+|----------|------|--------|
+| **P0** | Connect tray `settingsRequested` / `clearRequested` | ✅ delivered |
+| **P0** | Fix `fetchAll` keyset cursor (`useCount`) — silent 500-row truncation on `MostUsed` | ✅ delivered (+ regression test) |
+| **P0** | Reset `QSqlDatabase` before `removeDatabase` in the vacuum worker; per-run connection name | ✅ delivered |
+| **P0** | Export/import round-trip parity (OCR, tags, snippets, saved searches; clear-all on Overwrite) | ✅ delivered |
+| **P0** | Restore stale-lock recovery in the single-instance guard | ✅ delivered (60 s window) |
+| **P1** | JS transform execution timeout (matches the documented budget) | ✅ delivered (watchdog thread) |
+| **P1** | CSPRNG key generation + encryption error surfacing + rekey lifecycle | ✅ delivered |
+| **P1** | KWin script unload/cleanup lifecycle | ✅ delivered |
+| **P1** | wlr-data-control: capture-type gating, offer destruction, off-thread reads | ✅ gating + offer destruction + shared read budget; off-thread reads still open (see §4) |
+| **P1** | Add missing indexes (`use_count`, `entry_groups(group_id)`, pinned/sensitive) — additive migration | ✅ delivered |
+| **P1** | Dedup timestamp policy + payload refresh on touch | ✅ delivered ("latest copy wins") |
+| **P2** | Single `Ctrl+K` registration; implement or remove `>pin`/`>copy`; TimelineStrip hover | ✅ delivered |
+| **P2** | Accessibility names for delegate/list/popup/dialogs + Settings storage link fix | ✅ delivered |
+| **P2** | LICENSE, `docs/build.md` deps, `agent.md` module map | ✅ delivered (CI → Track L) |
 
 ---
 
@@ -376,7 +347,7 @@ Keep it iterative. Each phase ships and is usable on its own — no big-bang rew
 
 * New modules respect the existing boundary: `SearchEngine` and `TransformEngine` already live in `egoboard_core` (headless-testable; a separate `egoboard_transform` lib remains an option if the surface grows). OCR, layer-shell, wlr-data-control, KWin scripting and any future networking stay in `src/app`.
 * Migrations are additive and forward-only: index-only changes, FTS5 table + triggers, a nullable `entry_embeddings` table when semantic search lands, plus a settings `ConfigVersion`. No breaking change to `history.db`, never drop user data.
-* All heavy work stays off the GUI thread: `QThreadPool` for OCR, `QtConcurrent` for embeddings, the `VacuumWorker` pattern for compaction. Fix the known offenders (wlr-data-control payload reads, export/import batching) to this standard.
+* All heavy work stays off the GUI thread: `QThreadPool` for OCR, `QtConcurrent` for embeddings, the `VacuumWorker` pattern for compaction. Export/import batching was fixed in Phase 6; wlr-data-control payload reads are still on the GUI thread but gated and budgeted (§4).
 * Feature flags live in `SettingsManager` (`KConfig` groups) so OCR, semantic search, encryption, scripts and sync can be disabled independently.
 * No bundled color schemes or icons: theme and icon themes are discovered at runtime from the system (`ColorSchemeIndex`, `IconThemeIndex`) and pre-existing theme assets are treated as read-only — the app never ships, rewrites or overwrites them.
 * New settings/features are wired end-to-end in one pass: `SettingsManager` key → enforcement point → live UI reaction to `changed()` → diagnostics entry → tests → this roadmap.
@@ -416,4 +387,4 @@ QT_QPA_PLATFORM=offscreen ./build/egoboard --smoke
 
 ---
 
-*Last updated: 2026-09-17 (full-repository review + roadmap merge) · Maintainer: local development · Next review: after the Phase 6 hardening batch — remaining long-term: semantic search (Track A), browser/LAN sync (Track D), Track H/I/J/K/L items above.*
+*Last updated: 2026-09-18 (Phase 6 hardening + Phase 7 Search 2.0 delivered; roadmap condensed to match the tree) · Maintainer: local development · Next review: after the Phase 8 batch — remaining long-term: semantic search (Track A), browser/LAN sync (Track D), Track I/J/K/L items above.*

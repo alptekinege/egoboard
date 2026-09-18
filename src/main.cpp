@@ -13,6 +13,17 @@
 
 int main(int argc, char *argv[])
 {
+    // The CLI modes are usually piped or captured (CI, the AppImage validator);
+    // Qt routes logging to journald when stderr is not a TTY, which would hide
+    // their reports. Force console logging for those runs only.
+    for (int i = 1; i < argc; ++i) {
+        const QLatin1String arg(argv[i]);
+        if (arg == QLatin1String("--smoke") || arg.startsWith(QLatin1String("--bench"))) {
+            qputenv("QT_FORCE_STDERR_LOGGING", "1");
+            break;
+        }
+    }
+
     QApplication application(argc, argv);
     QApplication::setApplicationName(QStringLiteral("egoboard"));
     QApplication::setApplicationVersion(QStringLiteral(EGOBOARD_VERSION));
