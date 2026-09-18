@@ -161,6 +161,19 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
     m_dbus = new EgoboardDbusAdaptor(m_storage, this);
     connect(m_dbus, &EgoboardDbusAdaptor::pasteRequested, this,
             [this](qint64 entryId) { pasteEntry(entryId); });
+    // KRunner's per-match actions: copy leaves the keystroke to the user, pin
+    // and delete map straight onto storage.
+    connect(m_dbus, &EgoboardDbusAdaptor::copyRequested, this, [this](qint64 entryId) {
+        ClipboardRecord record;
+        if (m_storage->fetchFull(entryId, &record))
+            m_paster->copyToClipboard(record);
+    });
+    connect(m_dbus, &EgoboardDbusAdaptor::pinRequested, this, [this](qint64 entryId, bool pinned) {
+        m_storage->setPinned(entryId, pinned);
+    });
+    connect(m_dbus, &EgoboardDbusAdaptor::deleteRequested, this, [this](qint64 entryId) {
+        m_storage->removeEntries({entryId});
+    });
     connect(m_dbus, &EgoboardDbusAdaptor::showQuickPasteRequested, this,
             &ApplicationContext::showQuickPaste);
     connect(m_dbus, &EgoboardDbusAdaptor::cursorPosReported, this,

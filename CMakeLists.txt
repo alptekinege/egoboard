@@ -110,6 +110,8 @@ add_executable(egoboard
     src/app/ScriptActionManager.cpp
     src/app/EncryptionManager.cpp
     src/app/EgoboardDbusAdaptor.cpp
+    src/krunner/EntryRow.cpp
+    src/krunner/RunnerActions.cpp
     src/core/GroupTreeModel.cpp # Gui-dependent (QIcon in DecorationRole)
     src/app/ui/MainWindow.cpp
     src/app/ui/AppearancePreview.cpp
@@ -132,6 +134,7 @@ target_include_directories(egoboard PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core
     ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/krunner
     ${CMAKE_CURRENT_SOURCE_DIR}/src/app/ui
     ${CMAKE_CURRENT_BINARY_DIR}/generated)
 

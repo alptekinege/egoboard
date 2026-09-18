@@ -1,16 +1,23 @@
 #pragma once
 
+#include "EntryRow.h"
+
 #include <QObject>
+#include <QStringList>
 
 class IClipboardStorage;
 
 /**
- * @brief Minimal D-Bus adaptor for future KRunner / automation.
+ * @brief Minimal D-Bus adaptor for KRunner / automation.
  *
  * Exposes org.egoboard.Egoboard at /org/egoboard/Egoboard.
- * Phase 3: Search(String query, int limit) -> list of previews
- * intended for `qdbus` and a future KRunner plugin (Track D). Local only,
- * no network. Deferred full KRunner plugin to Phase 4.
+ *   Search(query, limit)          → "id\tpreview" rows (plain scripting)
+ *   SearchDetailed(query, limit)  → EntryRow rows with type/app/window/pinned
+ *   Preview(id)                   → the entry text, for a preview panel
+ *   Paste(id) / Copy(id)          → put an entry on the clipboard (Copy does not
+ *                                   simulate a paste keystroke)
+ *   Pin(id, pinned) / Delete(id)  → KRunner's per-match actions
+ * Local only, no network.
  */
 class EgoboardDbusAdaptor : public QObject {
     Q_OBJECT
@@ -21,13 +28,25 @@ public:
 
 signals:
     void pasteRequested(qint64 id);
+    void copyRequested(qint64 id);
+    void pinRequested(qint64 id, bool pinned);
+    void deleteRequested(qint64 id);
     void showQuickPasteRequested();
     void cursorPosReported(int x, int y); // rounded, from KWin scripting (Wayland)
 
 public slots:
     // Returns previews (joined as "id<TAB>preview" strings) for quick scripting.
     QStringList Search(const QString &query, int limit);
+    // Richer variant of Search(): one EntryRow per entry (see EntryRow.h).
+    QStringList SearchDetailed(const QString &query, int limit);
+    // The entry's text (capped), for previews. Empty when the id is unknown.
+    QString Preview(qint64 id);
     bool Paste(qint64 id);
+    // Clipboard only: no keystroke is simulated, so it is safe from KRunner.
+    bool Copy(qint64 id);
+    // Returns false when the entry does not exist (KRunner actions report that).
+    bool Pin(qint64 id, bool pinned);
+    bool Delete(qint64 id);
     // Opens the quick-paste popup at the cursor (automation / debugging).
     bool ShowQuickPaste();
     // KWin scripting reports the global cursor position here (Wayland).
@@ -36,5 +55,7 @@ public slots:
     int Ping(int v) { return v; }
 
 private:
+    bool entryExists(qint64 id) const;
+
     IClipboardStorage *m_storage = nullptr;
 };

@@ -130,8 +130,8 @@ qt_generate_wayland_protocol_client_sources(tst_datacontrol
 target_compile_options(tst_datacontrol PRIVATE -Wall -Wextra)
 add_test(NAME tst_datacontrol COMMAND tst_datacontrol)
 
-add_executable(tst_krunner tst_krunner.cpp ../src/app/EgoboardDbusAdaptor.cpp)
-target_include_directories(tst_krunner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_executable(tst_krunner tst_krunner.cpp ../src/app/EgoboardDbusAdaptor.cpp ../src/krunner/EntryRow.cpp ../src/krunner/RunnerActions.cpp)
+target_include_directories(tst_krunner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/krunner ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(tst_krunner PRIVATE egoboard::core Qt6::Test Qt6::Sql Qt6::DBus)
 target_compile_options(tst_krunner PRIVATE -Wall -Wextra)
 add_test(NAME tst_krunner COMMAND tst_krunner)
