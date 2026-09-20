@@ -1,5 +1,7 @@
 #pragma once
+#include "DesignTokens.h"
 #include "FilterSpec.h"
+#include <QFontMetrics>
 #include <QWidget>
 class IClipboardStorage;
 class QVariantAnimation;
@@ -14,7 +16,11 @@ public:
     // The day filter was dropped somewhere else (date preset, "Any time"):
     // stop showing a clicked bar as active.
     void clearSelection();
-    QSize sizeHint() const override { return QSize(200, 48); }
+    // Height follows the UI font (U5) instead of a fixed pixel value.
+    QSize sizeHint() const override
+    {
+        return QSize(200, DesignTokens::timelineHeightForFont(QFontMetrics(font())));
+    }
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;

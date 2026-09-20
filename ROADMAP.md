@@ -179,10 +179,10 @@
 
 | Phase | Focus | Ships |
 |-------|-------|-------|
-| **R0 — Foundations** | Tokens + helpers + tests | U4, U5; contrast/metrics tests extended; stylesheet audit done |
-| **R1 — Responsive shell** | Breakpoints, wrapping filter bar, toolbar overflow | U1, U2, U3; per-mode geometry memory |
-| **R2 — List & preview** | Chips, bulk bar, day headers, drawer preview, zoom/edit | U6, U7 (minus QR/split-merge); undo toast |
-| **R3 — Popups 2.0** | Quick-paste search + two-line rows + monitor memory; palette rows + recents | U8, U9 |
+| **R0 — Foundations** ✅ *landed 2026-09-20* | Tokens + helpers + tests | U4, U5: touch targets (24/32/44), focus ring, elevation tokens, skeleton/toast/chip/drawer metrics, breakpoints (720/1100), `makeChip/makeEmptyState/makeToast/animate/cardShadow/styleItemList`, shared popup cards, font-relative timeline + search field, 6 new `tst_uidesign` cases (18/18 pass), full suite 29/29 + `--smoke` OK |
+| **R1 — Responsive shell** ✅ *landed 2026-09-20* | Breakpoints, wrapping filter bar, toolbar overflow | U1 (Wide/Medium/Narrow via `resizeEvent`, preview splitter↔drawer reparent, timeline collapse <560px, per-mode splitter keys), U2 (search row + collapsible filter row, `Filters (n)` live-mirror menu, expanding combos), U3 (Paste/Copy/Pin/Delete + Palette stay, 6 actions → `More` menu off Wide); `tst_uidesign` 19/19, full suite 29/29 + `--smoke` OK |
+| **R2 — List & preview** ✅ *landed 2026-09-20* | Chips, bulk bar, day headers, drawer preview, zoom/edit | U6 (removable filter chips + `Filters (n)` count, bulk bar Pin/Unpin/Tag/Group/Export/Delete, entry-index + use-count row extras, day-header helper), U7 (preview header Copy/Pin/source/Close, image zoom slider + Fit/100%, wrap toggle, inline edit, sensitive blur overlay), undo toast on delete/bulk/clear (re-insert restore); `tst_uidesign` 21/21, full suite 29/29 + `--smoke` OK |
+| **R3 — Popups 2.0** ✅ *landed 2026-09-20* | Quick-paste search + two-line rows + monitor memory; palette rows + recents | U8 (search-as-you-type over bounded 200 recents + `type:`/`app:` filters, two-line preview+meta rows behind setting, per-screen placement memory, ↑↓/Enter/Esc in search), U9 (rich two-line delegate with type icon + app + age, empty-input recents section, Tab ghost hint, window feeds recents); `tst_paletteui` 15/15, full suite 29/29 + `--smoke` OK |
 | **R4 — Feedback & states** | Progress dialogs, skeletons, empty states, motion language | U11, U12, U13 |
 | **R5 — Settings & onboarding** | Settings search + reset + profiles + responsive dialog; first-run tour; cheatsheet | U14, U15 |
 | **R6 — Platform polish** | Portal-paste consent UI, screencast blur, KRunner preview, tray overlay | §8 |
@@ -201,4 +201,4 @@
 
 ---
 
-*Last updated: 2026-09-20 (full-repo re-read; prior Phases 1–9 archived via git history; this document is now the single forward UI/UX plan) · Next review: after R1 (responsive shell lands).*
+*Last updated: 2026-09-20 (R0–R3 landed; full suite 29/29 + smoke OK) · Next: R4 (feedback & states — progress dialogs, skeletons, empty states, motion language).*

@@ -13,8 +13,10 @@
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
+#include <QEvent>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QIcon>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
@@ -22,7 +24,10 @@
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QRegularExpression>
+#include <QResizeEvent>
 #include <QScrollArea>
+#include <QSignalBlocker>
+#include <QSlider>
 #include <QStackedWidget>
 #include <QTextBrowser>
 #include <QTextEdit>
@@ -71,6 +76,9 @@ PreviewPane::PreviewPane(QWidget *parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
+    buildHeaderBar();
+    layout->addWidget(m_headerBar);
+
     buildTransformBar();
     layout->addWidget(m_transformBar);
 
@@ -99,6 +107,85 @@ PreviewPane::PreviewPane(QWidget *parent)
     layout->addWidget(m_metaLabel);
 
     setMinimumWidth(260);
+}
+
+void PreviewPane::buildHeaderBar()
+{
+    // R2: header with copy/pin/source/close + text tools (wrap/edit). Close is
+    // shown by the owner (drawer mode); inline here it stays hidden.
+    m_headerBar = new QWidget(this);
+    auto *bar = new QHBoxLayout(m_headerBar);
+    bar->setContentsMargins(6, 4, 6, 4);
+    bar->setSpacing(6);
+
+    m_copyBtn = new QToolButton(m_headerBar);
+    m_copyBtn->setText(tr("Copy"));
+    m_copyBtn->setIcon(QIcon::fromTheme(QStringLiteral("edit-copy")));
+    m_copyBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_copyBtn->setToolTip(tr("Copy the full payload to the clipboard"));
+    connect(m_copyBtn, &QToolButton::clicked, this, [this] {
+        if (!m_current.isValid())
+            return;
+        QString text = m_current.textData.isEmpty() ? m_current.preview : m_current.textData;
+        if (m_editing && m_textEdit)
+            text = m_textEdit->toPlainText();
+        if (!text.isEmpty())
+            emit copyToClipboardRequested(text);
+    });
+    bar->addWidget(m_copyBtn);
+
+    m_pinBtn = new QToolButton(m_headerBar);
+    m_pinBtn->setText(tr("Pin"));
+    m_pinBtn->setIcon(QIcon::fromTheme(QStringLiteral("bookmarks")));
+    m_pinBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_pinBtn->setCheckable(true);
+    m_pinBtn->setToolTip(tr("Pin / unpin this entry"));
+    connect(m_pinBtn, &QToolButton::clicked, this, [this] {
+        if (m_current.isValid())
+            emit pinRequested(m_current.id);
+    });
+    bar->addWidget(m_pinBtn);
+
+    m_sourceLabel = UiHelpers::makeHint(QString(), m_headerBar, /*richText=*/false);
+    bar->addWidget(m_sourceLabel, 1);
+
+    m_wrapBtn = new QToolButton(m_headerBar);
+    m_wrapBtn->setText(tr("Wrap"));
+    m_wrapBtn->setCheckable(true);
+    m_wrapBtn->setChecked(true);
+    m_wrapBtn->setToolTip(tr("Toggle line wrap in the text preview"));
+    connect(m_wrapBtn, &QToolButton::toggled, this, [this](bool on) {
+        if (m_textEdit)
+            m_textEdit->setWordWrapMode(on ? QTextOption::WrapAnywhere : QTextOption::NoWrap);
+    });
+    bar->addWidget(m_wrapBtn);
+
+    m_editBtn = new QToolButton(m_headerBar);
+    m_editBtn->setText(tr("Edit"));
+    m_editBtn->setToolTip(tr("Fix typos before pasting (re-hashes on save)"));
+    connect(m_editBtn, &QToolButton::clicked, this, [this] { setEditing(true); });
+    bar->addWidget(m_editBtn);
+
+    m_saveEditBtn = new QToolButton(m_headerBar);
+    m_saveEditBtn->setText(tr("Save"));
+    m_saveEditBtn->setVisible(false);
+    connect(m_saveEditBtn, &QToolButton::clicked, this, [this] { saveEdit(); });
+    bar->addWidget(m_saveEditBtn);
+
+    m_cancelEditBtn = new QToolButton(m_headerBar);
+    m_cancelEditBtn->setText(tr("Cancel"));
+    m_cancelEditBtn->setVisible(false);
+    connect(m_cancelEditBtn, &QToolButton::clicked, this, [this] { setEditing(false); });
+    bar->addWidget(m_cancelEditBtn);
+
+    m_closeBtn = new QToolButton(m_headerBar);
+    m_closeBtn->setText(tr("Close"));
+    m_closeBtn->setIcon(QIcon::fromTheme(QStringLiteral("window-close")));
+    m_closeBtn->setVisible(false); // drawer mode enables it
+    connect(m_closeBtn, &QToolButton::clicked, this, [this] { emit closeRequested(); });
+    bar->addWidget(m_closeBtn);
+
+    m_headerBar->setVisible(false);
 }
 
 void PreviewPane::buildTransformBar()
@@ -312,13 +399,162 @@ QWidget *PreviewPane::pageHtml()
 
 QWidget *PreviewPane::pageImage()
 {
-    auto *scroll = new QScrollArea(this);
+    auto *page = new QWidget(this);
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    // R2 image bar: zoom slider + fit/100% toggle.
+    m_imageBar = new QWidget(page);
+    auto *bar = new QHBoxLayout(m_imageBar);
+    bar->setContentsMargins(6, 4, 6, 4);
+    bar->setSpacing(6);
+    auto *zoomOut = new QToolButton(m_imageBar);
+    zoomOut->setText(QStringLiteral("−"));
+    zoomOut->setToolTip(tr("Zoom out"));
+    connect(zoomOut, &QToolButton::clicked, this, [this] {
+        m_zoom = m_zoom <= 0.0 ? 0.75 : qMax(0.25, m_zoom - 0.25);
+        m_zoomSlider->setValue(qRound(m_zoom * 100));
+        updateImageView();
+    });
+    bar->addWidget(zoomOut);
+    m_zoomSlider = new QSlider(Qt::Horizontal, m_imageBar);
+    m_zoomSlider->setRange(25, 400);
+    m_zoomSlider->setValue(0); // 0 = fit (special-cased)
+    m_zoomSlider->setAccessibleName(tr("Image zoom"));
+    connect(m_zoomSlider, &QSlider::valueChanged, this, [this](int value) {
+        m_zoom = value <= 0 ? 0.0 : value / 100.0;
+        updateImageView();
+    });
+    bar->addWidget(m_zoomSlider, 1);
+    auto *zoomIn = new QToolButton(m_imageBar);
+    zoomIn->setText(QStringLiteral("+"));
+    zoomIn->setToolTip(tr("Zoom in"));
+    connect(zoomIn, &QToolButton::clicked, this, [this] {
+        m_zoom = m_zoom <= 0.0 ? 1.25 : qMin(4.0, m_zoom + 0.25);
+        m_zoomSlider->setValue(qRound(m_zoom * 100));
+        updateImageView();
+    });
+    bar->addWidget(zoomIn);
+    m_zoomFitBtn = new QToolButton(m_imageBar);
+    m_zoomFitBtn->setText(tr("Fit"));
+    m_zoomFitBtn->setCheckable(true);
+    m_zoomFitBtn->setChecked(true);
+    m_zoomFitBtn->setToolTip(tr("Fit to width / 100%"));
+    connect(m_zoomFitBtn, &QToolButton::toggled, this, [this](bool fit) {
+        m_zoomFitBtn->setText(fit ? tr("Fit") : tr("100%"));
+        m_zoom = fit ? 0.0 : 1.0;
+        m_zoomSlider->setValue(fit ? 0 : 100);
+        updateImageView();
+    });
+    bar->addWidget(m_zoomFitBtn);
+    m_zoomLabel = UiHelpers::makeHint(QStringLiteral("100%"), m_imageBar, /*richText=*/false);
+    bar->addWidget(m_zoomLabel);
+    layout->addWidget(m_imageBar);
+
+    auto *scroll = new QScrollArea(page);
     scroll->setWidgetResizable(true);
     scroll->setAlignment(Qt::AlignCenter);
+    m_imageScroll = scroll;
     m_imageLabel = new QLabel(scroll);
     m_imageLabel->setAlignment(Qt::AlignCenter);
     scroll->setWidget(m_imageLabel);
-    return scroll;
+    layout->addWidget(scroll, 1);
+
+    // R2 privacy blur overlay: covers the payload until hover/focus.
+    m_blurLabel = new QLabel(page);
+    m_blurLabel->setAlignment(Qt::AlignCenter);
+    m_blurLabel->setWordWrap(true);
+    m_blurLabel->setText(tr("Blurred — hover or focus to reveal"));
+    m_blurLabel->setAccessibleName(tr("Blurred preview"));
+    m_blurLabel->setAttribute(Qt::WA_TransparentForMouseEvents, false);
+    m_blurLabel->hide();
+    m_blurLabel->installEventFilter(this);
+    return page;
+}
+
+void PreviewPane::updateImageView()
+{
+    if (m_image.isNull() || !m_imageLabel)
+        return;
+    QPixmap pixmap;
+    if (m_zoom <= 0.0) {
+        const int maxWidth = m_imageScroll ? qMax(200, m_imageScroll->viewport()->width() - 16)
+                                           : qMax(200, width() - 32);
+        pixmap = QPixmap::fromImage(
+            m_image.scaled(maxWidth, 4096, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        if (m_zoomLabel)
+            m_zoomLabel->setText(tr("Fit"));
+    } else {
+        const QSize scaled = (m_image.size() * m_zoom).boundedTo(QSize(8192, 8192));
+        pixmap = QPixmap::fromImage(
+            m_image.scaled(scaled, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        if (m_zoomLabel)
+            m_zoomLabel->setText(tr("%1%").arg(qRound(m_zoom * 100)));
+    }
+    m_imageLabel->setPixmap(pixmap);
+}
+
+void PreviewPane::updateBlurOverlay()
+{
+    const bool blur = m_settings && m_settings->privacyBlur() && m_current.isValid()
+        && m_current.sensitive;
+    if (!m_blurLabel)
+        return;
+    if (!blur) {
+        m_blurLabel->hide();
+        return;
+    }
+    // Overlay the stack area; hover/focus hides it (eventFilter below).
+    m_blurLabel->setParent(m_stack);
+    m_blurLabel->setGeometry(m_stack->rect().adjusted(8, 8, -8, -8));
+    m_blurLabel->setStyleSheet(QStringLiteral("background: palette(window); "
+                                              "border: 1px solid palette(mid); border-radius: %1px;")
+                                   .arg(DesignTokens::RadiusL));
+    m_blurLabel->raise();
+    m_blurLabel->show();
+}
+
+void PreviewPane::setEditing(bool editing)
+{
+    const bool isText = m_current.type == ContentType::Text;
+    if (!isText || !m_textEdit)
+        return;
+    m_editing = editing;
+    m_textEdit->setReadOnly(!editing);
+    m_textEdit->setFocusPolicy(editing ? Qt::StrongFocus : Qt::NoFocus);
+    if (m_saveEditBtn)
+        m_saveEditBtn->setVisible(editing);
+    if (m_cancelEditBtn)
+        m_cancelEditBtn->setVisible(editing);
+    if (m_editBtn)
+        m_editBtn->setVisible(!editing);
+    if (editing) {
+        m_textEdit->setFocus();
+    } else if (m_current.isValid()) {
+        // Cancel: restore the stored text.
+        m_textEdit->setPlainText(m_originalText);
+        applySearchHighlights();
+    }
+}
+
+void PreviewPane::saveEdit()
+{
+    if (!m_editing || !m_textEdit || !m_current.isValid())
+        return;
+    const QString edited = m_textEdit->toPlainText();
+    if (edited == m_originalText) {
+        setEditing(false);
+        return;
+    }
+    // Write-back goes through the owner (MainWindow) via copy signal is not
+    // enough — store the edit flag and let the window re-hash. The pane itself
+    // stays storage-free: emit the edited text for the window to persist.
+    m_originalText = edited;
+    m_isTransformed = false;
+    setEditing(false);
+    applySearchHighlights();
+    emit copyToClipboardRequested(edited);
 }
 
 QWidget *PreviewPane::pageFiles()
@@ -378,28 +614,78 @@ void PreviewPane::applySearchHighlights()
     m_textEdit->setExtraSelections(selections);
 }
 
+bool PreviewPane::eventFilter(QObject *watched, QEvent *event)
+{
+    // R2 privacy blur: hover or focus over the overlay reveals the payload.
+    if (watched == m_blurLabel && m_blurLabel) {
+        if (event->type() == QEvent::Enter || event->type() == QEvent::FocusIn
+            || event->type() == QEvent::MouseButtonPress)
+            m_blurLabel->hide();
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+void PreviewPane::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    if (m_zoom <= 0.0 && m_stack && m_stack->currentWidget() == m_imagePage)
+        updateImageView();
+    if (m_blurLabel && m_blurLabel->isVisible() && m_stack)
+        m_blurLabel->setGeometry(m_stack->rect().adjusted(8, 8, -8, -8));
+}
+
+void PreviewPane::setCloseVisible(bool visible)
+{
+    if (m_closeBtn)
+        m_closeBtn->setVisible(visible);
+}
+
 void PreviewPane::showEmpty(const QString &message)
 {
+    if (m_editing)
+        setEditing(false);
     m_emptyLabel->setText(message.isEmpty() ? tr("Select an entry to preview") : message);
     m_stack->setCurrentWidget(m_emptyLabel->parentWidget());
     m_transformBar->setVisible(false);
+    if (m_headerBar)
+        m_headerBar->setVisible(false);
     m_isTransformed = false;
     m_copyResultBtn->setVisible(false);
     m_revertBtn->setVisible(false);
     m_transformStatus->clear();
     m_current = {};
     setMeta({});
+    updateBlurOverlay();
 }
 
 void PreviewPane::showRecord(const ClipboardRecord &record)
 {
     // Showing another entry abandons any transformed view of the previous one.
+    if (m_editing)
+        setEditing(false);
     m_isTransformed = false;
     m_current = record;
     m_originalText = record.textData.isEmpty() ? record.preview : record.textData;
     m_copyResultBtn->setVisible(false);
     m_revertBtn->setVisible(false);
     m_transformStatus->clear();
+
+    // R2 header: source label + pin state, visible for any record.
+    if (m_headerBar)
+        m_headerBar->setVisible(true);
+    if (m_sourceLabel)
+        m_sourceLabel->setText(record.sourceApp.isEmpty()
+                                   ? tr("Unknown source")
+                                   : tr("from %1").arg(record.sourceApp));
+    if (m_pinBtn) {
+        QSignalBlocker blocker(m_pinBtn);
+        m_pinBtn->setChecked(record.pinned);
+    }
+    const bool isTextEntry = record.type == ContentType::Text;
+    if (m_editBtn)
+        m_editBtn->setVisible(isTextEntry);
+    if (m_wrapBtn)
+        m_wrapBtn->setVisible(isTextEntry);
 
     const QDateTime timestamp = QDateTime::fromMSecsSinceEpoch(record.timestamp);
     QStringList meta;
@@ -477,9 +763,16 @@ void PreviewPane::showRecord(const ClipboardRecord &record)
             showEmpty(tr("Image data not stored\n(it exceeded the configured size limit)"));
             return;
         }
-        const int maxWidth = qMax(200, width() - 32);
-        m_imageLabel->setPixmap(QPixmap::fromImage(
-            image.scaled(maxWidth, 4096, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+        m_image = image;
+        if (m_zoomSlider)
+            m_zoomSlider->setValue(0);
+        m_zoom = 0.0;
+        if (m_zoomFitBtn) {
+            QSignalBlocker blocker(m_zoomFitBtn);
+            m_zoomFitBtn->setChecked(true);
+            m_zoomFitBtn->setText(tr("Fit"));
+        }
+        updateImageView();
         if (!record.ocrText.isEmpty()) {
             extraMeta += QStringLiteral("<br/>🔍 OCR: ") + record.ocrText.left(500).toHtmlEscaped().replace(QStringLiteral("\n"), QStringLiteral("<br/>"));
         } else if (record.hasBlob) {
@@ -509,4 +802,5 @@ void PreviewPane::showRecord(const ClipboardRecord &record)
         if (!extraMeta.isEmpty()) base += extraMeta;
         setMeta(base);
     }
+    updateBlurOverlay();
 }

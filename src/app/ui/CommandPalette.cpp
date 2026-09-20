@@ -11,19 +11,112 @@
 #include <QAbstractListModel>
 #include <QApplication>
 #include <QSet>
+#include <QStyle>
+#include <QStyledItemDelegate>
 #include <QDateTime>
+#include <QFontMetrics>
 #include <QFrame>
-#include <QGraphicsDropShadowEffect>
+#include <QIcon>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
+#include <QPainter>
 #include <QVBoxLayout>
 #include <QTimer>
 #include <QScreen>
 #include <QGuiApplication>
 
 
+
+// R3 rich rows: type icon + source app + relative time, compact two-line
+// delegate in the same language as the history list.
+class CommandPalette::PaletteDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override
+    {
+        Q_UNUSED(index);
+        const QFontMetrics metrics(option.font);
+        const int padding = DesignTokens::RowPaddingCompact;
+        return QSize(option.rect.width(),
+                     metrics.height() * 2 + 2 * padding + DesignTokens::SpaceXs);
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        QStyleOptionViewItem opt = option;
+        initStyleOption(&opt, index);
+        opt.text.clear();
+        opt.icon = QIcon();
+        QStyle *style = opt.widget ? opt.widget->style() : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, opt.widget);
+
+        const bool selected = option.state & QStyle::State_Selected;
+        painter->save();
+        const int left = option.rect.left() + DesignTokens::SpaceM;
+        const int top = option.rect.top();
+        const int height = option.rect.height();
+        const QFontMetrics metrics(option.font);
+
+        const int type = index.data(Qt::UserRole + 2).toInt();
+        QString iconName = QStringLiteral("text-x-generic");
+        if (type == int(ContentType::Image))
+            iconName = QStringLiteral("image-x-generic");
+        else if (type == int(ContentType::RichText))
+            iconName = QStringLiteral("text-html");
+        else if (type == int(ContentType::Files))
+            iconName = QStringLiteral("folder");
+        QIcon::fromTheme(iconName).paint(
+            painter, QRect(left, top + (height - DesignTokens::IconM) / 2, DesignTokens::IconM,
+                           DesignTokens::IconM));
+
+        const int textLeft = left + DesignTokens::IconM + DesignTokens::SpaceM;
+        const int textWidth = option.rect.right() - DesignTokens::SpaceM - textLeft;
+        const QColor titleColor = DesignTokens::previewTextColor(option.palette, selected, true);
+        const QColor metaColor = DesignTokens::metaTextColor(option.palette, selected, true);
+
+        QFont titleFont = option.font;
+        titleFont.setWeight(QFont::DemiBold);
+        painter->setFont(titleFont);
+        painter->setPen(titleColor);
+        const QString title = metrics.elidedText(index.data(Qt::DisplayRole).toString(),
+                                                 Qt::ElideRight, qMax(0, textWidth));
+        painter->drawText(QRect(textLeft, top + DesignTokens::RowPaddingCompact, textWidth,
+                                metrics.height()),
+                          Qt::AlignVCenter | Qt::AlignLeft, title);
+
+        painter->setFont(option.font);
+        painter->setPen(metaColor);
+        const QString app = index.data(Qt::UserRole + 3).toString();
+        const qint64 timestamp = index.data(Qt::UserRole + 1).toLongLong();
+        QString age;
+        if (timestamp > 0) {
+            const qint64 secs =
+                QDateTime::fromMSecsSinceEpoch(timestamp).secsTo(QDateTime::currentDateTime());
+            if (secs < 50)
+                age = tr("just now");
+            else if (secs < 90 * 60)
+                age = tr("%1 min ago").arg(qRound(secs / 60.0));
+            else if (secs < 24 * 3600)
+                age = tr("%1 h ago").arg(qRound(secs / 3600.0));
+            else
+                age = tr("%1 d ago").arg(qRound(secs / 86400.0));
+        }
+        QString meta = app;
+        if (!app.isEmpty() && !age.isEmpty())
+            meta += QStringLiteral(" · ");
+        meta += age;
+        painter->drawText(
+            QRect(textLeft, top + DesignTokens::RowPaddingCompact + metrics.height() + 2,
+                  textWidth, metrics.height()),
+            Qt::AlignVCenter | Qt::AlignLeft,
+            metrics.elidedText(meta, Qt::ElideRight, qMax(0, textWidth)));
+        painter->restore();
+    }
+};
 
 class CommandPalette::PaletteModel : public QAbstractListModel {
 public:
@@ -158,16 +251,8 @@ CommandPalette::CommandPalette(IClipboardStorage *storage, QWidget *parent)
     outer->setContentsMargins(DesignTokens::SpaceM, DesignTokens::SpaceM, DesignTokens::SpaceM,
                               DesignTokens::SpaceM);
 
-    m_card = new QFrame(this);
+    m_card = UiHelpers::makePopupPanel(this);
     m_card->setObjectName(QStringLiteral("paletteCard"));
-    m_card->setStyleSheet(QStringLiteral("#paletteCard { background: palette(window); "
-                                         "border: 1px solid palette(mid); border-radius: %1px; }")
-                              .arg(DesignTokens::RadiusL));
-    auto *shadow = new QGraphicsDropShadowEffect(m_card);
-    shadow->setBlurRadius(DesignTokens::SpaceL * 2);
-    shadow->setOffset(0, DesignTokens::SpaceXs);
-    shadow->setColor(QColor(0, 0, 0, 140));
-    m_card->setGraphicsEffect(shadow);
     outer->addWidget(m_card);
 
     auto *layout = new QVBoxLayout(m_card);
@@ -175,7 +260,13 @@ CommandPalette::CommandPalette(IClipboardStorage *storage, QWidget *parent)
                                DesignTokens::SpaceL);
     layout->setSpacing(DesignTokens::SpaceM);
 
-    m_input = new QLineEdit(m_card);
+    // Input + ghost completion hint (U9): the dim suffix below the input
+    // shows the Tab-completable remainder of the highlighted candidate.
+    auto *inputRow = new QWidget(m_card);
+    auto *inputStack = new QVBoxLayout(inputRow);
+    inputStack->setContentsMargins(0, 0, 0, 0);
+    inputStack->setSpacing(0);
+    m_input = new QLineEdit(inputRow);
     m_input->setPlaceholderText(tr("Type to search history…  •  > for commands (>tag, >export, >pause…)"));
     m_input->setClearButtonEnabled(true);
     m_input->setAccessibleName(tr("Command palette search"));
@@ -183,15 +274,23 @@ CommandPalette::CommandPalette(IClipboardStorage *storage, QWidget *parent)
     f.setPointSizeF(f.pointSizeF() + 1.5);
     m_input->setFont(f);
     UiHelpers::styleSearchField(m_input);
-    layout->addWidget(m_input);
+    inputStack->addWidget(m_input);
+    m_ghost = UiHelpers::makeHint(QString(), inputRow, /*richText=*/false);
+    m_ghost->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    m_ghost->setVisible(false);
+    inputStack->addWidget(m_ghost);
+    layout->addWidget(inputRow);
 
     m_list = new QListView(m_card);
     m_list->setAccessibleName(tr("Palette results"));
     m_list->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_list->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_list->setUniformItemSizes(true);
+    m_list->setUniformItemSizes(false); // rich two-line rows vary
+    UiHelpers::styleItemList(m_list);
     m_model = new PaletteModel(this);
     m_list->setModel(m_model);
+    m_delegate = new PaletteDelegate(m_list);
+    m_list->setItemDelegate(m_delegate);
     layout->addWidget(m_list, 1);
 
     m_hint = UiHelpers::makeHint(QString(), m_card);
@@ -229,10 +328,64 @@ void CommandPalette::openPalette()
     activateWindow();
 }
 
+QString CommandPalette::ghostSuffix(const QString &input, const QString &candidate)
+{
+    // U9: the completable remainder — empty when there is nothing to complete.
+    if (candidate.isEmpty() || input.isEmpty())
+        return {};
+    if (!candidate.startsWith(input, Qt::CaseInsensitive))
+        return {};
+    if (candidate.size() <= input.size())
+        return {};
+    return candidate.mid(input.size());
+}
+
+void CommandPalette::rebuildRecentRows()
+{
+    // U9: empty-input section — recent searches first, then recent commands.
+    m_recentRows.clear();
+    for (const QString &query : m_recentSearches) {
+        if (query.trimmed().isEmpty() || m_recentRows.size() >= 10)
+            break;
+        m_recentRows.append({QStringLiteral("search"),
+                             tr("Search: %1").arg(query.left(60)), query});
+    }
+    for (const QString &id : m_recentCommands) {
+        if (m_recentRows.size() >= 10)
+            break;
+        const PaletteCommands::Command *command = PaletteCommands::find(id);
+        if (!command)
+            continue;
+        m_recentRows.append({QStringLiteral("command"),
+                             tr("Run: %1").arg(command->usage), command->id});
+    }
+}
+
 void CommandPalette::onTextChanged(const QString &text)
 {
     m_currentQuery = text;
     refreshResults(text);
+    // U9 ghost: show the Tab-completable remainder of the highlighted row.
+    if (m_ghost) {
+        QString candidate;
+        if ((m_mode == Mode::Argument || m_mode == Mode::Commands)
+            && m_list->currentIndex().isValid())
+            candidate = m_list->currentIndex().data(Qt::UserRole).toString();
+        QString suffix;
+        if (m_mode == Mode::Argument) {
+            const QString argument = PaletteCommands::parse(text).argument;
+            suffix = ghostSuffix(argument, candidate);
+            if (!suffix.isEmpty())
+                suffix = tr("Tab: %1").arg(suffix);
+        } else if (m_mode == Mode::Commands) {
+            const QString word = PaletteCommands::parse(text).word;
+            suffix = ghostSuffix(word, candidate);
+            if (!suffix.isEmpty())
+                suffix = tr("Tab: %1").arg(suffix);
+        }
+        m_ghost->setText(suffix);
+        m_ghost->setVisible(!suffix.isEmpty());
+    }
 }
 
 void CommandPalette::refreshResults(const QString &query)
@@ -354,7 +507,23 @@ void CommandPalette::refreshResults(const QString &query)
     }
     m_pending = nullptr;
 
-    // History mode
+    // History mode — empty input shows the recents section (U9). The recents
+    // list reuses the Commands mode so Enter picks a recent row instead of
+    // pasting a stale history top hit.
+    if (trimmed.isEmpty() && (!m_recentSearches.isEmpty() || !m_recentCommands.isEmpty())) {
+        m_mode = Mode::Commands;
+        rebuildRecentRows();
+        if (!m_recentRows.isEmpty()) {
+            m_results.clear();
+            m_commandItems.clear();
+            for (const RecentRow &row : m_recentRows)
+                m_commandItems.append({row.payload, row.text, row.kind});
+            m_model->setCommands(m_commandItems, trimmed);
+            m_list->setCurrentIndex(m_model->index(0, 0));
+            m_hint->setText(tr("Recent — ⏎ run/search  •  type to search history  •  > for commands"));
+            return;
+        }
+    }
     m_mode = Mode::History;
     // The palette accepts the same query syntax as the main search box.
     m_parsed = SearchEngine::parseQuery(trimmed);
@@ -620,8 +789,38 @@ void CommandPalette::executeCurrent()
         return;
     }
     if (m_mode == Mode::Commands) {
+        // Empty-input recents section: a search row re-runs the query, a
+        // command row completes it for arguments or runs it directly.
+        if (m_currentQuery.trimmed().isEmpty() && !m_recentRows.isEmpty()) {
+            const QModelIndex current = m_list->currentIndex().isValid()
+                ? m_list->currentIndex()
+                : m_model->index(0, 0);
+            if (current.isValid() && current.row() < m_recentRows.size()) {
+                const RecentRow row = m_recentRows.at(current.row());
+                if (row.kind == QLatin1String("search")) {
+                    // Setting the text re-runs history search via textChanged.
+                    QSignalBlocker blocker(m_input);
+                    m_input->setText(row.payload);
+                    m_input->setCursorPosition(row.payload.size());
+                    blocker.unblock();
+                    onTextChanged(row.payload);
+                    updateHint();
+                    return;
+                }
+                if (const PaletteCommands::Command *command = PaletteCommands::find(row.payload)) {
+                    if (command->takesArgument()) {
+                        const QString completed = QStringLiteral(">%1 ").arg(command->id);
+                        m_input->setText(completed);
+                        m_input->setCursorPosition(completed.size());
+                    } else {
+                        runCommand(*command, {});
+                    }
+                    return;
+                }
+            }
+        }
         const QModelIndex current = m_list->currentIndex().isValid() ? m_list->currentIndex()
-                                                                    : (m_model->rowCount() > 0 ? m_model->index(0, 0) : QModelIndex());
+                                                                     : (m_model->rowCount() > 0 ? m_model->index(0, 0) : QModelIndex());
         if (current.isValid())
             onActivated(current);
         return;

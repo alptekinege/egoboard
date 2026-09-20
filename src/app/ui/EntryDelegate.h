@@ -26,6 +26,14 @@ public:
 
     // Words/phrases from the active search, highlighted in the preview line.
     void setSearchTerms(const QStringList &terms) { m_searchTerms = terms; }
+    // Row extras (R2, all default off): 1-based entry index prefix, use-count
+    // badge in the meta line, sticky day-header rows handled by the view.
+    void setShowEntryIndex(bool show) { m_showEntryIndex = show; }
+    void setShowUseCountBadge(bool show) { m_showUseCountBadge = show; }
+    bool showEntryIndex() const { return m_showEntryIndex; }
+    bool showUseCountBadge() const { return m_showUseCountBadge; }
+    // Compact one-line header text for group-by-day mode ("Monday, Sep 20").
+    static QString dayHeaderText(qint64 timestampMs);
 
     // Row height for a given density; shared with the settings preview and the
     // metrics test so the sample cannot drift from the list.
@@ -57,6 +65,8 @@ private:
     SettingsManager *m_settings = nullptr;
     mutable QHash<qint64, QVector<GroupBadge>> m_groupCache; // per visible entry
     QStringList m_searchTerms;
+    bool m_showEntryIndex = false;
+    bool m_showUseCountBadge = false;
     int m_rowPadding = 8;
     bool m_absoluteTimestamps = false;
     bool m_ampmClock = false;

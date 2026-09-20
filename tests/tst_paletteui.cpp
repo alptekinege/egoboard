@@ -34,6 +34,9 @@ private slots:
     void plainTextStillSearchesHistory();
     void noArgumentCommandWithEmptyInputDoesNothing();
     void unknownCommandShowsSuggestions();
+    void emptyInputShowsRecentSearchesAndCommands();
+    void ghostSuffixIsTheCompletableRemainder();
+    void historyRowsCarryTypeAndSource();
 
 private:
     QModelIndex firstRow() const;
@@ -271,6 +274,86 @@ void TestPaletteUi::unknownCommandShowsSuggestions()
     QTest::keyClick(m_input, Qt::Key_Return);
     QCOMPARE(pinSpy.count(), 1);
     QCOMPARE(pinSpy.first().first().toLongLong(), qint64(0)); // 0 = main window's selection
+}
+
+void TestPaletteUi::emptyInputShowsRecentSearchesAndCommands()
+{
+    // R3: empty input lists recent searches + recent commands, capped at 10.
+    m_palette->setRecentSearches({QStringLiteral("app:firefox"), QStringLiteral("has:ocr")});
+    m_palette->openPalette();
+    type(QString());
+    QVERIFY(m_list->model()->rowCount() >= 4); // 2 searches + tag/export recents
+    const auto rows = m_palette->recentRows();
+    QVERIFY(!rows.isEmpty());
+    QCOMPARE(rows.first().kind, QStringLiteral("search"));
+    QCOMPARE(rows.first().payload, QStringLiteral("app:firefox"));
+    // Picking a search row fills the input instead of running anything.
+    QTest::keyClick(m_input, Qt::Key_Return);
+    QCOMPARE(m_input->text(), QStringLiteral("app:firefox"));
+    QVERIFY(m_palette->isVisible());
+
+    // No recents at all: plain history again.
+    m_palette->setRecentSearches({});
+    m_palette->setRecentCommands({});
+    m_palette->rebuildRecentRows();
+    QCOMPARE(m_palette->recentRows().size(), 0);
+    m_palette->openPalette();
+    type(QString());
+    QCOMPARE(m_palette->recentRows().size(), 0);
+}
+
+void TestPaletteUi::ghostSuffixIsTheCompletableRemainder()
+{
+    // R3: pure function — remainder of the candidate after the typed input.
+    QCOMPARE(CommandPalette::ghostSuffix(QStringLiteral("wor"), QStringLiteral("work")),
+             QStringLiteral("k"));
+    QCOMPARE(CommandPalette::ghostSuffix(QStringLiteral(""), QStringLiteral("work")),
+             QString());
+    QCOMPARE(CommandPalette::ghostSuffix(QStringLiteral("work"), QStringLiteral("work")),
+             QString());
+    QCOMPARE(CommandPalette::ghostSuffix(QStringLiteral("xyz"), QStringLiteral("work")),
+             QString());
+    QCOMPARE(CommandPalette::ghostSuffix(QStringLiteral("WOR"), QStringLiteral("work")),
+             QStringLiteral("k")); // case-insensitive prefix
+
+    // Wired: typing a tag prefix shows the ghost hint.
+    m_palette->openPalette();
+    type(QStringLiteral(">tag wo"));
+    QLabel *ghost = nullptr;
+    for (QLabel *label : m_palette->findChildren<QLabel *>()) {
+        if (label->text().startsWith(QStringLiteral("Tab:"))) {
+            ghost = label;
+            break;
+        }
+    }
+    QVERIFY(ghost);
+    QVERIFY(ghost->isVisible());
+    QCOMPARE(ghost->text(), QStringLiteral("Tab: rk"));
+}
+
+void TestPaletteUi::historyRowsCarryTypeAndSource()
+{
+    // R3: history rows expose type + source app + timestamp for the delegate.
+    ClipboardRecord record;
+    record.type = ContentType::Image;
+    record.hash = QByteArrayLiteral("hash-img");
+    record.textData = QStringLiteral("screenshot");
+    record.preview = QStringLiteral("screenshot");
+    record.sourceApp = QStringLiteral("Spectacle");
+    record.timestamp = QDateTime::currentMSecsSinceEpoch();
+    record.sizeBytes = 42;
+    m_storage->insertOrUpdate(record);
+
+    m_palette->setRecentSearches({});
+    m_palette->setRecentCommands({});
+    m_palette->openPalette();
+    type(QStringLiteral("screenshot"));
+    QVERIFY(m_list->model()->rowCount() >= 1);
+    const QModelIndex row = firstRow();
+    QVERIFY(row.data(Qt::UserRole).toLongLong() != 0);
+    QCOMPARE(row.data(Qt::UserRole + 2).toInt(), int(ContentType::Image));
+    QCOMPARE(row.data(Qt::UserRole + 3).toString(), QStringLiteral("Spectacle"));
+    QVERIFY(row.data(Qt::UserRole + 1).toLongLong() > 0);
 }
 
 QTEST_MAIN(TestPaletteUi)

@@ -194,6 +194,8 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
     m_tray = new TrayController(m_storage, m_settings, this);
     m_window = std::make_unique<MainWindow>(*this);
     m_quickPaste = new QuickPasteMenu(m_storage, m_settings->quickPasteCount());
+    m_quickPaste->setSettings(m_settings);
+    m_quickPaste->setTwoLine(m_settings->quickPasteTwoLine());
     m_ocr = new OcrWorker(m_storage, this);
     m_ocr->setLanguage(m_settings->ocrLanguage());
     m_ocr->setMaxChars(m_settings->ocrMaxChars());
@@ -201,6 +203,7 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
         m_ocr->setLanguage(m_settings->ocrLanguage());
         m_ocr->setMaxChars(m_settings->ocrMaxChars());
         m_quickPaste->setItemCount(m_settings->quickPasteCount());
+        m_quickPaste->setTwoLine(m_settings->quickPasteTwoLine());
         UiHelpers::setReduceMotion(m_settings->reduceMotion());
     });
     connect(m_ocr, &OcrWorker::recognized, this, [this](qint64 id, const QString &text){

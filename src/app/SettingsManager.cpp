@@ -314,6 +314,52 @@ void SettingsManager::setQuickPasteCount(int count)
     save();
 }
 
+bool SettingsManager::quickPasteTwoLine() const
+{
+    return m_config->group(kGroupUi).readEntry("QuickPasteTwoLine", false);
+}
+
+void SettingsManager::setQuickPasteTwoLine(bool enabled)
+{
+    m_config->group(kGroupUi).writeEntry("QuickPasteTwoLine", enabled);
+    save();
+}
+
+QPoint SettingsManager::quickPastePos(const QString &screen) const
+{
+    if (screen.isEmpty())
+        return QPoint();
+    const QStringList parts =
+        m_config->group(kGroupUi).readEntry(QStringLiteral("QuickPastePos_") + screen,
+                                            QStringList());
+    if (parts.size() != 2)
+        return QPoint();
+    bool okX = false, okY = false;
+    const int x = parts.at(0).toInt(&okX);
+    const int y = parts.at(1).toInt(&okY);
+    if (!okX || !okY)
+        return QPoint(-1, -1); // sentinel: stored but unparsable, never (0,0)
+    return QPoint(x, y);
+}
+
+void SettingsManager::setQuickPastePos(const QString &screen, const QPoint &pos)
+{
+    if (screen.isEmpty())
+        return;
+    m_config->group(kGroupUi).writeEntry(QStringLiteral("QuickPastePos_") + screen,
+                                         QStringList{QString::number(pos.x()),
+                                                     QString::number(pos.y())});
+    save();
+}
+
+void SettingsManager::clearQuickPastePos(const QString &screen)
+{
+    if (screen.isEmpty())
+        return;
+    m_config->group(kGroupUi).deleteEntry(QStringLiteral("QuickPastePos_") + screen);
+    save();
+}
+
 bool SettingsManager::autostartEnabled() const
 {
     return m_config->group(kGroupGeneral).readEntry("Autostart", false);
@@ -803,6 +849,50 @@ void SettingsManager::setTimelineEnabled(bool enabled)
     save();
 }
 
+bool SettingsManager::groupByDay() const
+{
+    return m_config->group(kGroupUi).readEntry("GroupByDay", false);
+}
+
+void SettingsManager::setGroupByDay(bool enabled)
+{
+    m_config->group(kGroupUi).writeEntry("GroupByDay", enabled);
+    save();
+}
+
+bool SettingsManager::showEntryIndex() const
+{
+    return m_config->group(kGroupUi).readEntry("ShowEntryIndex", false);
+}
+
+void SettingsManager::setShowEntryIndex(bool show)
+{
+    m_config->group(kGroupUi).writeEntry("ShowEntryIndex", show);
+    save();
+}
+
+bool SettingsManager::showUseCountBadge() const
+{
+    return m_config->group(kGroupUi).readEntry("ShowUseCountBadge", false);
+}
+
+void SettingsManager::setShowUseCountBadge(bool show)
+{
+    m_config->group(kGroupUi).writeEntry("ShowUseCountBadge", show);
+    save();
+}
+
+bool SettingsManager::privacyBlur() const
+{
+    return m_config->group(kGroupUi).readEntry("PrivacyBlur", false);
+}
+
+void SettingsManager::setPrivacyBlur(bool blur)
+{
+    m_config->group(kGroupUi).writeEntry("PrivacyBlur", blur);
+    save();
+}
+
 bool SettingsManager::closeAfterPaste() const
 {
     return m_config->group(kGroupUi).readEntry("CloseAfterPaste", true);
@@ -1050,6 +1140,25 @@ QByteArray SettingsManager::splitterState() const
 void SettingsManager::setSplitterState(const QByteArray &state)
 {
     m_config->group(kGroupUi).writeEntry("SplitterState", state);
+    save();
+}
+
+QByteArray SettingsManager::splitterStateForMode(int mode) const
+{
+    if (mode == 0)
+        return splitterState();
+    return m_config->group(kGroupUi).readEntry(
+        QStringLiteral("SplitterStateMode%1").arg(mode), QByteArray());
+}
+
+void SettingsManager::setSplitterStateForMode(int mode, const QByteArray &state)
+{
+    if (mode == 0) {
+        setSplitterState(state);
+        return;
+    }
+    m_config->group(kGroupUi).writeEntry(
+        QStringLiteral("SplitterStateMode%1").arg(mode), state);
     save();
 }
 

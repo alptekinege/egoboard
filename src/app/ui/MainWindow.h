@@ -1,9 +1,12 @@
 #pragma once
 
+#include "DesignTokens.h"
 #include "ExportImportDialogs.h"
 #include "FilterSpec.h"
 
 #include <QMainWindow>
+
+#include <functional>
 
 class ApplicationContext;
 class ClipboardListModel;
@@ -12,6 +15,8 @@ class GroupsDock;
 class PreviewPane;
 class QAction;
 class QComboBox;
+class QDockWidget;
+class QHBoxLayout;
 class QLabel;
 class QLineEdit;
 class QListView;
@@ -19,6 +24,7 @@ class QSplitter;
 class QTimer;
 class QToolBar;
 class QToolButton;
+class QVBoxLayout;
 class CommandPalette;
 class TimelineStrip;
 
@@ -43,6 +49,7 @@ public:
 protected:
     void keyPressEvent(QKeyEvent *event) override;
     void changeEvent(QEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
     void hideEvent(QHideEvent *event) override;
     // Keeps the empty-list hint the size of the list viewport.
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -50,6 +57,38 @@ protected:
 private:
     void buildUi();
     void connectSignals();
+    // Responsive shell (R1): Wide = list + preview side-by-side, Medium =
+    // preview bottom drawer, Narrow = single pane + preview dialog/drawer.
+    void applyResponsiveMode(int width);
+    int shellModeIndex() const { return int(m_shellMode); }
+    void saveSplitterForMode();
+    void restoreSplitterForMode();
+    void updateFilterBarMode();
+    void updateToolbarOverflow();
+    int activeFilterCount() const;
+    // R2: removable filter chips, bulk-action bar, day headers.
+    void rebuildFilterChips();
+    struct FilterChip {
+        QString label;
+        QString accessibleName;
+        std::function<void()> clear;
+    };
+    QVector<FilterChip> currentFilterChips();
+    void clearTypeFilter();
+    void clearDateFilter();
+    void clearAppFilter();
+    void clearTagFilter();
+    void clearGroupFilter();
+    void clearPinnedFilter();
+    void clearSensitiveFilter();
+    void clearSearchFilter();
+    void updateBulkBar();
+    void bulkPin(bool pinned);
+    void bulkTag();
+    void bulkMoveToGroup();
+    void bulkExport();
+    void bulkDelete();
+    void showUndoToast(const QString &message, const QVector<ClipboardRecord> &deleted);
     void updateEmptyState(); // "no entries yet" vs "nothing matches this filter"
     void onSelectionChanged();
     void onActivated(const QModelIndex &index);
@@ -81,6 +120,10 @@ private:
     QAction *m_recentSearchAction = nullptr;
     int m_searchScope = 0; // FilterSpec::SearchScope value
     QLabel *m_queryHint = nullptr;
+    QWidget *m_chipRow = nullptr; // R2: removable active-filter chips
+    QHBoxLayout *m_chipLayout = nullptr;
+    QWidget *m_bulkBar = nullptr; // R2: bulk actions for multi-select
+    QLabel *m_bulkCount = nullptr;
     QLabel *m_emptyHint = nullptr; // over the list viewport while it has no rows
     QComboBox *m_typeCombo = nullptr;
     QComboBox *m_dateCombo = nullptr;
@@ -90,6 +133,15 @@ private:
     QSplitter *m_splitter = nullptr;
     QToolButton *m_savedSearchesButton = nullptr;
     QTimer *m_searchDebounce = nullptr;
+    // Responsive shell (R1): filter rows, preview dock, overflow menu.
+    QWidget *m_filterWidget = nullptr; // search row
+    QWidget *m_filterRow = nullptr; // combo row, collapses into m_filtersButton
+    QToolButton *m_filtersButton = nullptr; // "Filters (n)" under Medium/Narrow
+    QDockWidget *m_previewDock = nullptr; // Medium: bottom drawer hosting m_preview
+    bool m_previewDocked = false; // true while m_preview lives in m_previewDock
+    QWidget *m_central = nullptr;
+    QVBoxLayout *m_centralLayout = nullptr;
+    DesignTokens::ShellMode m_shellMode = DesignTokens::ShellMode::Wide;
 
     // toolbar / context actions
     QToolBar *m_toolbar = nullptr;
@@ -101,6 +153,8 @@ private:
     QAction *m_pinnedOnlyAction = nullptr;
     QAction *m_sensitiveAction = nullptr; // audit view: sensitive entries only
     QAction *m_deleteFilteredAction = nullptr;
+    QToolButton *m_moreButton = nullptr; // "More" overflow under Medium/Narrow
+    QVector<QAction *> m_overflowActions; // moved into m_moreButton off Wide
 
     qint64 m_selectedId = 0;
     qint64 m_groupFilter = 0; // 0 = all

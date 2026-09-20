@@ -1,5 +1,6 @@
 #include "SnippetDialog.h"
 
+#include "DesignTokens.h"
 #include "HotkeyManager.h"
 #include "SnippetManager.h"
 #include "UiHelpers.h"
@@ -27,11 +28,14 @@ SnippetDialog::SnippetDialog(SnippetManager *manager, const QString &clipboardTe
 {
     setWindowTitle(tr("Snippets"));
     resize(780, 480);
+    setMinimumSize(560, 360); // narrow windows stack instead of clipping (R1)
     auto *layout = new QVBoxLayout(this);
 
     auto *splitter = new QSplitter(Qt::Horizontal, this);
+    splitter->setMinimumWidth(DesignTokens::BreakpointNarrow - 220);
     m_list = new QListWidget(splitter);
-    m_list->setMinimumWidth(200);
+    m_list->setMinimumWidth(160);
+    UiHelpers::styleItemList(m_list);
     splitter->addWidget(m_list);
 
     auto *right = new QWidget(splitter);

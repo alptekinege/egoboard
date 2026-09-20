@@ -14,6 +14,7 @@ class QLineEdit;
 class QLabel;
 class QFrame;
 class QAbstractListModel;
+class QStyledItemDelegate;
 class SnippetManager;
 class ScriptActionManager;
 
@@ -87,7 +88,9 @@ private:
 
     // Lightweight model for palette rows (keeps ClipboardRecord vector).
     class PaletteModel;
+    class PaletteDelegate;
     PaletteModel *m_model = nullptr;
+    PaletteDelegate *m_delegate = nullptr;
     QVector<ClipboardRecord> m_results;
     // For transform/snippet modes we reuse model but store names/ids in separate vectors
     struct TransformItem { QString name; QString label; QString desc; };
@@ -100,7 +103,20 @@ private:
     QStringList m_tagCandidates;
     QStringList m_groupCandidates;
     QStringList m_recentCommands;
+    QStringList m_recentSearches; // window feeds settings recents for empty input
     QString m_currentQuery;
     // Parsed query (field filters, free text, problems) behind the last search.
     SearchEngine::ParsedQuery m_parsed;
+    // Ghost completion preview (U9): dim suffix shown after the caret.
+    QLabel *m_ghost = nullptr;
+    // Empty-input recents section (U9): recent searches + recent commands.
+    struct RecentRow { QString kind; QString text; QString payload; };
+    QVector<RecentRow> m_recentRows;
+
+public:
+    // Test seams (U9): candidate ghost text + recents section without widgets.
+    static QString ghostSuffix(const QString &input, const QString &candidate);
+    void setRecentSearches(const QStringList &searches) { m_recentSearches = searches; }
+    QVector<RecentRow> recentRows() const { return m_recentRows; }
+    void rebuildRecentRows();
 };

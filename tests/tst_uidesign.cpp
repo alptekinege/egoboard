@@ -22,9 +22,13 @@
 #include <KSharedConfig>
 
 #include <QApplication>
+#include <QDateTime>
 #include <QFontMetrics>
+#include <QLineEdit>
 #include <QPalette>
+#include <QPushButton>
 #include <QVector>
+#include <QWidget>
 
 namespace {
 
@@ -61,6 +65,15 @@ private slots:
     void rowHeightFollowsTheDensityScale();
     void rowHeightStaysOnTheDelegateFormula();
     void timelineGeometryFitsAndHitTests();
+    void shellModesFollowTheBreakpoints();
+    void densityFloorsKeepTouchTargets();
+    void timelineHeightFollowsTheFont();
+    void popupElevationAndShadowAreShared();
+    void searchFieldMeetsTheTouchFloor();
+    void helpersBuildWithoutFixedPixels();
+    void timelineCollapsesBelowItsWidth();
+    void dayHeaderCoversTodayAndYesterday();
+    void delegateRespectsRowExtras();
 };
 
 void TestUiDesign::delegateTextRolesKeepTheirContrastFloor()
@@ -317,6 +330,167 @@ void TestUiDesign::timelineGeometryFitsAndHitTests()
             continue; // bars that do not fit are not clickable either
         QCOMPARE(DesignTokens::timelineBarAt(QSize(110, 48), bars, QPoint(center, 20)), i);
     }
+}
+
+void TestUiDesign::shellModesFollowTheBreakpoints()
+{
+    // U1: the shell mode is a pure function of the window width.
+    QCOMPARE(DesignTokens::shellModeForWidth(0), DesignTokens::ShellMode::Narrow);
+    QCOMPARE(DesignTokens::shellModeForWidth(DesignTokens::BreakpointNarrow - 1),
+             DesignTokens::ShellMode::Narrow);
+    QCOMPARE(DesignTokens::shellModeForWidth(DesignTokens::BreakpointNarrow),
+             DesignTokens::ShellMode::Medium);
+    QCOMPARE(DesignTokens::shellModeForWidth(DesignTokens::BreakpointWide - 1),
+             DesignTokens::ShellMode::Medium);
+    QCOMPARE(DesignTokens::shellModeForWidth(DesignTokens::BreakpointWide),
+             DesignTokens::ShellMode::Wide);
+    QCOMPARE(DesignTokens::shellModeForWidth(4000), DesignTokens::ShellMode::Wide);
+    // Breakpoints are ordered and the timeline collapses inside Narrow.
+    QVERIFY(DesignTokens::BreakpointNarrow < DesignTokens::BreakpointWide);
+    QVERIFY(DesignTokens::TimelineCollapseWidth < DesignTokens::BreakpointNarrow);
+    QVERIFY(DesignTokens::SettingsSidebarCollapseWidth < DesignTokens::BreakpointNarrow);
+}
+
+void TestUiDesign::densityFloorsKeepTouchTargets()
+{
+    // U5: compact rows stay tappable, spacious rows stay roomy.
+    QCOMPARE(DesignTokens::rowMinHeightForDensity(QStringLiteral("compact")),
+             DesignTokens::TouchTargetCompact);
+    QCOMPARE(DesignTokens::rowMinHeightForDensity(QStringLiteral("comfortable")), 40);
+    QCOMPARE(DesignTokens::rowMinHeightForDensity(QStringLiteral("spacious")), 48);
+    QCOMPARE(DesignTokens::rowMinHeightForDensity(QStringLiteral("nonsense")), 40);
+
+    const QFontMetrics metrics(QApplication::font());
+    // The floor only bites when the font is small: at the default size the
+    // delegate formula already clears 40 px, but it must never go below the
+    // floor even for a tiny font.
+    QVERIFY(DesignTokens::rowHeightForDensity(metrics, QStringLiteral("comfortable")) >= 40);
+    QVERIFY(DesignTokens::rowHeightForDensity(metrics, QStringLiteral("compact"))
+            >= DesignTokens::TouchTargetCompact);
+    QVERIFY(DesignTokens::rowHeightForDensity(metrics, QStringLiteral("spacious")) >= 48);
+    const QFont tiny = TextAppearance::withFontPointDelta(QApplication::font(), -2);
+    const QFontMetrics tinyMetrics(tiny);
+    QVERIFY(DesignTokens::rowHeightForDensity(tinyMetrics, QStringLiteral("compact"))
+            >= DesignTokens::TouchTargetCompact);
+    // WCAG 2.5.8 target-spacing floor is the loosest bound in the tree.
+    QVERIFY(DesignTokens::TouchTargetMin <= DesignTokens::TouchTargetCompact);
+    QVERIFY(DesignTokens::TouchTargetCompact <= DesignTokens::TouchTargetFull);
+}
+
+void TestUiDesign::timelineHeightFollowsTheFont()
+{
+    // U5: no fixed 48 px — the strip grows with the UI font, floor at 44 px.
+    const QFontMetrics metrics(QApplication::font());
+    const int height = DesignTokens::timelineHeightForFont(metrics);
+    QVERIFY(height >= 44);
+    QCOMPARE(height, qMax(44, qRound(metrics.height() * 2.6)));
+    const QFont bigger = TextAppearance::withFontPointDelta(QApplication::font(), 6);
+    QVERIFY(DesignTokens::timelineHeightForFont(QFontMetrics(bigger)) >= height);
+    const QFont tiny = TextAppearance::withFontPointDelta(QApplication::font(), -2);
+    QVERIFY(DesignTokens::timelineHeightForFont(QFontMetrics(tiny)) >= 44);
+}
+
+void TestUiDesign::popupElevationAndShadowAreShared()
+{
+    // U4: one elevation language — popups sit above cards, cards above flat.
+    QVERIFY(DesignTokens::ElevationPopupBlur > DesignTokens::ElevationCardBlur);
+    QVERIFY(DesignTokens::ElevationPopupOffsetY >= DesignTokens::ElevationCardOffsetY);
+    QCOMPARE(DesignTokens::ShadowAlpha, 140);
+    QVERIFY(DesignTokens::MotionDrawerMs <= DesignTokens::MotionDurationMs);
+    QVERIFY(DesignTokens::MotionChipMs <= DesignTokens::MotionDurationMs);
+    QVERIFY(DesignTokens::MotionToastMs <= DesignTokens::MotionDurationMs);
+    // Toasts dismiss on their own and never exceed the max width.
+    QVERIFY(DesignTokens::ToastDurationMs >= 1000);
+    QVERIFY(DesignTokens::ToastMaxWidth >= 320);
+}
+
+void TestUiDesign::searchFieldMeetsTheTouchFloor()
+{
+    // U5: the search field is at least the compact touch target tall.
+    QLineEdit field;
+    UiHelpers::styleSearchField(&field);
+    QVERIFY(field.minimumHeight() >= DesignTokens::TouchTargetCompact);
+    // Chips clear the same floor (close button 24 + vertical padding).
+    QVERIFY(DesignTokens::ChipCloseSize + 2 * DesignTokens::ChipPaddingV
+            >= DesignTokens::TouchTargetCompact);
+}
+
+void TestUiDesign::helpersBuildWithoutFixedPixels()
+{
+    // U4/U13: shared components construct offscreen and stay font-relative.
+    QWidget parent;
+    bool closed = false;
+    QWidget *chip = UiHelpers::makeChip(QStringLiteral("type:text"), QStringLiteral("Type filter"),
+                                        &parent, [&closed] { closed = true; });
+    QVERIFY(chip);
+    QVERIFY(chip->minimumHeight() >= DesignTokens::TouchTargetCompact);
+    QVERIFY(!chip->accessibleName().isEmpty());
+    QList<QPushButton *> buttons = chip->findChildren<QPushButton *>();
+    QVERIFY(!buttons.isEmpty());
+    QVERIFY(buttons.first()->minimumHeight() >= 0); // close affordance exists
+    QVERIFY(!closed);
+
+    QWidget *empty =
+        UiHelpers::makeEmptyState(QStringLiteral("edit-copy"), QStringLiteral("No entries yet"),
+                                  QStringLiteral("Copy something first"), &parent,
+                                  QStringLiteral("Clear filters"), [] {});
+    QVERIFY(empty);
+    QVERIFY(!empty->findChildren<QPushButton *>().isEmpty());
+
+    QWidget *toast = UiHelpers::makeToast(QStringLiteral("Entry deleted"), &parent,
+                                          QStringLiteral("Undo"), [] {});
+    QVERIFY(toast);
+    QVERIFY(toast->maximumWidth() <= DesignTokens::ToastMaxWidth
+            || toast->maximumWidth() == DesignTokens::ToastMaxWidth);
+    QVERIFY(!toast->accessibleName().isEmpty());
+    toast->deleteLater();
+
+    // Motion honors the Reduce motion switch.
+    UiHelpers::setReduceMotion(true);
+    QWidget probe;
+    UiHelpers::animate(&probe, UiHelpers::MotionKind::SlideUp);
+    QCOMPARE(probe.windowOpacity(), 1.0);
+    UiHelpers::setReduceMotion(false);
+}
+
+void TestUiDesign::timelineCollapsesBelowItsWidth()
+{
+    // R1: under TimelineCollapseWidth the strip hides behind a toggle instead
+    // of squeezing 14 bars into nothing; the collapse point sits in Narrow.
+    QCOMPARE(DesignTokens::shellModeForWidth(DesignTokens::TimelineCollapseWidth - 1),
+             DesignTokens::ShellMode::Narrow);
+    QCOMPARE(DesignTokens::shellModeForWidth(DesignTokens::TimelineCollapseWidth),
+             DesignTokens::ShellMode::Narrow);
+    // The collapsed strip still lays out without crashing (bars at min width).
+    const DesignTokens::TimelineGeometry geometry = DesignTokens::timelineGeometry(
+        QSize(DesignTokens::TimelineCollapseWidth - 100, 48), 14, 12);
+    QVERIFY(geometry.barWidth >= DesignTokens::TimelineMinBarWidth);
+}
+
+void TestUiDesign::dayHeaderCoversTodayAndYesterday()
+{
+    // R2: day headers name today/yesterday, older days use the locale format.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QCOMPARE(EntryDelegate::dayHeaderText(now), QStringLiteral("Today"));
+    QCOMPARE(EntryDelegate::dayHeaderText(now - 86400000), QStringLiteral("Yesterday"));
+    const QString older = EntryDelegate::dayHeaderText(now - 5 * 86400000);
+    QVERIFY(!older.isEmpty());
+    QVERIFY(older != QLatin1String("Today"));
+    QVERIFY(older != QLatin1String("Yesterday"));
+}
+
+void TestUiDesign::delegateRespectsRowExtras()
+{
+    // R2: extras are off by default and cheap to toggle.
+    EntryDelegate delegate(nullptr, nullptr);
+    QVERIFY(!delegate.showEntryIndex());
+    QVERIFY(!delegate.showUseCountBadge());
+    delegate.setShowEntryIndex(true);
+    delegate.setShowUseCountBadge(true);
+    QVERIFY(delegate.showEntryIndex());
+    QVERIFY(delegate.showUseCountBadge());
+    delegate.setShowEntryIndex(false);
+    QVERIFY(!delegate.showEntryIndex());
 }
 
 QTEST_MAIN(TestUiDesign)

@@ -7,6 +7,7 @@
 #include <memory>
 #include <QList>
 #include <QObject>
+#include <QPoint>
 #include <QStringList>
 
 class KConfig;
@@ -81,6 +82,12 @@ public:
 
     int quickPasteCount() const; // 1..9
     void setQuickPasteCount(int count);
+    // R3 quick-paste 2.0 (all persist per screen where it makes sense).
+    bool quickPasteTwoLine() const; // two-line rows: preview + meta
+    void setQuickPasteTwoLine(bool enabled);
+    QPoint quickPastePos(const QString &screen) const; // per-screen placement memory
+    void setQuickPastePos(const QString &screen, const QPoint &pos);
+    void clearQuickPastePos(const QString &screen);
 
     bool autostartEnabled() const;
     void setAutostartEnabled(bool enabled); // also writes/removes the .desktop entry
@@ -194,6 +201,16 @@ public:
     bool timelineEnabled() const;
     void setTimelineEnabled(bool enabled);
 
+    // R2 list options (all default off): group-by-day headers, row extras.
+    bool groupByDay() const;
+    void setGroupByDay(bool enabled);
+    bool showEntryIndex() const;
+    void setShowEntryIndex(bool show);
+    bool showUseCountBadge() const;
+    void setShowUseCountBadge(bool show);
+    bool privacyBlur() const; // blur payload previews until hover/focus
+    void setPrivacyBlur(bool blur);
+
     // Pasting
     bool closeAfterPaste() const; // hide the egoboard window when pasting (default on)
     void setCloseAfterPaste(bool close);
@@ -253,6 +270,10 @@ public:
     void setWindowGeometry(const QByteArray &geometry);
     QByteArray splitterState() const;
     void setSplitterState(const QByteArray &state);
+    // Per-mode splitter state (R1): Wide keeps the legacy key above; Medium
+    // and Narrow persist their own so mode switches restore, not reset.
+    QByteArray splitterStateForMode(int mode) const; // 0 = Wide, 1 = Medium, 2 = Narrow
+    void setSplitterStateForMode(int mode, const QByteArray &state);
     QString lastFilter() const; // serialized FilterSpec JSON
     void setLastFilter(const QString &filterJson);
 

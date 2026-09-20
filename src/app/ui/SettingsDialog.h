@@ -83,6 +83,10 @@ private:
     QComboBox *m_densityCombo = nullptr;
     QCheckBox *m_toolbarIconOnly = nullptr;
     QCheckBox *m_reduceMotion = nullptr;
+    QCheckBox *m_groupByDay = nullptr;
+    QCheckBox *m_showEntryIndex = nullptr;
+    QCheckBox *m_showUseCountBadge = nullptr;
+    QCheckBox *m_privacyBlur = nullptr;
     QCheckBox *m_closeAfterPaste = nullptr;
     QCheckBox *m_bumpOnPaste = nullptr;
     QCheckBox *m_pasteAsPlainText = nullptr;
@@ -96,6 +100,7 @@ private:
     QList<QCheckBox *> m_captureTypeBoxes; // one per recorded ContentType
     QCheckBox *m_pauseOnLock = nullptr;
     QSpinBox *m_quickPasteCount = nullptr;
+    QCheckBox *m_quickPasteTwoLine = nullptr;
     QSpinBox *m_debounce = nullptr;
     QSpinBox *m_maxItemMb = nullptr;
     QSpinBox *m_maxImageMb = nullptr;

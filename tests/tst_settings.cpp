@@ -44,6 +44,8 @@ private slots:
     void trayBehaviourPersists();
     void pauseOnLockSettingPersists();
     void backupSettingsPersist();
+    void listDisplayOptionsPersist();
+    void quickPasteOptionsPersist();
     void configMigrationsAreForwardOnly();
 
 private:
@@ -199,6 +201,24 @@ void TestSettings::sortTimestampsAndGeometry()
     QCOMPARE(settings.windowGeometry(), geometry);
     QCOMPARE(settings.splitterState(), splitter);
     QCOMPARE(settings.lastFilter(), QStringLiteral("{\"searchText\":\"hi\"}"));
+
+    // Per-mode splitter state (R1): Wide aliases the legacy key, Medium and
+    // Narrow persist their own blobs independently.
+    const QByteArray wide = QByteArrayLiteral("wide-blob");
+    const QByteArray medium = QByteArrayLiteral("medium-blob");
+    const QByteArray narrow = QByteArrayLiteral("narrow-blob");
+    settings.setSplitterStateForMode(0, wide);
+    QCOMPARE(settings.splitterState(), wide);
+    QCOMPARE(settings.splitterStateForMode(0), wide);
+    QVERIFY(settings.splitterStateForMode(1).isEmpty());
+    QVERIFY(settings.splitterStateForMode(2).isEmpty());
+    settings.setSplitterStateForMode(1, medium);
+    settings.setSplitterStateForMode(2, narrow);
+    QCOMPARE(settings.splitterStateForMode(0), wide);
+    QCOMPARE(settings.splitterStateForMode(1), medium);
+    QCOMPARE(settings.splitterStateForMode(2), narrow);
+    // The legacy key still tracks Wide only.
+    QCOMPARE(settings.splitterState(), wide);
 }
 
 void TestSettings::sensitiveModeAndRedactKinds()
@@ -733,6 +753,53 @@ void TestSettings::backupSettingsPersist()
         config.sync();
         SettingsManager settings;
         QCOMPARE(settings.backupKeep(), 7);
+    }
+}
+
+void TestSettings::listDisplayOptionsPersist()
+{
+    // R2: all default off.
+    {
+        SettingsManager settings;
+        QCOMPARE(settings.groupByDay(), false);
+        QCOMPARE(settings.showEntryIndex(), false);
+        QCOMPARE(settings.showUseCountBadge(), false);
+        QCOMPARE(settings.privacyBlur(), false);
+
+        settings.setGroupByDay(true);
+        settings.setShowEntryIndex(true);
+        settings.setShowUseCountBadge(true);
+        settings.setPrivacyBlur(true);
+    }
+    {
+        SettingsManager loaded;
+        QCOMPARE(loaded.groupByDay(), true);
+        QCOMPARE(loaded.showEntryIndex(), true);
+        QCOMPARE(loaded.showUseCountBadge(), true);
+        QCOMPARE(loaded.privacyBlur(), true);
+    }
+}
+
+void TestSettings::quickPasteOptionsPersist()
+{
+    // R3: two-line rows default off; per-screen positions round-trip.
+    {
+        SettingsManager settings;
+        QCOMPARE(settings.quickPasteTwoLine(), false);
+        QVERIFY(settings.quickPastePos(QStringLiteral("HDMI-1")).isNull());
+
+        settings.setQuickPasteTwoLine(true);
+        settings.setQuickPastePos(QStringLiteral("HDMI-1"), QPoint(120, 340));
+        settings.setQuickPastePos(QStringLiteral("eDP-1"), QPoint(10, 20));
+    }
+    {
+        SettingsManager loaded;
+        QCOMPARE(loaded.quickPasteTwoLine(), true);
+        QCOMPARE(loaded.quickPastePos(QStringLiteral("HDMI-1")), QPoint(120, 340));
+        QCOMPARE(loaded.quickPastePos(QStringLiteral("eDP-1")), QPoint(10, 20));
+        loaded.clearQuickPastePos(QStringLiteral("HDMI-1"));
+        QVERIFY(loaded.quickPastePos(QStringLiteral("HDMI-1")).isNull());
+        QCOMPARE(loaded.quickPastePos(QStringLiteral("eDP-1")), QPoint(10, 20));
     }
 }
 

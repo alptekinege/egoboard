@@ -1,5 +1,6 @@
 #include "TransformChainDialog.h"
 
+#include "DesignTokens.h"
 #include "ScriptActionManager.h"
 #include "UiHelpers.h"
 
@@ -19,6 +20,7 @@ TransformChainDialog::TransformChainDialog(const QString &inputText, ScriptActio
 {
     setWindowTitle(tr("Transform Chain — live preview"));
     resize(860, 520);
+    setMinimumSize(560, 400); // narrow windows compress instead of clipping (R1)
 
     auto *layout = new QVBoxLayout(this);
     auto *splitter = new QSplitter(Qt::Horizontal, this);
@@ -28,6 +30,7 @@ TransformChainDialog::TransformChainDialog(const QString &inputText, ScriptActio
     auto *leftLay = new QVBoxLayout(left);
     leftLay->addWidget(new QLabel(tr("Available transforms (double-click to add):"), left));
     m_available = new QListWidget(left);
+    UiHelpers::styleItemList(m_available);
     leftLay->addWidget(m_available, 1);
 
     // Chain
@@ -35,6 +38,7 @@ TransformChainDialog::TransformChainDialog(const QString &inputText, ScriptActio
     auto *midLay = new QVBoxLayout(mid);
     midLay->addWidget(new QLabel(tr("Chain (in order):"), mid));
     m_chain = new QListWidget(mid);
+    UiHelpers::styleItemList(m_chain);
     m_chain->setDragDropMode(QAbstractItemView::InternalMove);
     midLay->addWidget(m_chain, 1);
     auto *upDown = new QHBoxLayout();

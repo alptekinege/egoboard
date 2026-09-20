@@ -115,6 +115,7 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
     setWindowTitle(tr("Egoboard Settings"));
     setModal(true);
     resize(800, 640);
+    setMinimumSize(560, 420); // narrow windows compress instead of clipping (R1)
 
     auto *layout = new QVBoxLayout(this);
 
@@ -135,10 +136,7 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
     sidebar->setFixedWidth(148);
     sidebar->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     sidebar->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
-    sidebar->setStyleSheet(QStringLiteral(
-        "QListWidget { background: transparent; border: none; }"
-        "QListWidget::item { padding: 4px 2px; border-radius: 6px; }"
-        "QListWidget::item:selected { background: palette(highlight); color: palette(highlighted-text); }"));
+    UiHelpers::styleItemList(sidebar);
 
     auto *stack = new QStackedWidget(this);
     const auto addPage = [&sidebar, &stack](const QString &iconName, const QString &label,
@@ -413,6 +411,16 @@ QWidget *SettingsDialog::buildGeneralPage()
     m_reduceMotion = new QCheckBox(tr("Reduce motion (no popup fades or timeline hover transition)"), appearanceBox);
     m_reduceMotion->setToolTip(tr("Animations are capped at ~120 ms; turning this on removes them entirely."));
     appearanceLayout->addWidget(m_reduceMotion);
+    m_groupByDay = new QCheckBox(tr("Group history list by day (sticky date headers)"), appearanceBox);
+    m_groupByDay->setToolTip(tr("Shows one header row per day above the entries. Off = plain chronological list."));
+    appearanceLayout->addWidget(m_groupByDay);
+    m_showEntryIndex = new QCheckBox(tr("Show entry index in rows (#1, #2, …)"), appearanceBox);
+    appearanceLayout->addWidget(m_showEntryIndex);
+    m_showUseCountBadge = new QCheckBox(tr("Show use-count badge in rows (0 pastes)"), appearanceBox);
+    appearanceLayout->addWidget(m_showUseCountBadge);
+    m_privacyBlur = new QCheckBox(tr("Blur sensitive previews until hovered"), appearanceBox);
+    m_privacyBlur->setToolTip(tr("Sensitive entries stay blurred in the preview until hovered or focused."));
+    appearanceLayout->addWidget(m_privacyBlur);
     appearanceLayout->addWidget(makeHint(tr("Color themes are the KDE color schemes (<code>color-schemes</code> dirs) and icon themes installed on this system; System follows whichever Plasma has active. Themes preview live and apply on OK/Apply; text size and colors take effect as you change them. Text colors marked \"contrast-checked\" keep the scheme's color but raise it until it is readable."), appearanceBox));
     layout->addWidget(appearanceBox);
 
@@ -490,6 +498,10 @@ QWidget *SettingsDialog::buildCapturePage()
     countRow->addWidget(m_quickPasteCount);
     countRow->addStretch(1);
     limitsForm->addRow(tr("Entries in quick paste menu:"), countRow);
+    m_quickPasteTwoLine = new QCheckBox(
+        tr("Two-line rows in quick paste (preview + type · app · age)"), limitsBox);
+    m_quickPasteTwoLine->setToolTip(tr("Shows a second meta line per row. Off = single-line rows."));
+    limitsForm->addRow(QString(), m_quickPasteTwoLine);
     auto *countHint = makeHint(QString(), limitsBox);
     limitsForm->addRow(QString(), countHint);
     connect(m_quickPasteCount, QOverload<int>::of(&QSpinBox::valueChanged), this, [countHint,this](int v){
@@ -1510,7 +1522,7 @@ QWidget *SettingsDialog::buildPlatformDiagnosticsPage()
     m_diagBrowser = new QTextBrowser(diagBox);
     m_diagBrowser->setReadOnly(true);
     m_diagBrowser->setOpenExternalLinks(false);
-    m_diagBrowser->setStyleSheet(QStringLiteral("font-family: monospace; font-size: 11px;"));
+    m_diagBrowser->setStyleSheet(QStringLiteral("font-family: monospace;")); // size follows the UI font (U5)
     diagLayout->addWidget(m_diagBrowser, 1);
     auto *row = new QHBoxLayout();
     auto *copyBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-copy")), tr("Copy to clipboard"), diagBox);
@@ -1823,6 +1835,8 @@ void SettingsDialog::load()
     m_primarySelection->setChecked(m_ctx.settings()->monitorPrimarySelection());
     if (m_pauseOnLock) m_pauseOnLock->setChecked(m_ctx.settings()->pauseOnLock());
     m_quickPasteCount->setValue(m_ctx.settings()->quickPasteCount());
+    if (m_quickPasteTwoLine)
+        m_quickPasteTwoLine->setChecked(m_ctx.settings()->quickPasteTwoLine());
     m_autostart->setChecked(m_ctx.settings()->autostartEnabled());
     if (m_autostartCommand) {
         m_autostartCommand->setText(m_ctx.settings()->effectiveAutostartCommand());
@@ -1964,6 +1978,14 @@ void SettingsDialog::load()
         m_toolbarIconOnly->setChecked(m_ctx.settings()->toolbarIconOnly());
     if (m_reduceMotion)
         m_reduceMotion->setChecked(m_ctx.settings()->reduceMotion());
+    if (m_groupByDay)
+        m_groupByDay->setChecked(m_ctx.settings()->groupByDay());
+    if (m_showEntryIndex)
+        m_showEntryIndex->setChecked(m_ctx.settings()->showEntryIndex());
+    if (m_showUseCountBadge)
+        m_showUseCountBadge->setChecked(m_ctx.settings()->showUseCountBadge());
+    if (m_privacyBlur)
+        m_privacyBlur->setChecked(m_ctx.settings()->privacyBlur());
 }
 
 void SettingsDialog::save()
@@ -1973,6 +1995,8 @@ void SettingsDialog::save()
     m_ctx.settings()->setMonitorPrimarySelection(m_primarySelection->isChecked());
     if (m_pauseOnLock) m_ctx.settings()->setPauseOnLock(m_pauseOnLock->isChecked());
     m_ctx.settings()->setQuickPasteCount(m_quickPasteCount->value());
+    if (m_quickPasteTwoLine)
+        m_ctx.settings()->setQuickPasteTwoLine(m_quickPasteTwoLine->isChecked());
     m_ctx.settings()->setAutostartEnabled(m_autostart->isChecked());
     // Same order as buildCapturePage(): Text / RichText / Image / Files.
     if (m_captureTypeBoxes.size() == 4) {
@@ -2049,6 +2073,14 @@ void SettingsDialog::save()
         m_ctx.settings()->setToolbarIconOnly(m_toolbarIconOnly->isChecked());
     if (m_reduceMotion)
         m_ctx.settings()->setReduceMotion(m_reduceMotion->isChecked());
+    if (m_groupByDay)
+        m_ctx.settings()->setGroupByDay(m_groupByDay->isChecked());
+    if (m_showEntryIndex)
+        m_ctx.settings()->setShowEntryIndex(m_showEntryIndex->isChecked());
+    if (m_showUseCountBadge)
+        m_ctx.settings()->setShowUseCountBadge(m_showUseCountBadge->isChecked());
+    if (m_privacyBlur)
+        m_ctx.settings()->setPrivacyBlur(m_privacyBlur->isChecked());
     // transform/script hidden/disabled are saved immediately on toggle, but also save here
     refreshDiagnostics();
 }

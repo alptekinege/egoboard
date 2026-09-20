@@ -12,6 +12,7 @@
 #include <QGuiApplication>
 #include <QHelpEvent>
 #include <QIcon>
+#include <QLocale>
 #include <QPainter>
 #include <QStyle>
 #include <QToolTip>
@@ -126,7 +127,20 @@ void EntryDelegate::refreshTimeFormats()
     // Cached once per settings change instead of per painted row.
     m_absoluteTimestamps = m_settings && m_settings->timestampStyle() == QLatin1String("absolute");
     m_ampmClock = m_settings && !m_settings->clock24h();
+    m_showEntryIndex = m_settings && m_settings->showEntryIndex();
+    m_showUseCountBadge = m_settings && m_settings->showUseCountBadge();
     m_groupCache.clear();
+}
+
+QString EntryDelegate::dayHeaderText(qint64 timestampMs)
+{
+    const QDate date = QDateTime::fromMSecsSinceEpoch(timestampMs).date();
+    const QDate today = QDate::currentDate();
+    if (date == today)
+        return tr("Today");
+    if (date == today.addDays(-1))
+        return tr("Yesterday");
+    return QLocale::system().toString(date, QLocale::LongFormat);
 }
 
 void EntryDelegate::clearGroupCache()
@@ -211,8 +225,12 @@ void EntryDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
     QFont previewFont = originalFont;
     previewFont.setWeight(QFont::DemiBold);
     painter->setFont(previewFont);
+    QString previewSource = index.data().toString();
+    // R2 row extra: 1-based entry index prefix ("12 · text…").
+    if (m_showEntryIndex)
+        previewSource = tr("%1 · %2").arg(index.row() + 1).arg(previewSource);
     const QString preview =
-        painter->fontMetrics().elidedText(index.data().toString(), Qt::ElideRight, textWidth);
+        painter->fontMetrics().elidedText(previewSource, Qt::ElideRight, textWidth);
     const QRect previewRect(textLeft, top + metrics.padding, textWidth,
                             painter->fontMetrics().height());
     const QColor previewColor =
@@ -241,6 +259,9 @@ void EntryDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
     const int useCount = index.data(ClipboardListModel::UseCountRole).toInt();
     if (useCount > 0)
         metaParts << tr("used %1×").arg(useCount);
+    // R2 row extra: explicit use-count badge even at zero ("0 pastes").
+    if (m_showUseCountBadge && useCount == 0)
+        metaParts << tr("0 pastes");
     const QString meta = painter->fontMetrics().elidedText(metaParts.join(QStringLiteral(" · ")),
                                                            Qt::ElideRight, textWidth);
     painter->drawText(QRect(textLeft, top + metrics.padding + painter->fontMetrics().height() + 2,

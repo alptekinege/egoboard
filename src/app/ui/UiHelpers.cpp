@@ -3,14 +3,24 @@
 #include "DesignTokens.h"
 #include "../TextAppearance.h"
 
+#include <QAbstractItemView>
+#include <QAccessible>
 #include <QApplication>
 #include <QCoreApplication>
 #include <QEvent>
 #include <QFont>
+#include <QFrame>
+#include <QGraphicsDropShadowEffect>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListView>
+#include <QListWidget>
 #include <QPalette>
 #include <QPropertyAnimation>
+#include <QPushButton>
+#include <QTimer>
+#include <QVBoxLayout>
 #include <QWidget>
 
 namespace {
@@ -92,9 +102,203 @@ void UiHelpers::styleSearchField(QLineEdit *field)
         return;
     const QFontMetrics metrics(field->font());
     field->setMinimumHeight(
-        qMax(DesignTokens::IconL + 2 * DesignTokens::SpaceXs,
-             metrics.height() + 2 * DesignTokens::SpaceXs));
+        qMax(DesignTokens::TouchTargetCompact,
+             qMax(DesignTokens::IconL + 2 * DesignTokens::SpaceXs,
+                  metrics.height() + 2 * DesignTokens::SpaceXs)));
     field->setTextMargins(DesignTokens::SpaceS, 0, DesignTokens::SpaceS, 0);
+}
+
+QFrame *UiHelpers::makeCard(QWidget *parent)
+{
+    auto *card = new QFrame(parent);
+    card->setStyleSheet(QStringLiteral("QFrame { background: palette(window); "
+                                       "border: 1px solid palette(mid); border-radius: %1px; }")
+                            .arg(DesignTokens::RadiusL));
+    card->setGraphicsEffect(cardShadow(card, false));
+    return card;
+}
+
+QFrame *UiHelpers::makePopupPanel(QWidget *parent)
+{
+    auto *card = new QFrame(parent);
+    card->setStyleSheet(QStringLiteral("QFrame { background: palette(window); "
+                                       "border: 1px solid palette(mid); border-radius: %1px; }")
+                            .arg(DesignTokens::RadiusL));
+    card->setGraphicsEffect(cardShadow(card, true));
+    return card;
+}
+
+QGraphicsDropShadowEffect *UiHelpers::cardShadow(QObject *parent, bool elevated)
+{
+    auto *shadow = new QGraphicsDropShadowEffect(parent);
+    shadow->setBlurRadius(elevated ? DesignTokens::ElevationPopupBlur
+                                   : DesignTokens::ElevationCardBlur);
+    shadow->setOffset(0, elevated ? DesignTokens::ElevationPopupOffsetY
+                                  : DesignTokens::ElevationCardOffsetY);
+    shadow->setColor(QColor(0, 0, 0, DesignTokens::ShadowAlpha));
+    return shadow;
+}
+
+namespace {
+QString itemListStyle()
+{
+    return QStringLiteral("QListWidget, QListView { border: none; background: transparent; }"
+                          "QListWidget::item, QListView::item { padding: %1px 2px; border-radius: %2px; "
+                          "min-height: %3px; }"
+                          "QListWidget::item:selected, QListView::item:selected { "
+                          "background: palette(highlight); color: palette(highlighted-text); }")
+        .arg(DesignTokens::SpaceXs)
+        .arg(DesignTokens::RadiusL)
+        .arg(DesignTokens::TouchTargetCompact - 2 * DesignTokens::SpaceXs);
+}
+} // namespace
+
+void UiHelpers::styleItemList(QListWidget *list)
+{
+    if (list)
+        list->setStyleSheet(itemListStyle());
+}
+
+void UiHelpers::styleItemList(QListView *list)
+{
+    if (list)
+        list->setStyleSheet(itemListStyle());
+}
+
+QWidget *UiHelpers::makeChip(const QString &label, const QString &accessibleName, QWidget *parent,
+                             const std::function<void()> &onClose)
+{
+    auto *chip = new QWidget(parent);
+    chip->setAccessibleName(accessibleName.isEmpty() ? label : accessibleName);
+    // Not a full accessible button container: the close button carries the
+    // action, the label carries the reading.
+    auto *layout = new QHBoxLayout(chip);
+    layout->setContentsMargins(DesignTokens::ChipPaddingH, DesignTokens::ChipPaddingV,
+                               DesignTokens::SpaceXs, DesignTokens::ChipPaddingV);
+    layout->setSpacing(DesignTokens::SpaceXs);
+
+    auto *text = new QLabel(label, chip);
+    text->setTextFormat(Qt::PlainText);
+    text->setAccessibleName(chip->accessibleName());
+    layout->addWidget(text);
+
+    auto *close = new QPushButton(QStringLiteral("\u00d7"), chip);
+    close->setFlat(true);
+    close->setFixedSize(DesignTokens::ChipCloseSize, DesignTokens::ChipCloseSize);
+    close->setAccessibleName(QObject::tr("Remove filter %1").arg(label));
+    close->setToolTip(close->accessibleName());
+    close->setCursor(Qt::PointingHandCursor);
+    QObject::connect(close, &QPushButton::clicked, chip, [onClose] {
+        if (onClose)
+            onClose();
+    });
+    layout->addWidget(close);
+
+    // Pill outline, palette-relative so every scheme keeps the border visible.
+    chip->setStyleSheet(QStringLiteral("QWidget { background: palette(button); "
+                                       "border: 1px solid palette(mid); border-radius: %1px; }")
+                            .arg(DesignTokens::RadiusL));
+    chip->setMinimumHeight(DesignTokens::TouchTargetCompact);
+    return chip;
+}
+
+QWidget *UiHelpers::makeEmptyState(const QString &iconName, const QString &title,
+                                   const QString &subtitle, QWidget *parent,
+                                   const QString &actionText,
+                                   const std::function<void()> &onAction)
+{
+    auto *box = new QWidget(parent);
+    auto *layout = new QVBoxLayout(box);
+    layout->setContentsMargins(DesignTokens::SpaceL, DesignTokens::SpaceL, DesignTokens::SpaceL,
+                               DesignTokens::SpaceL);
+    layout->setSpacing(DesignTokens::SpaceS);
+    layout->setAlignment(Qt::AlignCenter);
+
+    if (!iconName.isEmpty()) {
+        auto *icon = new QLabel(box);
+        const QIcon theme = QIcon::fromTheme(iconName);
+        if (!theme.isNull())
+            icon->setPixmap(theme.pixmap(DesignTokens::IconL, DesignTokens::IconL));
+        icon->setAlignment(Qt::AlignCenter);
+        icon->setAccessibleName(title);
+        layout->addWidget(icon);
+    }
+    auto *titleLabel = new QLabel(title, box);
+    QFont titleFont = titleLabel->font();
+    titleFont.setWeight(QFont::DemiBold);
+    titleLabel->setFont(titleFont);
+    titleLabel->setAlignment(Qt::AlignCenter);
+    titleLabel->setTextFormat(Qt::PlainText);
+    layout->addWidget(titleLabel);
+
+    if (!subtitle.isEmpty()) {
+        QLabel *hint = makeHint(subtitle, box, /*richText=*/false);
+        hint->setAlignment(Qt::AlignCenter);
+        layout->addWidget(hint);
+    }
+    if (!actionText.isEmpty()) {
+        auto *button = new QPushButton(actionText, box);
+        button->setMinimumHeight(DesignTokens::TouchTargetCompact);
+        QObject::connect(button, &QPushButton::clicked, box, [onAction] {
+            if (onAction)
+                onAction();
+        });
+        layout->addWidget(button, 0, Qt::AlignCenter);
+    }
+    return box;
+}
+
+QWidget *UiHelpers::makeToast(const QString &message, QWidget *parent,
+                              const QString &actionText,
+                              const std::function<void()> &onAction)
+{
+    auto *toast = new QWidget(parent, Qt::ToolTip);
+    toast->setAttribute(Qt::WA_ShowWithoutActivating, true);
+    toast->setAccessibleName(message);
+    QAccessibleEvent alert(toast, QAccessible::Alert);
+    QAccessible::updateAccessibility(&alert);
+
+    auto *layout = new QHBoxLayout(toast);
+    layout->setContentsMargins(DesignTokens::SpaceM, DesignTokens::SpaceS, DesignTokens::SpaceM,
+                               DesignTokens::SpaceS);
+    layout->setSpacing(DesignTokens::SpaceM);
+
+    auto *text = new QLabel(message, toast);
+    text->setTextFormat(Qt::PlainText);
+    text->setWordWrap(true);
+    layout->addWidget(text, 1);
+
+    if (!actionText.isEmpty()) {
+        auto *button = new QPushButton(actionText, toast);
+        button->setFlat(true);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setMinimumHeight(DesignTokens::TouchTargetCompact);
+        QObject::connect(button, &QPushButton::clicked, toast, [toast, onAction] {
+            if (onAction)
+                onAction();
+            toast->deleteLater();
+        });
+        layout->addWidget(button);
+    }
+
+    toast->setStyleSheet(QStringLiteral("QWidget { background: palette(window); "
+                                        "border: 1px solid palette(mid); border-radius: %1px; }")
+                             .arg(DesignTokens::RadiusL));
+    toast->setGraphicsEffect(cardShadow(toast, true));
+    toast->setMaximumWidth(DesignTokens::ToastMaxWidth);
+
+    // Auto-dismiss; hovering keeps it alive is a later R4 concern.
+    QTimer::singleShot(DesignTokens::ToastDurationMs, toast, &QObject::deleteLater);
+    return toast;
+}
+
+void UiHelpers::ensureTouchTarget(QWidget *widget, const QString &density)
+{
+    if (!widget)
+        return;
+    const int floor = DesignTokens::rowMinHeightForDensity(density);
+    if (widget->minimumHeight() < floor)
+        widget->setMinimumHeight(floor);
 }
 
 QString UiHelpers::positiveStyle()
@@ -136,15 +340,28 @@ void UiHelpers::setReduceMotion(bool reduce)
 
 void UiHelpers::fadeIn(QWidget *window)
 {
-    if (!window)
+    animate(window, MotionKind::Fade);
+}
+
+void UiHelpers::animate(QWidget *widget, MotionKind kind)
+{
+    if (!widget)
         return;
     if (g_reduceMotion) {
-        window->setWindowOpacity(1.0);
+        widget->setWindowOpacity(1.0);
+        widget->setGraphicsEffect(nullptr);
         return;
     }
-    window->setWindowOpacity(0.0);
-    auto *animation = new QPropertyAnimation(window, "windowOpacity", window);
-    animation->setDuration(DesignTokens::MotionDurationMs);
+    int duration = DesignTokens::MotionDurationMs;
+    if (kind == MotionKind::SlideSide)
+        duration = DesignTokens::MotionDrawerMs;
+    else if (kind == MotionKind::SlideUp)
+        duration = DesignTokens::MotionToastMs;
+    // Fade is the base for every kind; slide kinds shift position via the
+    // window opacity only (no layout move), keeping this headless-testable.
+    widget->setWindowOpacity(0.0);
+    auto *animation = new QPropertyAnimation(widget, "windowOpacity", widget);
+    animation->setDuration(duration);
     animation->setStartValue(0.0);
     animation->setEndValue(1.0);
     animation->setEasingCurve(QEasingCurve::OutCubic);

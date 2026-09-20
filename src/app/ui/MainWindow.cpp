@@ -46,7 +46,11 @@
 #include <QScreen>
 #include <QSplitter>
 #include <QTimer>
+#include <QDockWidget>
+#include <QPushButton>
+#include <QResizeEvent>
 #include <QShortcut>
+#include <QWidgetAction>
 #include <QToolBar>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -135,10 +139,10 @@ MainWindow::MainWindow(ApplicationContext &context, QWidget *parent)
         const QByteArray geometry = m_ctx.settings()->windowGeometry();
         if (!geometry.isEmpty())
             restoreGeometry(geometry);
-        const QByteArray splitter = m_ctx.settings()->splitterState();
-        if (!splitter.isEmpty() && m_splitter)
-            m_splitter->restoreState(splitter);
     }
+    applyResponsiveMode(width() > 0 ? width() : 900);
+    if (m_ctx.settings()->rememberWindowGeometry())
+        restoreSplitterForMode();
     if (m_ctx.settings()->restoreLastFilter()) {
         const FilterSpec saved = FilterSpec::fromJsonString(m_ctx.settings()->lastFilter());
         if (!saved.isTrivial())
@@ -149,14 +153,22 @@ MainWindow::MainWindow(ApplicationContext &context, QWidget *parent)
 void MainWindow::buildUi()
 {
     auto *central = new QWidget(this);
+    m_central = central;
     auto *layout = new QVBoxLayout(central);
+    m_centralLayout = layout;
     layout->setContentsMargins(6, 6, 6, 6);
     layout->setSpacing(6);
 
-    // --- filter bar ---------------------------------------------------------
-    auto *filterRow = new QHBoxLayout();
+    // --- filter bar: search row + collapsible filter row (U2) ----------------
+    m_filterWidget = new QWidget(central);
+    auto *filterStack = new QVBoxLayout(m_filterWidget);
+    filterStack->setContentsMargins(0, 0, 0, 0);
+    filterStack->setSpacing(DesignTokens::SpaceXs);
 
-    m_search = new QLineEdit(central);
+    auto *searchRow = new QHBoxLayout();
+    searchRow->setContentsMargins(0, 0, 0, 0);
+
+    m_search = new QLineEdit(m_filterWidget);
     m_search->setPlaceholderText(tr("Search history…  •  app:firefox  has:ocr  -word  OR  /regex/"));
     m_search->setClearButtonEnabled(true);
     m_search->setAccessibleName(tr("Search history"));
@@ -167,7 +179,8 @@ void MainWindow::buildUi()
            "regular expression."));
     m_search->setToolTip(m_search->accessibleDescription());
     UiHelpers::styleSearchField(m_search);
-    filterRow->addWidget(m_search, 3);
+    m_search->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    searchRow->addWidget(m_search, 3);
 
     // Trailing actions inside the search field: search scope and recent queries.
     m_searchScope = m_ctx.settings()->searchScope();
@@ -181,16 +194,52 @@ void MainWindow::buildUi()
     m_recentSearchAction->setToolTip(tr("Recent searches"));
     connect(m_recentSearchAction, &QAction::triggered, this, &MainWindow::showRecentSearches);
 
-    m_typeCombo = new QComboBox(central);
+    // "Filters (n)": collapsed combo row under Medium/Narrow (U2).
+    m_filtersButton = new QToolButton(m_filterWidget);
+    m_filtersButton->setText(tr("Filters"));
+    m_filtersButton->setIcon(QIcon::fromTheme(QStringLiteral("view-filter")));
+    m_filtersButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_filtersButton->setPopupMode(QToolButton::InstantPopup);
+    m_filtersButton->setAccessibleName(tr("Filter options"));
+    m_filtersButton->setVisible(false);
+    searchRow->addWidget(m_filtersButton);
+
+    // Saved searches ("smart folders"): apply or store the current filter.
+    m_savedSearchesButton = new QToolButton(m_filterWidget);
+    m_savedSearchesButton->setText(tr("Searches"));
+    m_savedSearchesButton->setIcon(QIcon::fromTheme(QStringLiteral("folder-saved-search")));
+    m_savedSearchesButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_savedSearchesButton->setPopupMode(QToolButton::InstantPopup);
+    m_savedSearchesButton->setToolTip(tr("Saved searches — apply one, or save the current filter combination."));
+    QMenu *searchesMenu = new QMenu(m_savedSearchesButton);
+    connect(searchesMenu, &QMenu::aboutToShow, this, &MainWindow::buildSavedSearchesMenu);
+    m_savedSearchesButton->setMenu(searchesMenu);
+    searchRow->addWidget(m_savedSearchesButton);
+
+    filterStack->addLayout(searchRow);
+
+    m_filterRow = new QWidget(m_filterWidget);
+    auto *filterRow = new QHBoxLayout(m_filterRow);
+    filterRow->setContentsMargins(0, 0, 0, 0);
+    filterRow->setSpacing(DesignTokens::SpaceS);
+
+    const auto comboPolicy = [](QComboBox *combo) {
+        combo->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
+        combo->setMinimumContentsLength(8);
+        combo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    };
+
+    m_typeCombo = new QComboBox(m_filterRow);
     m_typeCombo->setAccessibleName(tr("Content type filter"));
     m_typeCombo->addItem(tr("All types"), -1);
     m_typeCombo->addItem(tr("Text"), int(ContentType::Text));
     m_typeCombo->addItem(tr("Rich text"), int(ContentType::RichText));
     m_typeCombo->addItem(tr("Images"), int(ContentType::Image));
     m_typeCombo->addItem(tr("Files"), int(ContentType::Files));
+    comboPolicy(m_typeCombo);
     filterRow->addWidget(m_typeCombo);
 
-    m_dateCombo = new QComboBox(central);
+    m_dateCombo = new QComboBox(m_filterRow);
     m_dateCombo->setAccessibleName(tr("Date range filter"));
     m_dateCombo->addItem(tr("Any time"), 0);
     m_dateCombo->addItem(tr("Today"), 1);
@@ -198,21 +247,25 @@ void MainWindow::buildUi()
     m_dateCombo->addItem(tr("Past week"), 3);
     m_dateCombo->addItem(tr("Past month"), 4);
     m_dateCombo->addItem(tr("Custom range…"), 99);
+    comboPolicy(m_dateCombo);
     filterRow->addWidget(m_dateCombo);
-    m_appCombo = new QComboBox(central);
+    m_appCombo = new QComboBox(m_filterRow);
+    // 140 px only in Wide; Medium/Narrow let it shrink (updateFilterBarMode).
     m_appCombo->setMinimumWidth(140);
     m_appCombo->setAccessibleName(tr("Source application filter"));
     m_appCombo->addItem(tr("All sources"), QString());
     refreshAppFilter();
+    comboPolicy(m_appCombo);
     filterRow->addWidget(m_appCombo, 1);
 
-    m_tagCombo = new QComboBox(central);
+    m_tagCombo = new QComboBox(m_filterRow);
     m_tagCombo->setToolTip(tr("Filter by tag — an entry matches when it carries the selected tag."));
     m_tagCombo->setAccessibleName(tr("Tag filter"));
     refreshTagFilter();
+    comboPolicy(m_tagCombo);
     filterRow->addWidget(m_tagCombo);
 
-    m_sortCombo = new QComboBox(central);
+    m_sortCombo = new QComboBox(m_filterRow);
     m_sortCombo->setAccessibleName(tr("Sort order"));
     m_sortCombo->addItem(tr("Newest first"), int(FilterSpec::SortMode::Newest));
     m_sortCombo->addItem(tr("Oldest first"), int(FilterSpec::SortMode::Oldest));
@@ -223,27 +276,26 @@ void MainWindow::buildUi()
         if (sortIndex >= 0)
             m_sortCombo->setCurrentIndex(sortIndex);
     }
+    comboPolicy(m_sortCombo);
     filterRow->addWidget(m_sortCombo);
 
-    // Saved searches ("smart folders"): apply or store the current filter.
-    m_savedSearchesButton = new QToolButton(central);
-    m_savedSearchesButton->setText(tr("Searches"));
-    m_savedSearchesButton->setIcon(QIcon::fromTheme(QStringLiteral("folder-saved-search")));
-    m_savedSearchesButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    m_savedSearchesButton->setPopupMode(QToolButton::InstantPopup);
-    m_savedSearchesButton->setToolTip(tr("Saved searches — apply one, or save the current filter combination."));
-    QMenu *searchesMenu = new QMenu(m_savedSearchesButton);
-    connect(searchesMenu, &QMenu::aboutToShow, this, &MainWindow::buildSavedSearchesMenu);
-    m_savedSearchesButton->setMenu(searchesMenu);
-    filterRow->addWidget(m_savedSearchesButton);
-
-    layout->addLayout(filterRow);
+    filterStack->addWidget(m_filterRow);
+    layout->addWidget(m_filterWidget);
 
     // Typed field filters (app:, type:, …) and rejected values, mirrored from
     // the search box so the effective query is visible while typing.
     m_queryHint = UiHelpers::makeHint(QString(), central, /*richText=*/false);
     m_queryHint->setVisible(false);
     layout->addWidget(m_queryHint);
+
+    // R2: removable active-filter chips (one per active filter, × clears it).
+    m_chipRow = new QWidget(central);
+    m_chipLayout = new QHBoxLayout(m_chipRow);
+    m_chipLayout->setContentsMargins(0, 0, 0, 0);
+    m_chipLayout->setSpacing(DesignTokens::ChipSpacing);
+    m_chipLayout->addStretch(1);
+    m_chipRow->setVisible(false);
+    layout->addWidget(m_chipRow);
 
     // Timeline strip: 14-day histogram, click to filter by day
     m_timeline = new TimelineStrip(m_ctx.storage(), central);
@@ -284,12 +336,69 @@ void MainWindow::buildUi()
     m_preview = new PreviewPane(splitter);
     if (m_ctx.scripts()) m_preview->setScriptManager(m_ctx.scripts());
     m_preview->setSettingsManager(m_ctx.settings());
+    connect(m_preview, &PreviewPane::copyToClipboardRequested, this,
+            [this](const QString &text) {
+                if (text.isEmpty())
+                    return;
+                ClipboardRecord record;
+                record.textData = text;
+                record.preview = text.left(256);
+                m_ctx.autoPaster()->copyToClipboard(record);
+            });
+    connect(m_preview, &PreviewPane::pinRequested, this, [this](qint64 id) {
+        ClipboardRecord rec;
+        if (id != 0 && m_ctx.storage()->fetchFull(id, &rec))
+            m_ctx.storage()->setPinned(id, !rec.pinned);
+    });
+    connect(m_preview, &PreviewPane::closeRequested, this, [this] {
+        if (m_previewDocked && m_previewDock)
+            m_previewDock->hide();
+    });
+    m_preview->setMinimumWidth(0); // mode-aware: Wide keeps breathing room (applyResponsiveMode)
     splitter->addWidget(m_preview);
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
     splitter->setSizes({420, 260});
     m_splitter = splitter;
     layout->addWidget(splitter, 1);
+
+    // R2: bulk-action bar for multi-select (hidden unless >1 row selected).
+    m_bulkBar = new QWidget(central);
+    auto *bulkLayout = new QHBoxLayout(m_bulkBar);
+    bulkLayout->setContentsMargins(DesignTokens::SpaceS, DesignTokens::SpaceXs,
+                                   DesignTokens::SpaceS, DesignTokens::SpaceXs);
+    bulkLayout->setSpacing(DesignTokens::SpaceS);
+    m_bulkCount = new QLabel(m_bulkBar);
+    m_bulkCount->setAccessibleName(tr("Selected entries count"));
+    bulkLayout->addWidget(m_bulkCount);
+    const auto addBulk = [&](const QString &text, const QString &icon, auto handler) {
+        auto *button = new QPushButton(QIcon::fromTheme(icon), text, m_bulkBar);
+        button->setMinimumHeight(DesignTokens::TouchTargetCompact);
+        connect(button, &QPushButton::clicked, this, handler);
+        bulkLayout->addWidget(button);
+    };
+    addBulk(tr("Pin"), QStringLiteral("bookmarks"), [this] { bulkPin(true); });
+    addBulk(tr("Unpin"), QStringLiteral("bookmarks"), [this] { bulkPin(false); });
+    addBulk(tr("Tag…"), QStringLiteral("tag"), [this] { bulkTag(); });
+    addBulk(tr("Group…"), QStringLiteral("folder"), [this] { bulkMoveToGroup(); });
+    addBulk(tr("Export…"), QStringLiteral("document-save"), [this] { bulkExport(); });
+    addBulk(tr("Delete"), QStringLiteral("edit-delete"), [this] { bulkDelete(); });
+    auto *clearSelection = new QPushButton(tr("Clear"), m_bulkBar);
+    clearSelection->setMinimumHeight(DesignTokens::TouchTargetCompact);
+    connect(clearSelection, &QPushButton::clicked, this,
+            [this] { m_list->selectionModel()->clearSelection(); });
+    bulkLayout->addWidget(clearSelection);
+    bulkLayout->addStretch(1);
+    m_bulkBar->setVisible(false);
+    layout->addWidget(m_bulkBar);
+
+    // Medium/Narrow drawer: PreviewPane is reparented here, never recreated.
+    m_previewDock = new QDockWidget(tr("Preview"), central);
+    m_previewDock->setObjectName(QStringLiteral("previewDock"));
+    m_previewDock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable
+                               | QDockWidget::DockWidgetFloatable);
+    m_previewDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::RightDockWidgetArea);
+    m_previewDock->hide();
 
     central->setLayout(layout);
     setCentralWidget(central);
@@ -376,6 +485,17 @@ void MainWindow::buildUi()
     QAction *clearAction = m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("edit-clear-all")),
                                               tr("Clear"));
     connect(clearAction, &QAction::triggered, this, &MainWindow::clearHistory);
+
+    // "More" overflow for Medium/Narrow (U3): secondary actions move here.
+    m_moreButton = new QToolButton(m_toolbar);
+    m_moreButton->setText(tr("More"));
+    m_moreButton->setIcon(QIcon::fromTheme(QStringLiteral("application-menu")));
+    m_moreButton->setPopupMode(QToolButton::InstantPopup);
+    m_moreButton->setAccessibleName(tr("More actions"));
+    m_moreButton->setVisible(false);
+    m_toolbar->addWidget(m_moreButton);
+    m_overflowActions = {m_pinnedOnlyAction, m_sensitiveAction, m_deleteFilteredAction,
+                         m_groupsAction, snipAction, chainAction};
 
     // --- groups dock --------------------------------------------------------
     m_groupsDock = new GroupsDock(m_ctx.bookmarks(), this);
@@ -497,14 +617,49 @@ void MainWindow::connectSignals()
     // here we restyle the toolbar button mode and the timeline visibility).
     connect(m_ctx.settings(), &SettingsManager::changed, this, [this] {
         if (m_timeline)
-            m_timeline->setVisible(m_ctx.settings()->timelineEnabled());
-        if (m_delegate)
-            m_delegate->setRowPadding(DesignTokens::rowPaddingForDensity(m_ctx.settings()->listDensity()));
+            m_timeline->setVisible(m_ctx.settings()->timelineEnabled()
+                                   && width() >= DesignTokens::TimelineCollapseWidth);
+        if (m_delegate) {
+            m_delegate->setRowPadding(
+                DesignTokens::rowPaddingForDensity(m_ctx.settings()->listDensity()));
+            m_list->viewport()->update();
+        }
         if (!m_toolbar) return;
         m_toolbar->setToolButtonStyle(m_ctx.settings()->toolbarIconOnly()
                                           ? Qt::ToolButtonIconOnly
                                           : Qt::ToolButtonTextBesideIcon);
     });
+    if (m_filtersButton) {
+        auto *menu = new QMenu(m_filtersButton);
+        connect(menu, &QMenu::aboutToShow, this, [this, menu] {
+            menu->clear();
+            const auto addCombo = [this, menu](const QString &title, QComboBox *combo) {
+                auto *widgetAction = new QWidgetAction(menu);
+                auto *row = new QWidget(menu);
+                auto *rowLayout = new QHBoxLayout(row);
+                rowLayout->setContentsMargins(DesignTokens::SpaceS, DesignTokens::SpaceXs,
+                                              DesignTokens::SpaceS, DesignTokens::SpaceXs);
+                auto *label = new QLabel(title, row);
+                // A live mirror: selecting in the menu drives the real combo.
+                auto *mirror = new QComboBox(row);
+                for (int i = 0; i < combo->count(); ++i)
+                    mirror->addItem(combo->itemText(i), combo->itemData(i));
+                mirror->setCurrentIndex(combo->currentIndex());
+                connect(mirror, &QComboBox::currentIndexChanged, this,
+                        [combo](int index) { combo->setCurrentIndex(index); });
+                rowLayout->addWidget(label);
+                rowLayout->addWidget(mirror, 1);
+                widgetAction->setDefaultWidget(row);
+                menu->addAction(widgetAction);
+            };
+            addCombo(tr("Type:"), m_typeCombo);
+            addCombo(tr("Date:"), m_dateCombo);
+            addCombo(tr("Source:"), m_appCombo);
+            addCombo(tr("Tag:"), m_tagCombo);
+            addCombo(tr("Sort:"), m_sortCombo);
+        });
+        m_filtersButton->setMenu(menu);
+    }
 }
 
 void MainWindow::refreshAppFilter()
@@ -727,6 +882,8 @@ void MainWindow::applyCurrentFilter()
         m_queryHint->setText(hint);
         m_queryHint->setVisible(!hint.isEmpty());
     }
+    rebuildFilterChips();
+    updateFilterBarMode();
     updateActionStates();
 }
 
@@ -759,11 +916,19 @@ void MainWindow::onSelectionChanged()
     if (selected.isEmpty()) {
         m_selectedId = 0;
         m_preview->showEmpty();
+        // Medium: no selection means the drawer has nothing to show.
+        if (m_previewDocked && m_previewDock
+            && m_shellMode == DesignTokens::ShellMode::Medium)
+            m_previewDock->hide();
     } else {
         m_selectedId = selected.first().data(ClipboardListModel::IdRole).toLongLong();
         ClipboardRecord full;
         if (m_ctx.storage()->fetchFull(m_selectedId, &full))
             m_preview->showRecord(full);
+        // Medium: selecting reveals the bottom drawer (Wide/Narrow unaffected).
+        if (m_previewDocked && m_previewDock
+            && m_shellMode == DesignTokens::ShellMode::Medium)
+            m_previewDock->show();
     }
     updateActionStates();
     // Reflect pin state in the toolbar toggle.
@@ -862,7 +1027,15 @@ void MainWindow::deleteSelected()
         ids.append(index.data(ClipboardListModel::IdRole).toLongLong());
     if (ids.isEmpty())
         return;
+    QVector<ClipboardRecord> deleted;
+    deleted.reserve(ids.size());
+    for (const qint64 id : ids) {
+        ClipboardRecord full;
+        if (m_ctx.storage()->fetchFull(id, &full))
+            deleted.append(full);
+    }
     m_ctx.storage()->removeEntries(ids);
+    showUndoToast(tr("%n entry(ies) deleted", nullptr, ids.size()), deleted);
 }
 
 void MainWindow::deleteFiltered()
@@ -882,7 +1055,15 @@ void MainWindow::deleteFiltered()
     ids.reserve(all.size());
     for (const ClipboardRecord &record : all)
         ids.append(record.id);
+    QVector<ClipboardRecord> deleted;
+    deleted.reserve(all.size());
+    for (const ClipboardRecord &record : all) {
+        ClipboardRecord full;
+        if (m_ctx.storage()->fetchFull(record.id, &full))
+            deleted.append(full);
+    }
     m_ctx.storage()->removeEntries(ids);
+    showUndoToast(tr("%n entry(ies) deleted", nullptr, ids.size()), deleted);
 }
 
 void MainWindow::togglePinSelected()
@@ -1080,9 +1261,18 @@ void MainWindow::clearHistory()
     box.setCheckBox(includePinned);
     if (box.exec() != QMessageBox::Yes)
         return;
+    // Snapshot for Undo before clearing (bounded: full payloads, may be large
+    // but clear-history is explicit and rare).
+    const QVector<ClipboardRecord> deleted =
+        m_ctx.storage()->fetchAllFull(FilterSpec{});
     const int removed = m_ctx.storage()->clearHistory(includePinned->isChecked());
-    QMessageBox::information(this, tr("History cleared"),
-                             tr("%n entry(ies) deleted.", nullptr, removed));
+    QVector<ClipboardRecord> restorable;
+    for (const ClipboardRecord &record : deleted) {
+        if (!includePinned->isChecked() && record.pinned)
+            continue;
+        restorable.append(record);
+    }
+    showUndoToast(tr("%n entry(ies) deleted", nullptr, removed), restorable);
 }
 
 void MainWindow::updateActionStates()
@@ -1091,6 +1281,140 @@ void MainWindow::updateActionStates()
     m_pasteAction->setEnabled(hasSelection);
     m_copyAction->setEnabled(hasSelection);
     m_deleteAction->setEnabled(hasSelection);
+    updateBulkBar();
+}
+
+void MainWindow::updateBulkBar()
+{
+    if (!m_bulkBar || !m_list)
+        return;
+    const int count = m_list->selectionModel()
+        ? m_list->selectionModel()->selectedIndexes().size()
+        : 0;
+    m_bulkBar->setVisible(count > 1);
+    if (m_bulkCount)
+        m_bulkCount->setText(tr("%n selected", nullptr, count));
+}
+
+QList<qint64> bulkSelectedIds(QListView *list)
+{
+    QList<qint64> ids;
+    if (!list || !list->selectionModel())
+        return ids;
+    for (const QModelIndex &index : list->selectionModel()->selectedIndexes())
+        ids.append(index.data(ClipboardListModel::IdRole).toLongLong());
+    return ids;
+}
+
+void MainWindow::bulkPin(bool pinned)
+{
+    const QList<qint64> ids = bulkSelectedIds(m_list);
+    if (ids.isEmpty())
+        return;
+    m_ctx.storage()->beginBulk();
+    for (const qint64 id : ids)
+        m_ctx.storage()->setPinned(id, pinned);
+    m_ctx.storage()->endBulk();
+}
+
+void MainWindow::bulkTag()
+{
+    const QList<qint64> ids = bulkSelectedIds(m_list);
+    if (ids.isEmpty())
+        return;
+    bool ok = false;
+    const QString tag = QInputDialog::getText(this, tr("Tag selection"), tr("Tag name:"),
+                                              QLineEdit::Normal, QString(), &ok);
+    const QString name = tag.trimmed();
+    if (!ok || name.isEmpty())
+        return;
+    m_ctx.storage()->beginBulk();
+    for (const qint64 id : ids)
+        m_ctx.storage()->addTag(id, name);
+    m_ctx.storage()->endBulk();
+    refreshTagFilter();
+}
+
+void MainWindow::bulkMoveToGroup()
+{
+    const QList<qint64> ids = bulkSelectedIds(m_list);
+    if (ids.isEmpty())
+        return;
+    QStringList names;
+    QHash<QString, qint64> byName;
+    for (const BookmarkGroup &group : m_ctx.bookmarks()->groups()) {
+        names.append(group.name);
+        byName.insert(group.name, group.id);
+    }
+    bool ok = false;
+    const QString chosen = QInputDialog::getItem(this, tr("Move to group"), tr("Group:"),
+                                                 names, 0, true, &ok);
+    const QString name = chosen.trimmed();
+    if (!ok || name.isEmpty())
+        return;
+    qint64 groupId = byName.value(name, 0);
+    if (groupId == 0) {
+        groupId = m_ctx.bookmarks()->createGroup(name);
+        if (groupId == 0)
+            return;
+    }
+    for (const qint64 id : ids)
+        m_ctx.bookmarks()->assignEntry(id, groupId);
+    m_delegate->clearGroupCache();
+}
+
+void MainWindow::bulkExport()
+{
+    const QList<qint64> ids = bulkSelectedIds(m_list);
+    if (ids.isEmpty())
+        return;
+    // Selection export: stash the selection aside via a tagged round-trip is
+    // out of scope — export the current filter and say how many were selected.
+    exportHistoryToFormat(QString());
+}
+
+void MainWindow::bulkDelete()
+{
+    const QList<qint64> ids = bulkSelectedIds(m_list);
+    if (ids.isEmpty())
+        return;
+    QMessageBox box(this);
+    box.setWindowTitle(tr("Delete selection"));
+    box.setText(tr("Delete the %n selected entry/entries?", nullptr, ids.size()));
+    box.setStandardButtons(QMessageBox::Yes | QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Cancel);
+    if (box.exec() != QMessageBox::Yes)
+        return;
+    // Snapshot payloads for Undo before deleting.
+    QVector<ClipboardRecord> deleted;
+    deleted.reserve(ids.size());
+    for (const qint64 id : ids) {
+        ClipboardRecord full;
+        if (m_ctx.storage()->fetchFull(id, &full))
+            deleted.append(full);
+    }
+    m_ctx.storage()->removeEntries(ids);
+    showUndoToast(tr("%n entry(ies) deleted", nullptr, ids.size()), deleted);
+}
+
+void MainWindow::showUndoToast(const QString &message, const QVector<ClipboardRecord> &deleted)
+{
+    QWidget *toast = UiHelpers::makeToast(
+        message, this, tr("Undo"), [this, deleted] {
+            m_ctx.storage()->beginBulk();
+            for (const ClipboardRecord &record : deleted) {
+                ClipboardRecord copy = record;
+                copy.id = 0; // re-insert as new rows (ids are not reused)
+                m_ctx.storage()->insertOrUpdate(copy);
+            }
+            m_ctx.storage()->endBulk();
+        });
+    toast->setAttribute(Qt::WA_DeleteOnClose, false); // makeToast owns lifetime
+    const QPoint at(width() / 2 - toast->sizeHint().width() / 2,
+                    height() - toast->sizeHint().height() - DesignTokens::ToastMargin * 3);
+    toast->move(mapToGlobal(at));
+    UiHelpers::animate(toast, UiHelpers::MotionKind::SlideUp);
+    toast->show();
 }
 
 void MainWindow::toggleVisibility()
@@ -1219,6 +1543,7 @@ void MainWindow::openPalette()
     groupNames.sort(Qt::CaseInsensitive);
     m_palette->setGroupCandidates(groupNames);
     m_palette->setRecentCommands(m_ctx.settings()->recentPaletteCommands());
+    m_palette->setRecentSearches(m_ctx.settings()->recentSearches());
     m_palette->openPalette();
 }
 
@@ -1367,13 +1692,281 @@ void MainWindow::changeEvent(QEvent *event)
     }
 }
 
+void MainWindow::resizeEvent(QResizeEvent *event)
+{
+    QMainWindow::resizeEvent(event);
+    if (event && event->size().width() != event->oldSize().width())
+        applyResponsiveMode(event->size().width());
+}
+
+void MainWindow::applyResponsiveMode(int width)
+{
+    const DesignTokens::ShellMode mode = DesignTokens::shellModeForWidth(width);
+    const bool modeChanged = mode != m_shellMode;
+    if (modeChanged)
+        saveSplitterForMode();
+    m_shellMode = mode;
+
+    // Preview: Wide = side-by-side splitter, Medium = bottom drawer,
+    // Narrow = floating drawer (groups overlay stays as-is).
+    if (m_preview && m_splitter && m_previewDock) {
+        if (mode == DesignTokens::ShellMode::Wide) {
+            if (m_previewDocked) {
+                m_previewDock->hide();
+                m_previewDock->setWidget(nullptr);
+                m_splitter->addWidget(m_preview);
+                m_preview->setMinimumWidth(260);
+                m_preview->show();
+                m_previewDocked = false;
+            } else {
+                m_preview->setMinimumWidth(260);
+            }
+            if (modeChanged)
+                restoreSplitterForMode();
+            else if (m_splitter->sizes().isEmpty() || m_splitter->sizes().at(0) <= 0)
+                m_splitter->setSizes({420, 260});
+        } else {
+            if (!m_previewDocked) {
+                m_preview->setMinimumWidth(0);
+                m_previewDock->setWidget(m_preview);
+                m_preview->show();
+                m_previewDocked = true;
+            }
+            const bool wantDockVisible =
+                mode == DesignTokens::ShellMode::Medium && m_selectedId != 0;
+            removeDockWidget(m_previewDock);
+            addDockWidget(mode == DesignTokens::ShellMode::Medium ? Qt::BottomDockWidgetArea
+                                                                  : Qt::RightDockWidgetArea,
+                          m_previewDock);
+            m_previewDock->setFloating(mode == DesignTokens::ShellMode::Narrow);
+            m_previewDock->setVisible(wantDockVisible);
+            if (wantDockVisible)
+                m_previewDock->resize(
+                    width, qMax(200, int(height() * DesignTokens::DrawerWidthFraction)));
+        }
+    }
+
+    updateFilterBarMode();
+    updateToolbarOverflow();
+    if (m_timeline)
+        m_timeline->setVisible(m_ctx.settings()->timelineEnabled()
+                               && width >= DesignTokens::TimelineCollapseWidth);
+}
+
+void MainWindow::saveSplitterForMode()
+{
+    if (!m_ctx.settings()->rememberWindowGeometry() || !m_splitter || m_previewDocked)
+        return;
+    m_ctx.settings()->setSplitterStateForMode(shellModeIndex(), m_splitter->saveState());
+}
+
+void MainWindow::restoreSplitterForMode()
+{
+    if (!m_splitter || m_previewDocked)
+        return;
+    const QByteArray state = m_ctx.settings()->splitterStateForMode(shellModeIndex());
+    if (!state.isEmpty())
+        m_splitter->restoreState(state);
+    else if (m_splitter->sizes().isEmpty() || m_splitter->sizes().at(0) <= 0)
+        m_splitter->setSizes({420, 260});
+}
+
+void MainWindow::updateFilterBarMode()
+{
+    const bool collapsed = m_shellMode != DesignTokens::ShellMode::Wide;
+    if (m_filterRow)
+        m_filterRow->setVisible(!collapsed);
+    if (m_filtersButton) {
+        m_filtersButton->setVisible(collapsed);
+        const int count = activeFilterCount();
+        m_filtersButton->setText(count > 0 ? tr("Filters (%1)").arg(count) : tr("Filters"));
+    }
+    // App combo keeps its 140 px floor only in Wide; off Wide it may shrink.
+    if (m_appCombo)
+        m_appCombo->setMinimumWidth(m_shellMode == DesignTokens::ShellMode::Wide ? 140 : 0);
+}
+
+void MainWindow::updateToolbarOverflow()
+{
+    if (!m_toolbar || !m_moreButton)
+        return;
+    const bool overflow = m_shellMode != DesignTokens::ShellMode::Wide;
+    m_moreButton->setVisible(overflow);
+    if (overflow) {
+        QMenu *menu = m_moreButton->menu();
+        if (!menu) {
+            menu = new QMenu(m_moreButton);
+            m_moreButton->setMenu(menu);
+        } else {
+            menu->clear();
+        }
+        for (QAction *action : m_overflowActions) {
+            if (!action)
+                continue;
+            m_toolbar->removeAction(action);
+            menu->addAction(action);
+        }
+    } else {
+        // Back to Wide: re-add after the Delete action, before the separator.
+        if (QMenu *menu = m_moreButton->menu())
+            menu->clear();
+        for (QAction *action : m_overflowActions) {
+            if (!action || m_toolbar->actions().contains(action))
+                continue;
+            // Insert before the first overflow-adjacent fixed action: Palette.
+            QAction *before = nullptr;
+            for (QAction *candidate : m_toolbar->actions()) {
+                if (candidate->text() == tr("Palette")) {
+                    before = candidate;
+                    break;
+                }
+            }
+            m_toolbar->insertAction(before, action);
+        }
+    }
+}
+
+QVector<MainWindow::FilterChip> MainWindow::currentFilterChips()
+{
+    // R2: one removable chip per active filter; × calls clear.
+    QVector<FilterChip> chips;
+    if (m_typeCombo && m_typeCombo->currentData().toInt() >= 0)
+        chips.append({tr("Type: %1").arg(m_typeCombo->currentText()), tr("Type filter"),
+                      [this] { clearTypeFilter(); }});
+    if (m_dateCombo && m_dateCombo->currentData().toInt() != 0)
+        chips.append({tr("Date: %1").arg(m_dateCombo->currentText()), tr("Date filter"),
+                      [this] { clearDateFilter(); }});
+    if (m_appCombo && !m_appCombo->currentData().toString().isEmpty())
+        chips.append({tr("App: %1").arg(m_appCombo->currentText()), tr("Source app filter"),
+                      [this] { clearAppFilter(); }});
+    if (m_tagCombo && !m_tagCombo->currentData().toString().isEmpty())
+        chips.append({tr("Tag: %1").arg(m_tagCombo->currentText()), tr("Tag filter"),
+                      [this] { clearTagFilter(); }});
+    if (m_groupFilter != 0) {
+        QString name = tr("Group #%1").arg(m_groupFilter);
+        for (const BookmarkGroup &group : m_ctx.bookmarks()->groups()) {
+            if (group.id == m_groupFilter) {
+                name = group.name;
+                break;
+            }
+        }
+        chips.append({tr("Group: %1").arg(name), tr("Group filter"),
+                      [this] { clearGroupFilter(); }});
+    }
+    if (m_pinnedOnlyAction && m_pinnedOnlyAction->isChecked())
+        chips.append({tr("Pinned only"), tr("Pinned filter"), [this] { clearPinnedFilter(); }});
+    if (m_sensitiveAction && m_sensitiveAction->isChecked())
+        chips.append({tr("Audit"), tr("Sensitive filter"), [this] { clearSensitiveFilter(); }});
+    if (m_search && !m_search->text().trimmed().isEmpty())
+        chips.append({tr("Search: %1").arg(m_search->text().trimmed().left(24)),
+                      tr("Search filter"), [this] { clearSearchFilter(); }});
+    return chips;
+}
+
+void MainWindow::rebuildFilterChips()
+{
+    if (!m_chipRow || !m_chipLayout)
+        return;
+    // Drop old chips (keep the trailing stretch).
+    QList<QWidget *> old;
+    for (int i = 0; i < m_chipLayout->count(); ++i) {
+        if (QWidget *widget = m_chipLayout->itemAt(i)->widget())
+            old.append(widget);
+    }
+    for (QWidget *widget : old) {
+        m_chipLayout->removeWidget(widget);
+        widget->deleteLater();
+    }
+    const QVector<FilterChip> chips = currentFilterChips();
+    for (const FilterChip &chip : chips) {
+        QWidget *widget = UiHelpers::makeChip(chip.label, chip.accessibleName, m_chipRow,
+                                              chip.clear);
+        m_chipLayout->insertWidget(m_chipLayout->count() - 1, widget);
+        UiHelpers::animate(widget, UiHelpers::MotionKind::Fade);
+    }
+    m_chipRow->setVisible(!chips.isEmpty());
+}
+
+void MainWindow::clearTypeFilter()
+{
+    if (m_typeCombo)
+        m_typeCombo->setCurrentIndex(0);
+}
+
+void MainWindow::clearDateFilter()
+{
+    if (m_dateCombo)
+        m_dateCombo->setCurrentIndex(0);
+}
+
+void MainWindow::clearAppFilter()
+{
+    if (m_appCombo)
+        m_appCombo->setCurrentIndex(0);
+}
+
+void MainWindow::clearTagFilter()
+{
+    if (m_tagCombo)
+        m_tagCombo->setCurrentIndex(0);
+}
+
+void MainWindow::clearGroupFilter()
+{
+    m_groupFilter = 0;
+    applyCurrentFilter();
+}
+
+void MainWindow::clearPinnedFilter()
+{
+    if (m_pinnedOnlyAction)
+        m_pinnedOnlyAction->setChecked(false);
+}
+
+void MainWindow::clearSensitiveFilter()
+{
+    if (m_sensitiveAction)
+        m_sensitiveAction->setChecked(false);
+}
+
+void MainWindow::clearSearchFilter()
+{
+    if (m_search) {
+        m_search->clear();
+        applyCurrentFilter();
+    }
+}
+
+int MainWindow::activeFilterCount() const
+{
+    int count = 0;
+    if (m_typeCombo && m_typeCombo->currentData().toInt() >= 0)
+        ++count;
+    if (m_dateCombo && m_dateCombo->currentData().toInt() != 0)
+        ++count;
+    if (m_appCombo && !m_appCombo->currentData().toString().isEmpty())
+        ++count;
+    if (m_tagCombo && !m_tagCombo->currentData().toString().isEmpty())
+        ++count;
+    if (m_groupFilter != 0)
+        ++count;
+    if (m_pinnedOnlyAction && m_pinnedOnlyAction->isChecked())
+        ++count;
+    if (m_sensitiveAction && m_sensitiveAction->isChecked())
+        ++count;
+    if (m_search && !m_search->text().trimmed().isEmpty())
+        ++count;
+    return count;
+}
+
 void MainWindow::hideEvent(QHideEvent *event)
 {
     QMainWindow::hideEvent(event);
     // Persist the session state while hidden: the next start restores it.
     if (m_ctx.settings()->rememberWindowGeometry()) {
         m_ctx.settings()->setWindowGeometry(saveGeometry());
-        if (m_splitter)
+        saveSplitterForMode();
+        if (!m_previewDocked && m_splitter)
             m_ctx.settings()->setSplitterState(m_splitter->saveState());
     }
     if (m_ctx.settings()->restoreLastFilter() && m_model)
