@@ -2,6 +2,7 @@
 
 #include "DesignTokens.h"
 #include "GroupTreeModel.h"
+#include "UiHelpers.h"
 
 #include <QApplication>
 #include <QColorDialog>
@@ -202,7 +203,18 @@ GroupsDock::GroupsDock(BookmarkManager *bookmarks, QWidget *parent)
     m_tree->setSelectionMode(QAbstractItemView::SingleSelection);
     connect(m_tree->selectionModel(), &QItemSelectionModel::selectionChanged, this,
             &GroupsDock::onSelectionChanged);
+    connect(m_model, &QAbstractItemModel::rowsInserted, this, [this] { updateEmptyState(); });
+    connect(m_model, &QAbstractItemModel::rowsRemoved, this, [this] { updateEmptyState(); });
+    connect(m_model, &QAbstractItemModel::modelReset, this, [this] { updateEmptyState(); });
     layout->addWidget(m_tree, 1);
+
+    // U13 empty state overlay for the group tree.
+    m_emptyState = UiHelpers::makeEmptyState(
+        QStringLiteral("folder"), tr("No groups yet"), tr("Create a group to organize your entries."),
+        m_tree->viewport());
+    m_emptyState->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    m_emptyState->hide();
+    m_tree->viewport()->installEventFilter(this);
 
     auto *showAll = new QPushButton(tr("Show all entries"), container);
     connect(showAll, &QPushButton::clicked, this, [this] { emit groupSelected(0); });
@@ -277,4 +289,20 @@ void GroupsDock::onSelectionChanged()
     const QModelIndex current = m_tree->currentIndex();
     const auto group = m_model->groupForIndex(current);
     emit groupSelected(group.has_value() ? group->id : qint64(0));
+}
+
+void GroupsDock::updateEmptyState()
+{
+    if (!m_emptyState || !m_tree)
+        return;
+    const bool empty = m_model->rowCount() == 0;
+    m_emptyState->setGeometry(m_tree->viewport()->rect());
+    m_emptyState->setVisible(empty);
+}
+
+bool GroupsDock::eventFilter(QObject *watched, QEvent *event)
+{
+    if (m_emptyState && watched == m_tree->viewport() && event->type() == QEvent::Resize)
+        m_emptyState->setGeometry(m_tree->viewport()->rect());
+    return QDockWidget::eventFilter(watched, event);
 }
