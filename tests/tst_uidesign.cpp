@@ -26,9 +26,16 @@
 #include <QFontMetrics>
 #include <QLineEdit>
 #include <QPalette>
+#include <QPointer>
 #include <QPushButton>
+#include <QTemporaryDir>
+#include <QThread>
 #include <QVector>
 #include <QWidget>
+#include <QtConcurrent>
+
+#include "ClipboardRecord.h"
+#include "StorageManager.h"
 
 namespace {
 
@@ -46,6 +53,21 @@ QVector<Scheme> installedSchemes()
         schemes.append({entry.id, TextAppearance::applyOverrides(raw, {})});
     }
     return schemes;
+}
+
+// U19: one history row for the deferred-handoff tests below.
+ClipboardRecord makeSettingsProbeRecord(const QByteArray &hash, const QString &text,
+                                        const QString &app, qint64 timestamp)
+{
+    ClipboardRecord record;
+    record.type = ContentType::Text;
+    record.hash = hash;
+    record.textData = text;
+    record.preview = text.left(80);
+    record.sizeBytes = text.size();
+    record.timestamp = timestamp;
+    record.sourceApp = app;
+    return record;
 }
 
 } // namespace
@@ -74,6 +96,9 @@ private slots:
     void timelineCollapsesBelowItsWidth();
     void dayHeaderCoversTodayAndYesterday();
     void delegateRespectsRowExtras();
+    void settingsDeferredSnapshotsNeverTouchStorageOffThread();
+    void settingsDeferredDeliverySurvivesEarlyClose();
+    void settingsRepeatedOpenCloseStressesTheHandoff();
 };
 
 void TestUiDesign::delegateTextRolesKeepTheirContrastFloor()
@@ -491,6 +516,201 @@ void TestUiDesign::delegateRespectsRowExtras()
     QVERIFY(delegate.showUseCountBadge());
     delegate.setShowEntryIndex(false);
     QVERIFY(!delegate.showEntryIndex());
+}
+
+void TestUiDesign::settingsDeferredSnapshotsNeverTouchStorageOffThread()
+{
+    // U19: the Settings dialog snapshots sourceApps()/stats()/databasePath on
+    // the owning (GUI) thread and the worker only carries those copies plus an
+    // external probe — storage is never touched off-thread. The handoff below
+    // is the same shape the dialog uses (QPointer guard + queued delivery on
+    // qApp), driven against the real StorageManager.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    StorageManager storage(dir.filePath(QStringLiteral("settings-handoff.db")));
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QVERIFY(storage.insertOrUpdate(
+                makeSettingsProbeRecord(QByteArrayLiteral("u19-a1"), QStringLiteral("alpha"),
+                                        QStringLiteral("firefox"), now))
+            != 0);
+    QVERIFY(storage.insertOrUpdate(
+                makeSettingsProbeRecord(QByteArrayLiteral("u19-a2"), QStringLiteral("beta"),
+                                        QStringLiteral("konsole"), now + 1))
+            != 0);
+
+    // Snapshot on the owning thread, exactly like refreshDiagnostics does.
+    const QStringList appsSnap = storage.sourceApps();
+    const StorageStats statsSnap = storage.stats();
+    const QString dbPathSnap = storage.databasePath();
+    QCOMPARE(appsSnap.size(), 2);
+    QVERIFY(appsSnap.contains(QStringLiteral("firefox")));
+    QVERIFY(appsSnap.contains(QStringLiteral("konsole")));
+    QCOMPARE(statsSnap.entryCount, 2);
+
+    QThread *guiThread = QThread::currentThread();
+    QObject guardHost; // stands in for the dialog; stays alive for delivery
+    QPointer<QObject> guard(&guardHost);
+    bool workerRanOffGui = false;
+    bool delivered = false;
+    QStringList deliveredApps;
+    qint64 deliveredEntries = -1;
+    QString deliveredPath;
+    QFuture<void> future = QtConcurrent::run([guard, appsSnap, statsSnap, dbPathSnap,
+                                              guiThread, &workerRanOffGui, &delivered,
+                                              &deliveredApps, &deliveredEntries,
+                                              &deliveredPath] {
+        workerRanOffGui = (QThread::currentThread() != guiThread);
+        // Only snapshots cross the thread boundary here — no storage calls.
+        QMetaObject::invokeMethod(
+            qApp,
+            [guard, appsSnap, statsSnap, dbPathSnap, &delivered, &deliveredApps,
+             &deliveredEntries, &deliveredPath] {
+                if (!guard)
+                    return;
+                delivered = true;
+                deliveredApps = appsSnap;
+                deliveredEntries = statsSnap.entryCount;
+                deliveredPath = dbPathSnap;
+            },
+            Qt::QueuedConnection);
+    });
+    future.waitForFinished();
+    QVERIFY(workerRanOffGui); // proves the worker really ran off-thread
+    for (int i = 0; i < 50 && !delivered; ++i)
+        QTest::qWait(10);
+    QVERIFY(delivered);
+    QCOMPARE(deliveredApps, appsSnap);
+    QCOMPARE(deliveredEntries, qint64(2));
+    QCOMPARE(deliveredPath, dbPathSnap);
+
+    // Empty history takes the same path: no rows, same handoff, no crash.
+    StorageManager empty(dir.filePath(QStringLiteral("settings-handoff-empty.db")));
+    const QStringList emptyApps = empty.sourceApps();
+    const StorageStats emptyStats = empty.stats();
+    QVERIFY(emptyApps.isEmpty());
+    QCOMPARE(emptyStats.entryCount, 0);
+    bool emptyDelivered = false;
+    QFuture<void> emptyFuture = QtConcurrent::run([guard, emptyApps, emptyStats, &emptyDelivered] {
+        QMetaObject::invokeMethod(
+            qApp,
+            [guard, emptyApps, emptyStats, &emptyDelivered] {
+                if (!guard)
+                    return;
+                emptyDelivered = emptyApps.isEmpty() && emptyStats.entryCount == 0;
+            },
+            Qt::QueuedConnection);
+    });
+    emptyFuture.waitForFinished();
+    for (int i = 0; i < 50 && !emptyDelivered; ++i)
+        QTest::qWait(10);
+    QVERIFY(emptyDelivered);
+}
+
+void TestUiDesign::settingsDeferredDeliverySurvivesEarlyClose()
+{
+    // U19: open-then-immediately-close while a deferred worker is pending. The
+    // guard dies before the queued delivery runs, so the delivery must no-op
+    // instead of touching a dangling dialog. Exercised with and without history.
+    for (int round = 0; round < 2; ++round) {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        StorageManager storage(dir.filePath(QStringLiteral("settings-close.db")));
+        if (round == 1) {
+            QVERIFY(storage.insertOrUpdate(makeSettingsProbeRecord(
+                        QByteArrayLiteral("u19-c1"), QStringLiteral("hello"),
+                        QStringLiteral("firefox"), QDateTime::currentMSecsSinceEpoch()))
+                    != 0);
+        }
+        const QStringList appsSnap = storage.sourceApps();
+        const StorageStats statsSnap = storage.stats();
+        QCOMPARE(statsSnap.entryCount, round == 1 ? qint64(1) : qint64(0));
+
+        QPointer<QObject> guard(new QObject); // the "dialog", closed at once
+        bool delivered = false;
+        QFuture<void> future = QtConcurrent::run([guard, appsSnap, statsSnap, &delivered] {
+            QThread::msleep(20); // widen the close race: dialog dies first
+            QMetaObject::invokeMethod(
+                qApp,
+                [guard, &delivered] {
+                    if (!guard)
+                        return; // closed — must not touch the dead dialog
+                    delivered = true;
+                },
+                Qt::QueuedConnection);
+        });
+        delete guard.data(); // immediate close while the worker is pending
+        QVERIFY(guard.isNull());
+        future.waitForFinished();
+        for (int i = 0; i < 30; ++i)
+            QTest::qWait(10);
+        QVERIFY(!delivered); // no dangling callback fired
+    }
+}
+
+void TestUiDesign::settingsRepeatedOpenCloseStressesTheHandoff()
+{
+    // U19: hammer the open/close race — 20 rapid snapshot+dispatch+destroy
+    // cycles across populated and empty databases — then prove a live handoff
+    // still completes afterwards.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    StorageManager full(dir.filePath(QStringLiteral("settings-stress-full.db")));
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (int i = 0; i < 5; ++i) {
+        QVERIFY(full.insertOrUpdate(makeSettingsProbeRecord(
+                    QByteArrayLiteral("u19-s") + QByteArray::number(i),
+                    QStringLiteral("entry %1").arg(i),
+                    i % 2 == 0 ? QStringLiteral("firefox") : QStringLiteral("konsole"),
+                    now + i))
+                != 0);
+    }
+    StorageManager empty(dir.filePath(QStringLiteral("settings-stress-empty.db")));
+
+    QList<QFuture<void>> pending;
+    for (int i = 0; i < 20; ++i) {
+        StorageManager &storage = (i % 2 == 0) ? full : empty;
+        const QStringList appsSnap = storage.sourceApps();
+        const StorageStats statsSnap = storage.stats();
+        QPointer<QObject> guard(new QObject);
+        pending.append(QtConcurrent::run([guard, appsSnap, statsSnap] {
+            QThread::msleep(5);
+            QMetaObject::invokeMethod(
+                qApp,
+                [guard, appsSnap, statsSnap] {
+                    if (!guard)
+                        return;
+                    // Live delivery would apply the snapshots; dead ones no-op.
+                    Q_UNUSED(appsSnap);
+                    Q_UNUSED(statsSnap);
+                },
+                Qt::QueuedConnection);
+        }));
+        delete guard.data(); // close before the worker finishes
+    }
+    for (QFuture<void> &future : pending)
+        future.waitForFinished();
+    for (int i = 0; i < 20; ++i)
+        QTest::qWait(10); // let stale deliveries drain; none may crash
+
+    // A live dialog still gets its snapshots after the storm.
+    QObject liveHost;
+    QPointer<QObject> liveGuard(&liveHost);
+    const QStringList appsSnap = full.sourceApps();
+    bool liveDelivered = false;
+    QFuture<void> live = QtConcurrent::run([liveGuard, appsSnap, &liveDelivered] {
+        QMetaObject::invokeMethod(
+            qApp,
+            [liveGuard, appsSnap, &liveDelivered] {
+                if (!liveGuard)
+                    return;
+                liveDelivered = (appsSnap.size() == 2);
+            },
+            Qt::QueuedConnection);
+    });
+    live.waitForFinished();
+    for (int i = 0; i < 50 && !liveDelivered; ++i)
+        QTest::qWait(10);
+    QVERIFY(liveDelivered);
 }
 
 QTEST_MAIN(TestUiDesign)

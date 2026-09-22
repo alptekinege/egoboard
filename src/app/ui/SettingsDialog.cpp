@@ -211,35 +211,24 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
         populateSnippetList();
         populateScriptList();
     });
-    // App suggestions — async (DB query can be slow with many entries)
+    // App suggestions — deferred so open stays instant, but synchronous on the
+    // GUI thread: StorageManager's connection is owned by the GUI thread and
+    // must never be touched from a worker (U19). The DISTINCT scan rides
+    // idx_entries_app, so it stays cheap even at 50k entries.
     QTimer::singleShot(0, this, [this]{
         if (!m_appSuggestions) return;
-        m_appSuggestions->setEnabled(false);
+        const QStringList apps = m_ctx.storage()->sourceApps();
         m_appSuggestions->clear();
-        m_appSuggestions->addItem(tr("(loading…)"));
-        // QPointer + qApp context: if the dialog dies while the DB query runs,
-        // the queued handoff never fires on a dangling `this`.
-        QPointer<SettingsDialog> guard(this);
-        QtConcurrent::run([guard]{
-            const QStringList apps = guard ? guard->m_ctx.storage()->sourceApps()
-                                           : QStringList();
-            QMetaObject::invokeMethod(qApp, [guard, apps]{
-                if (!guard) return;
-                auto *m_appSuggestions = guard->m_appSuggestions;
-                if (!m_appSuggestions) return;
-                m_appSuggestions->clear();
-                if (apps.isEmpty()) {
-                    m_appSuggestions->addItem(tr("(no history yet — copy something first)"));
-                    m_appSuggestions->setEnabled(false);
-                } else {
-                    for (const QString &a : apps) {
-                        if (a.trimmed().isEmpty()) continue;
-                        m_appSuggestions->addItem(a);
-                    }
-                    m_appSuggestions->setEnabled(true);
-                }
-            }, Qt::QueuedConnection);
-        });
+        if (apps.isEmpty()) {
+            m_appSuggestions->addItem(tr("(no history yet — copy something first)"));
+            m_appSuggestions->setEnabled(false);
+        } else {
+            for (const QString &a : apps) {
+                if (a.trimmed().isEmpty()) continue;
+                m_appSuggestions->addItem(a);
+            }
+            m_appSuggestions->setEnabled(true);
+        }
     });
 }
 
@@ -1684,17 +1673,20 @@ void SettingsDialog::refreshDiagnostics()
         if (!avail) {
             m_ocrStatus->setText(tr("<b>tesseract not found</b> — install <code>tesseract</code> + <code>tesseract-data-eng</code> to enable image search. Preview will show <i>OCR: processing…</i> until then."));
         } else {
-            // Show immediately without version probe (non-blocking), then fetch version async
+            // Show immediately without version probe (non-blocking), then fetch version async.
+            // U19: snapshot the DB values on the owning (GUI) thread first — the
+            // worker below only runs the external tesseract probe and never
+            // touches StorageManager/SettingsManager off-thread.
             m_ocrStatus->setText(tr("<b>tesseract OK</b> — checking version… — <b>%1</b> images, <b>%2</b> with OCR text. Lang: <b>%3</b>").arg(stats.imageCount).arg(stats.ocrCount).arg(m_ctx.settings()->ocrLanguage()));
+            const StorageStats ocrStatsSnap = stats;
+            const QString ocrLangSnap = m_ctx.settings()->ocrLanguage();
             QPointer<SettingsDialog> guard(this);
-            QtConcurrent::run([guard]{
+            QtConcurrent::run([guard, ocrStatsSnap, ocrLangSnap]{
                 const QString ver = tesseractVersion();
-                const auto s = guard ? guard->m_ctx.storage()->stats() : StorageStats{};
-                const QString lang = guard ? guard->m_ctx.settings()->ocrLanguage() : QString();
-                QMetaObject::invokeMethod(qApp, [guard, ver, s, lang]{
+                QMetaObject::invokeMethod(qApp, [guard, ver, ocrStatsSnap, ocrLangSnap]{
                     if (!guard) return;
                     if (!guard->m_ocrStatus) return;
-                    guard->m_ocrStatus->setText(tr("<b>tesseract OK</b> — %1 — <b>%2</b> images, <b>%3</b> with OCR text. Lang: <b>%4</b>").arg(ver.isEmpty() ? QStringLiteral("found in PATH") : ver).arg(s.imageCount).arg(s.ocrCount).arg(lang));
+                    guard->m_ocrStatus->setText(tr("<b>tesseract OK</b> — %1 — <b>%2</b> images, <b>%3</b> with OCR text. Lang: <b>%4</b>").arg(ver.isEmpty() ? QStringLiteral("found in PATH") : ver).arg(ocrStatsSnap.imageCount).arg(ocrStatsSnap.ocrCount).arg(ocrLangSnap));
                 }, Qt::QueuedConnection);
             });
         }
@@ -1753,17 +1745,19 @@ void SettingsDialog::refreshDiagnostics()
         details += QStringLiteral("DB: <code>%1</code>").arg(m_ctx.storage()->databasePath().toHtmlEscaped());
         details += QStringLiteral("<br/><span style='color:palette(mid);'>checking KWin…</span>");
         m_platformDetails->setText(details);
+        // U19: snapshot GUI-owned values before dispatching — the worker only
+        // runs the external kwin probe and never touches StorageManager off-thread.
+        const QString qpaSnap = QGuiApplication::platformName();
+        const QString dbPathSnap = m_ctx.storage()->databasePath();
         QPointer<SettingsDialog> guard(this);
-        QtConcurrent::run([guard]{
+        QtConcurrent::run([guard, qpaSnap, dbPathSnap]{
             const QString kw = kwinVersion();
-            const QString qpa = QGuiApplication::platformName();
-            const QString dbPath = guard ? guard->m_ctx.storage()->databasePath() : QString();
-            QMetaObject::invokeMethod(qApp, [guard, kw, qpa, dbPath]{
+            QMetaObject::invokeMethod(qApp, [guard, kw, qpaSnap, dbPathSnap]{
                 if (!guard) return;
                 if (!guard->m_platformDetails) return;
-                QString d = QStringLiteral("QPA: <b>%1</b> · Qt %2<br/>").arg(qpa.toHtmlEscaped(), QString::fromUtf8(qVersion()));
+                QString d = QStringLiteral("QPA: <b>%1</b> · Qt %2<br/>").arg(qpaSnap.toHtmlEscaped(), QString::fromUtf8(qVersion()));
                 if (!kw.isEmpty()) d += QStringLiteral("KWin: %1<br/>").arg(kw.toHtmlEscaped());
-                d += QStringLiteral("DB: <code>%1</code>").arg(dbPath.toHtmlEscaped());
+                d += QStringLiteral("DB: <code>%1</code>").arg(dbPathSnap.toHtmlEscaped());
                 guard->m_platformDetails->setText(d);
             }, Qt::QueuedConnection);
         });
@@ -1829,11 +1823,13 @@ void SettingsDialog::refreshDiagnostics()
                          m_ctx.settings()->captureFiles() ? QStringLiteral("on") : QStringLiteral("off"));
         diag += QStringLiteral("(versions: fetching tesseract/KWin async…)\n");
         m_diagBrowser->setPlainText(diag);
-        // async patch versions
+        // async patch versions. U19: snapshot availability on the GUI thread —
+        // the worker only runs the external probes, never QObject state.
+        const bool ocrAvailSnap = OcrWorker::isAvailable();
         QPointer<SettingsDialog> guard(this);
-        QtConcurrent::run([guard]{
+        QtConcurrent::run([guard, ocrAvailSnap]{
             const QString kw = kwinVersion();
-            const QString tess = OcrWorker::isAvailable() ? tesseractVersion() : QString();
+            const QString tess = ocrAvailSnap ? tesseractVersion() : QString();
             QMetaObject::invokeMethod(qApp, [guard, kw, tess]{
                 if (!guard) return;
                 if (!guard->m_diagBrowser) return;

@@ -178,7 +178,7 @@ add_executable(tst_uidesign tst_uidesign.cpp
     ../src/app/ColorSchemeIndex.cpp
     ../src/app/IconThemeIndex.cpp)
 target_include_directories(tst_uidesign PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/app/ui ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
-target_link_libraries(tst_uidesign PRIVATE egoboard::core Qt6::Widgets Qt6::Sql Qt6::Test KF6::ConfigCore KF6::ConfigWidgets)
+target_link_libraries(tst_uidesign PRIVATE egoboard::core Qt6::Widgets Qt6::Sql Qt6::Concurrent Qt6::Test KF6::ConfigCore KF6::ConfigWidgets)
 target_compile_options(tst_uidesign PRIVATE -Wall -Wextra)
 add_test(NAME tst_uidesign COMMAND tst_uidesign)
 

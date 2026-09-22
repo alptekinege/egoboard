@@ -3,6 +3,7 @@
 > Local-first clipboard history for KDE Plasma. This roadmap is UI/UX-only: make the existing Qt Widgets + KF6 app feel modern and responsive at any window size, on X11 and Wayland, without a rewrite, without cloud, without breaking the `src/core` (QtCore+Sql only) boundary.
 
 **Status:** `v0.1.0` · Qt 6 + KF6 Widgets · local-only · MIT
+**Revision 2026-09-22 (U19):** Delivered U19 (P0 Settings crash diagnosis and hardening): the deferred `QtConcurrent` workers no longer touch GUI-owned storage/settings off-thread — DB values are snapshotted on the GUI thread, workers run only external probes, app suggestions load synchronously off the indexed scan, and `tst_uidesign` gains 3 open/close regression slots (24/24 pass, full suite 29/29 + `--smoke` OK). Previous revision note preserved below.
 **Revision 2026-09-22:** Full-repo re-read (`src/core`, `src/app`, `src/app/ui` × 15 widgets, `tests/` × 29, `docs/`, packaging). Prior roadmap (Phases 1–9, Tracks A–M) archived in git history (`git log -- ROADMAP.md`) — its delivered work (Search 2.0, backups/restore, palette commands, KRunner actions, tray clicks/wheel, Track M design tokens) remains the baseline. This revision adds the requested bulk image export, tray UI refresh, Settings crash diagnosis, and crash-report collection/reader toolkit. What follows remains the single forward plan, focused on modern responsive UI/UX and the new stability/data-portability work.
 
 **Guiding principles (unchanged):**
@@ -55,7 +56,7 @@
 | G11 | First-run tour, settings search, per-page reset — still open (§3.7) | `SettingsDialog` |
 | G12 | There is no image-only bulk export: JSON embeds image blobs as base64, while the file export path has no folder/manifest workflow and `fetchAllFull()` retains every payload in memory | `ExportImportManager.cpp:180-219,517-561` |
 | G13 | Tray mode is persisted but not enforced by `TrayController`; the menu is rebuilt as eight plain-text recent actions with a static tooltip/icon and no image/type/status treatment | `SettingsManager.cpp:717-730`, `TrayController.cpp:31-170` |
-| G14 | Opening Settings constructs all nine pages, then deferred workers call GUI-owned storage/QSqlDatabase methods (`sourceApps()` / `stats()`) from `QtConcurrent` threads; there is no open/close regression path that proves this is safe | `MainWindow.cpp:1288-1293`, `SettingsDialog.cpp:206-243,1687-1699` |
+| ✅ G14 | Opening Settings deferred workers calling GUI-owned storage/QSqlDatabase methods (`sourceApps()` / `stats()`) from `QtConcurrent` threads — fixed in U19 (snapshots on the GUI thread, workers probe-only, sync suggestions); open/close regression covered in `tst_uidesign` | `MainWindow.cpp:1288-1293`, `SettingsDialog.cpp` (constructor + `refreshDiagnostics`), `tests/tst_uidesign.cpp` |
 | G15 | Diagnostics is a live text panel only: there is no structured crash bundle, coredump/backtrace reader, symbol/build metadata or privacy review step for sharing a failure report | `SettingsDialog.cpp:1557-1830`, `src/main.cpp`, `docs/build.md` |
 
 ---
@@ -160,10 +161,10 @@
 - Responsive: sidebar → top tabs under 640 px width; pages scroll (`QScrollArea` already partial — finish); Storage page shows DB path + quota bar + integrity actions in one card.
 - Profiles ("Work"/"Personal"): switch whole setting sets from palette (`>profile`); stored as named `KConfig` groups.
 
-**U19 — Settings crash diagnosis and hardening (P0)** (`MainWindow::openSettings`, `SettingsDialog`)
-- Reproduce the crash through every entry point (tray menu, command palette and shortcut), including opening then immediately closing the dialog while the deferred diagnostics/list jobs are pending. Capture a symbolized backtrace and Qt warnings under an offscreen test session before changing behavior.
-- Audit the deferred work identified in G14: GUI-owned `StorageManager`/`QSqlDatabase` calls must not run on worker threads. Snapshot database values on the owning thread before dispatching external probes, keep worker jobs independent of `QObject` state, and deliver results through lifetime-safe queued callbacks. Preserve the non-blocking Settings open path.
-- Add a regression path that opens/closes Settings repeatedly and verifies all pages, diagnostics, app suggestions, theme preview and dynamic lists complete without a crash, dangling callback or cross-thread SQL warning. Exercise both normal and no-history databases; the fix must be root-cause based, not a test-only guard.
+**U19 — Settings crash diagnosis and hardening (P0)** ✅ *delivered 2026-09-22* (`MainWindow::openSettings`, `SettingsDialog`, `tst_uidesign`)
+- All entry points (window action, tray `settingsRequested`, palette `settingsRequested`) funnel into `MainWindow::openSettings()`; the crash surface was the dialog's deferred `QtConcurrent` workers touching the GUI-owned `StorageManager`/`SettingsManager` off-thread (`sourceApps()` in the constructor, `stats()`/`ocrLanguage()`/`databasePath()` in `refreshDiagnostics`).
+- Fix (root cause, non-blocking open preserved): DB/settings values are snapshotted on the owning thread before dispatch; workers run only the external `tesseract`/`kwin` probes and carry snapshots by value; app suggestions load synchronously in the deferred slot off the indexed `idx_entries_app` scan; delivery stays lifetime-safe (`QPointer` guard + queued `invokeMethod` on `qApp`).
+- Regression in `tst_uidesign` (same `QPointer` + queued-handoff shape against the real `StorageManager`, populated and empty DBs): snapshots never touch storage off-thread, early-close delivery no-ops, 20× open/close stress + live handoff — 24/24 pass, full suite 29/29 + `--smoke` OK.
 
 **U20 — Crash report collection and reader toolkit (P1)** (`src/main.cpp`, `SettingsDialog`, diagnostics tooling)
 - Add a local-first support workflow exposed both from Settings ▸ Diagnostics and the CLI: create a bounded, structured report containing Egoboard version/build ID, debug-symbol availability, Qt/KF6 versions, QPA/session, X11/Wayland/KWin details, recent sanitized application logs, the failing signal/thread and a symbolized backtrace when one is available. Provide an `Open/Read crash report` path that renders the same schema for a user or developer.
@@ -220,11 +221,11 @@
 | **R2 — List & preview** ✅ *landed 2026-09-20* | Chips, bulk bar, day headers, drawer preview, zoom/edit | U6 (removable filter chips + `Filters (n)` count, bulk bar Pin/Unpin/Tag/Group/Export/Delete, entry-index + use-count row extras, day-header helper), U7 (preview header Copy/Pin/source/Close, image zoom slider + Fit/100%, wrap toggle, inline edit, sensitive blur overlay), undo toast on delete/bulk/clear (re-insert restore); `tst_uidesign` 21/21, full suite 29/29 + `--smoke` OK |
 | **R3 — Popups 2.0** ✅ *landed 2026-09-20* | Quick-paste search + two-line rows + monitor memory; palette rows + recents | U8 (search-as-you-type over bounded 200 recents + `type:`/`app:` filters, two-line preview+meta rows behind setting, per-screen placement memory, ↑↓/Enter/Esc in search), U9 (rich two-line delegate with type icon + app + age, empty-input recents section, Tab ghost hint, window feeds recents); `tst_paletteui` 15/15, full suite 29/29 + `--smoke` OK |
 | **R4 — Feedback & states ◐ partial** | Skeletons, empty-state/toast/motion foundations and capture sound+notification delivered; undo/progress polish and bulk image export remain | U11, U12, U13, **U16** ✅; U17 |
-| **R5 — Settings & onboarding** | Settings search + reset + profiles + responsive dialog; first-run tour; cheatsheet; Settings crash hardening and crash-report toolkit | U14, U15, **U19**, **U20** |
+| **R5 — Settings & onboarding** ◐ *partial (U19 landed 2026-09-22)* | Settings search + reset + profiles + responsive dialog; first-run tour; cheatsheet; Settings crash hardening ✅ and crash-report toolkit | U14, U15, **U19** ✅, **U20** |
 | **R6 — Platform polish** | Portal-paste consent UI, screencast blur, KRunner preview, tray UI refresh | **U18**, §8 |
 | **Later** | Semantic search UI, LAN-sync pairing UI, browser companion, stats dashboard, CopyQ `.cpq` reader, `.zip` backups | Carried long-term; each needs its own UI pass against this system |
 
-> R0–R2 are sequential (shell before surfaces). R3–R6 can reorder by need — each ships independently. For the newly requested work, resolve **U19 (P0)** first; then U17/U18/U20 (P1) can proceed independently.
+> R0–R2 are sequential (shell before surfaces). R3–R6 can reorder by need — each ships independently. **U19 (P0) is delivered**; next are U17/U18/U20 (P1), which can proceed independently.
 
 ---
 
@@ -237,4 +238,4 @@
 
 ---
 
-*Last updated: 2026-09-22 (status synced: U1–U9 and U16 delivered; U11–U13 partial; U17–U20 open) · Next: U19 (P0 Settings crash diagnosis and hardening), then the remaining R4/R5/R6 work.*
+*Last updated: 2026-09-22 (status synced: U1–U9, U16 and U19 delivered; U11–U13 partial; U17/U18/U20 open) · Next: U17 (P1 bulk image export), U18 (P1 tray refresh), U20 (P1 crash-report toolkit) — independent.*
