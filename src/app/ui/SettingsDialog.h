@@ -1,5 +1,6 @@
 #pragma once
 
+#include "CrashReport.h"
 #include "ExpirePolicy.h"
 
 #include <QDialog>
@@ -49,6 +50,10 @@ private:
     void populateSnippetList();
     void populateTransformList();
     void populateScriptList();
+    // Crash-report toolkit (U20): same schema as the CLI modes.
+    void createCrashReport();
+    void openCrashReport();
+    void previewCrashReport(const CrashReport::Data &data, const QString &saveDir);
     // Redact mode: sync kind-toggle enabled state with the selected radio.
     void updateRedactUi();
     // Expire-rules editor: rebuild the list widget from m_expireRules.

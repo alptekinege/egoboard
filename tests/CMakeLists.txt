@@ -185,7 +185,15 @@ add_test(NAME tst_uidesign COMMAND tst_uidesign)
 
 # Wheel-over-tray-icon state machine (header-only, so no extra sources)
 add_executable(tst_traycycle tst_traycycle.cpp)
-target_include_directories(tst_traycycle PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app)
+target_include_directories(tst_traycycle PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/core)
 target_link_libraries(tst_traycycle PRIVATE Qt6::Core Qt6::Test)
 target_compile_options(tst_traycycle PRIVATE -Wall -Wextra)
 add_test(NAME tst_traycycle COMMAND tst_traycycle)
+
+# Crash/support reports: QtCore-only (schema, redaction, gdb/ELF parsing), no
+# GUI or database, so the report path itself never depends on the app running.
+add_executable(tst_crashreport tst_crashreport.cpp ../src/app/CrashReport.cpp)
+target_include_directories(tst_crashreport PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app)
+target_link_libraries(tst_crashreport PRIVATE Qt6::Core Qt6::Test)
+target_compile_options(tst_crashreport PRIVATE -Wall -Wextra)
+add_test(NAME tst_crashreport COMMAND tst_crashreport)

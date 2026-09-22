@@ -2,6 +2,7 @@
 
 #include "ClipboardRecord.h"
 
+#include <QIcon>
 #include <QObject>
 
 class KStatusNotifierItem;
@@ -13,10 +14,13 @@ class StorageManager;
 
 // System tray integration: KStatusNotifierItem (StatusNotifierItem over DBus,
 // native on Plasma for both X11 and Wayland) with a QSystemTrayIcon fallback
-// for environments without an SNI host. The context menu shows the most
-// recent entries for one-click paste-back; what the primary and secondary
-// clicks do, and whether the wheel walks the recent entries, comes from the
-// settings (read on each event, so a change needs no reload).
+// for environments without an SNI host. Both surfaces share one lazily built
+// menu (rebuilt on aboutToShow only), so their actions and labels always
+// match. TrayMode is live: auto/Always/hidden is re-evaluated on every
+// settings change and capture without a restart; paused and capture states
+// refresh the tooltip and icon. What the primary and secondary clicks do, and
+// whether the wheel walks the recent entries, comes from the settings (read
+// on each event, so a change needs no reload).
 class TrayController : public QObject {
     Q_OBJECT
 public:
@@ -40,6 +44,11 @@ signals:
 
 private:
     void rebuildMenu();
+    // Re-evaluates TrayMode against the history count; touches the SNI
+    // status / fallback visibility only when the outcome changed.
+    void applyVisibility();
+    // Pause-aware tooltip + icon (theme icons only, no bundled artwork).
+    void refreshTooltipAndIcon();
     // Runs the configured click action (fresh from the settings).
     void runClickAction(bool secondary);
 
@@ -49,6 +58,10 @@ private:
     QSystemTrayIcon *m_fallbackIcon = nullptr;
     QMenu *m_menu = nullptr;
     QAction *m_pauseAction = nullptr;
+    QIcon m_appIcon;
+    QIcon m_pausedIcon;
     bool m_paused = false;
+    bool m_visible = true;
+    bool m_iconPaused = false;
     static constexpr int kRecentCount = 8;
 };

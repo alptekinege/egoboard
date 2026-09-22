@@ -26,8 +26,10 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QApplication>
 #include <QIcon>
 #include <QInputDialog>
+#include <QJsonDocument>
 #include <QLineEdit>
 #include <QPointer>
 
@@ -1561,6 +1563,23 @@ QWidget *SettingsDialog::buildPlatformDiagnosticsPage()
     connect(copyBtn, &QPushButton::clicked, this, [this]{ if(m_diagBrowser) QGuiApplication::clipboard()->setText(m_diagBrowser->toPlainText()); });
     connect(refreshBtn, &QPushButton::clicked, this, &SettingsDialog::refreshDiagnostics);
     layout->addWidget(diagBox);
+    auto *crashRow = new QHBoxLayout();
+    auto *createReportBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-save")),
+                                            tr("Create crash report…"), page);
+    createReportBtn->setToolTip(tr("Collects a local support bundle (versions, session, logs, "
+                                   "tool status) and previews it before saving — same schema as "
+                                   "`--crash-report`. Never includes clipboard entries, history.db "
+                                   "or keys."));
+    auto *openReportBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-open")),
+                                          tr("Open crash report…"), page);
+    openReportBtn->setToolTip(tr("Reads a saved report back (same renderer as "
+                                 "`--read-crash-report`); partial files render safely."));
+    connect(createReportBtn, &QPushButton::clicked, this, &SettingsDialog::createCrashReport);
+    connect(openReportBtn, &QPushButton::clicked, this, &SettingsDialog::openCrashReport);
+    crashRow->addWidget(createReportBtn);
+    crashRow->addWidget(openReportBtn);
+    crashRow->addStretch(1);
+    layout->addLayout(crashRow);
     return page;
 }
 
@@ -1860,6 +1879,105 @@ void SettingsDialog::scheduleDiagnosticsRefresh()
             return; // a rebuild started meanwhile — its caller refreshes after
         refreshDiagnostics();
     });
+}
+
+void SettingsDialog::createCrashReport()
+{
+    const QString dir =
+        QFileDialog::getExistingDirectory(this, tr("Crash report folder"), QDir::tempPath());
+    if (dir.isEmpty())
+        return;
+    QProgressDialog progress(tr("Collecting crash report…"), QString(), 0, 0, this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.setCancelButton(nullptr);
+    progress.show();
+    QApplication::processEvents();
+    CrashReport::Env env;
+    env.appVersion = QStringLiteral(EGOBOARD_VERSION);
+    env.qpa = QGuiApplication::platformName();
+    const CrashReport::Data data = CrashReport::collect(env);
+    progress.close();
+    previewCrashReport(data, dir);
+}
+
+void SettingsDialog::openCrashReport()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Open crash report"), QString(), tr("Crash reports (*.json);;All files (*)"));
+    if (path.isEmpty())
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, tr("Open crash report"),
+                             tr("Cannot read %1: %2").arg(path, file.errorString()));
+        return;
+    }
+    QJsonParseError parseError{};
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        QMessageBox::warning(this, tr("Open crash report"),
+                             tr("%1 is not a valid report file.").arg(path));
+        return;
+    }
+    CrashReport::Data data;
+    QString error;
+    if (!CrashReport::fromJson(document.object(), &data, &error)) {
+        QMessageBox::warning(this, tr("Open crash report"), error);
+        return;
+    }
+    previewCrashReport(data, QString());
+}
+
+void SettingsDialog::previewCrashReport(const CrashReport::Data &data, const QString &saveDir)
+{
+    QDialog preview(this);
+    preview.setWindowTitle(saveDir.isEmpty() ? tr("Crash report") : tr("Crash report preview"));
+    preview.resize(700, 560);
+    auto *layout = new QVBoxLayout(&preview);
+    auto *browser = new QTextBrowser(&preview);
+    browser->setReadOnly(true);
+    browser->setPlainText(CrashReport::renderSummary(data));
+    browser->setStyleSheet(QStringLiteral("font-family: monospace;")); // size follows the UI font (U5)
+    layout->addWidget(browser, 1);
+    auto *note = new QLabel(saveDir.isEmpty()
+            ? tr("Read-only preview — the same renderer the CLI uses. Raw tool output is kept "
+                 "in the file for debugging.")
+            : tr("Review before saving: versions, session, redacted logs and tool status. No "
+                 "clipboard entries, history.db, image blobs, keys or full home paths are "
+                 "included; nothing is uploaded."),
+        &preview);
+    note->setWordWrap(true);
+    layout->addWidget(note);
+    auto *buttons = new QDialogButtonBox(
+        saveDir.isEmpty() ? QDialogButtonBox::Close
+                          : QDialogButtonBox::Save | QDialogButtonBox::Cancel,
+        &preview);
+    connect(buttons, &QDialogButtonBox::accepted, &preview, [&preview, &data, saveDir, this] {
+        if (saveDir.isEmpty()) {
+            preview.accept();
+            return;
+        }
+        const QString stamp =
+            QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss-zzz"));
+        const QString path =
+            QDir(saveDir).filePath(QStringLiteral("egoboard-report-%1.json").arg(stamp));
+        QFile file(path);
+        const QByteArray payload =
+            QJsonDocument(CrashReport::toJson(data)).toJson(QJsonDocument::Indented);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)
+            || file.write(payload) != payload.size()) {
+            QMessageBox::warning(this, tr("Crash report"),
+                                 tr("Cannot write %1: %2").arg(path, file.errorString()));
+            return;
+        }
+        QMessageBox::information(this, tr("Crash report"),
+                                 tr("Report written to %1.").arg(path));
+        preview.accept();
+    });
+    connect(buttons, &QDialogButtonBox::rejected, &preview, &QDialog::reject);
+    layout->addWidget(buttons);
+    preview.exec();
 }
 
 void SettingsDialog::load()
