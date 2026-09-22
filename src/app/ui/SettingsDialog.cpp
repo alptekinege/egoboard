@@ -335,6 +335,15 @@ QWidget *SettingsDialog::buildGeneralPage()
 
     m_notifications = new QCheckBox(tr("Show notification when sensitive content is skipped"), trayBox);
     trayLayout->addRow(QString(), m_notifications);
+
+    m_captureSound = new QCheckBox(tr("Play a sound on new copy"), trayBox);
+    m_captureSound->setToolTip(tr("A short beep when a new clipboard entry is captured (not when the same content is already at the top)."));
+    trayLayout->addRow(QString(), m_captureSound);
+
+    m_captureNotification = new QCheckBox(tr("Show a notification on new copy"), trayBox);
+    m_captureNotification->setToolTip(tr("Shows the source app and a preview of the new clipboard entry. Requires the global notifications setting to be on."));
+    trayLayout->addRow(QString(), m_captureNotification);
+
     trayLayout->addRow(QString(), makeHint(tr("Tray uses <code>KStatusNotifierItem</code> (Plasma). Hidden still keeps the app running — show via hotkey."), trayBox));
     layout->addWidget(trayBox);
 
@@ -1897,6 +1906,9 @@ void SettingsDialog::load()
     }
     if (m_notifications) m_notifications->setChecked(m_ctx.settings()->notificationsEnabled());
 
+    if (m_captureSound) m_captureSound->setChecked(m_ctx.settings()->captureSoundEnabled());
+    if (m_captureNotification) m_captureNotification->setChecked(m_ctx.settings()->captureNotificationEnabled());
+
     m_debounce->setValue(m_ctx.settings()->debounceMs());
     // Round up: a sub-MB limit (e.g. 512 kB) must not collapse to 0 = "no limit".
     const auto mbCeil = [](qint64 bytes) {
@@ -2043,6 +2055,9 @@ void SettingsDialog::save()
             static_cast<SettingsManager::TrayClick>(m_traySecondaryClick->currentData().toInt()));
     if (m_trayWheelCycles) m_ctx.settings()->setTrayWheelCycles(m_trayWheelCycles->isChecked());
     if (m_notifications) m_ctx.settings()->setNotificationsEnabled(m_notifications->isChecked());
+
+    if (m_captureSound) m_ctx.settings()->setCaptureSoundEnabled(m_captureSound->isChecked());
+    if (m_captureNotification) m_ctx.settings()->setCaptureNotificationEnabled(m_captureNotification->isChecked());
 
     m_ctx.settings()->setDebounceMs(m_debounce->value());
     m_ctx.settings()->setMaxItemBytes(qint64(m_maxItemMb->value()) * 1024 * 1024);

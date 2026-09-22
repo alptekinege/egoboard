@@ -444,10 +444,39 @@ void ApplicationContext::onCaptured(const ClipboardRecord &record)
     // A new copy moves the top of the history, so a wheel walk starts over.
     m_trayCycle.reset();
 
+    // U16: skip feedback when the captured content is already at the top.
+    bool alreadyAtTop = false;
+    if (m_settings && (m_settings->captureSoundEnabled() || m_settings->captureNotificationEnabled())) {
+        FilterSpec trivial;
+        bool hasMore = false;
+        const auto top = m_storage->fetchPage(trivial, {}, 1, &hasMore);
+        if (!top.isEmpty() && !top.first().hash.isEmpty() && top.first().hash == record.hash)
+            alreadyAtTop = true;
+    }
+
     bool updatedExisting = false;
     const qint64 id = m_storage->insertOrUpdate(record, &updatedExisting);
     if (id == 0)
         return;
+
+    // U16: capture feedback — sound + notification, suppressed when the
+    // content was already at the top (re-copy of the same payload).
+    if (!alreadyAtTop && m_settings && m_window) {
+        if (m_settings->captureSoundEnabled())
+            QApplication::beep();
+        if (m_settings->captureNotificationEnabled() && m_settings->notificationsEnabled()) {
+            const QString source = record.sourceApp.isEmpty()
+                                       ? tr("Unknown source")
+                                       : record.sourceApp;
+            const QString text = record.textData.isEmpty() ? record.preview : record.textData;
+            KNotification::event(
+                QStringLiteral("capture"),
+                tr("New clipboard entry"),
+                tr("%1\n\n%2").arg(source, text.left(200)),
+                QStringLiteral("edit-paste"),
+                KNotification::CloseOnTimeout);
+        }
+    }
 
     // Queue OCR for new image entries (local tesseract, no network)
     if (!updatedExisting && record.type == ContentType::Image && record.hasBlob && m_ocr

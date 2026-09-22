@@ -740,6 +740,28 @@ void SettingsManager::setNotificationsEnabled(bool enabled)
     save();
 }
 
+bool SettingsManager::captureSoundEnabled() const
+{
+    return m_config->group(kGroupUi).readEntry("CaptureSound", true);
+}
+
+void SettingsManager::setCaptureSoundEnabled(bool enabled)
+{
+    m_config->group(kGroupUi).writeEntry("CaptureSound", enabled);
+    save();
+}
+
+bool SettingsManager::captureNotificationEnabled() const
+{
+    return m_config->group(kGroupUi).readEntry("CaptureNotification", true);
+}
+
+void SettingsManager::setCaptureNotificationEnabled(bool enabled)
+{
+    m_config->group(kGroupUi).writeEntry("CaptureNotification", enabled);
+    save();
+}
+
 QString SettingsManager::theme() const
 {
     // Theme ids are checked against the color schemes actually installed: a

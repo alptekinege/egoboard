@@ -72,6 +72,8 @@ private:
     QComboBox *m_traySecondaryClick = nullptr;
     QCheckBox *m_trayWheelCycles = nullptr;
     QCheckBox *m_notifications = nullptr;
+    QCheckBox *m_captureSound = nullptr;      // U16
+    QCheckBox *m_captureNotification = nullptr; // U16
     QLineEdit *m_autostartCommand = nullptr;
     QComboBox *m_themeCombo = nullptr;
     QComboBox *m_iconThemeCombo = nullptr;

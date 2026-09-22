@@ -176,6 +176,10 @@ public:
     void setTrayMode(const QString &mode);
     bool notificationsEnabled() const;
     void setNotificationsEnabled(bool enabled);
+    bool captureSoundEnabled() const;      // U16: play a sound on new copy
+    void setCaptureSoundEnabled(bool enabled);
+    bool captureNotificationEnabled() const; // U16: show a notification on new copy
+    void setCaptureNotificationEnabled(bool enabled);
 
     // Appearance
     QString theme() const; // "system" | "light" | "dark" | installed color scheme id
