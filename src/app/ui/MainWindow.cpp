@@ -334,6 +334,21 @@ void MainWindow::buildUi()
     m_emptyHint->hide();
     m_list->viewport()->installEventFilter(this);
 
+    // U11 skeleton rows while the first page is loading.
+    m_listSkeleton = new QWidget(m_list->viewport());
+    m_listSkeleton->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    auto *skelLayout = new QVBoxLayout(m_listSkeleton);
+    skelLayout->setContentsMargins(DesignTokens::SpaceM, DesignTokens::SpaceS,
+                                   DesignTokens::SpaceM, DesignTokens::SpaceS);
+    skelLayout->setSpacing(DesignTokens::SpaceXs);
+    for (int i = 0; i < 6; ++i) {
+        auto *row = UiHelpers::makeSkeleton(m_listSkeleton);
+        row->setFixedHeight(DesignTokens::IconL + DesignTokens::SpaceXs);
+        skelLayout->addWidget(row);
+    }
+    skelLayout->addStretch(1);
+    m_listSkeleton->hide();
+
     m_preview = new PreviewPane(splitter);
     if (m_ctx.scripts()) m_preview->setScriptManager(m_ctx.scripts());
     m_preview->setSettingsManager(m_ctx.settings());
@@ -605,7 +620,7 @@ void MainWindow::connectSignals()
     // Empty-list states: the model reports when the first page landed, the
     // plain model signals cover every later change.
     connect(m_model, &ClipboardListModel::initialPageLoaded, this,
-            [this](bool) { updateEmptyState(); });
+            [this](bool) { hideListSkeleton(); updateEmptyState(); });
     connect(m_model, &QAbstractItemModel::rowsInserted, this, [this] { updateEmptyState(); });
     connect(m_model, &QAbstractItemModel::rowsRemoved, this, [this] { updateEmptyState(); });
     connect(m_model, &QAbstractItemModel::modelReset, this, [this] { updateEmptyState(); });
@@ -857,6 +872,7 @@ void MainWindow::applyCurrentFilter()
     // typed fields override the matching toolbar presets.
     const SearchEngine::ParsedQuery parsed = SearchEngine::parseQuery(m_search->text(), base);
     const FilterSpec filter = parsed.filter;
+    showListSkeleton();
     m_model->setFilter(filter);
     if (m_timeline) m_timeline->setFilter(filter);
 
@@ -904,10 +920,28 @@ void MainWindow::updateEmptyState()
                              : tr("Nothing matches this filter."));
 }
 
+void MainWindow::showListSkeleton()
+{
+    if (!m_listSkeleton || !m_list)
+        return;
+    m_listSkeleton->setGeometry(m_list->viewport()->rect());
+    m_listSkeleton->raise();
+    m_listSkeleton->show();
+}
+
+void MainWindow::hideListSkeleton()
+{
+    if (m_listSkeleton)
+        m_listSkeleton->hide();
+}
+
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
-    if (m_emptyHint && watched == m_emptyHint->parentWidget() && event->type() == QEvent::Resize)
+    if (m_emptyHint && watched == m_emptyHint->parentWidget() && event->type() == QEvent::Resize) {
         m_emptyHint->setGeometry(m_list->viewport()->rect());
+        if (m_listSkeleton)
+            m_listSkeleton->setGeometry(m_list->viewport()->rect());
+    }
     return QMainWindow::eventFilter(watched, event);
 }
 

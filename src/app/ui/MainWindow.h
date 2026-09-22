@@ -125,6 +125,9 @@ private:
     QWidget *m_bulkBar = nullptr; // R2: bulk actions for multi-select
     QLabel *m_bulkCount = nullptr;
     QLabel *m_emptyHint = nullptr; // over the list viewport while it has no rows
+    QWidget *m_listSkeleton = nullptr; // U11 shimmer rows while the first page loads
+    void showListSkeleton();
+    void hideListSkeleton();
     QComboBox *m_typeCombo = nullptr;
     QComboBox *m_dateCombo = nullptr;
     QComboBox *m_appCombo = nullptr;
