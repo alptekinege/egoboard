@@ -51,6 +51,7 @@
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QProgressBar>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QRegularExpression>
@@ -105,6 +106,28 @@ QString kwinVersion()
     }
     QString out = QString::fromUtf8(p.readAllStandardOutput() + p.readAllStandardError());
     return out.split(QLatin1Char('\n')).value(0).trimmed();
+}
+
+// Runs fn on a worker thread and shows a non-cancelable progress dialog until
+// it finishes. The return type must be copyable.
+template<typename Fn>
+auto runWithProgress(QWidget *parent, const QString &label, Fn &&fn)
+    -> decltype(fn())
+{
+    QProgressDialog dialog(label, QString(), 0, 0, parent);
+    dialog.setWindowModality(Qt::WindowModal);
+    dialog.setMinimumDuration(0);
+    dialog.setCancelButton(nullptr);
+    
+    using ResultType = decltype(fn());
+    QFutureWatcher<ResultType> watcher(parent);
+    QObject::connect(&watcher, &QFutureWatcher<ResultType>::finished, &dialog, &QProgressDialog::close);
+    
+    auto future = QtConcurrent::run(std::forward<Fn>(fn));
+    watcher.setFuture(future);
+    
+    dialog.exec();
+    return future.result();
 }
 } // namespace
 
@@ -1106,11 +1129,18 @@ QWidget *SettingsDialog::buildStoragePage()
     connect(vacuumButton, &QPushButton::clicked, this, [this, vacuumButton] {
         vacuumButton->setEnabled(false);
         vacuumButton->setText(tr("Compacting…"));
+        auto *dialog = new QProgressDialog(tr("Compacting database…"), QString(), 0, 0, this);
+        dialog->setWindowModality(Qt::WindowModal);
+        dialog->setMinimumDuration(0);
+        dialog->setCancelButton(nullptr);
+        dialog->show();
         m_ctx.vacuumNow();
-        QTimer::singleShot(3000, this, [vacuumButton] {
-            vacuumButton->setText(tr("Compact database now (VACUUM)"));
-            vacuumButton->setEnabled(true);
-        });
+        connect(&m_ctx, &ApplicationContext::vacuumFinished, this,
+                [dialog, vacuumButton](bool, qint64) {
+                    if (dialog) dialog->close();
+                    vacuumButton->setText(tr("Compact database now (VACUUM)"));
+                    vacuumButton->setEnabled(true);
+                });
     });
     row->addWidget(vacuumButton);
     auto *clearOcrBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-clear")), tr("Clear OCR text"), maintenanceBox);
@@ -1140,10 +1170,10 @@ QWidget *SettingsDialog::buildStoragePage()
                                          tr("Check integrity"), maintenanceBox);
     integrityBtn->setToolTip(tr("Runs PRAGMA quick_check and reports the first problem it finds."));
     connect(integrityBtn, &QPushButton::clicked, this, [this] {
-        QGuiApplication::setOverrideCursor(Qt::WaitCursor);
         QString error;
-        const bool ok = m_ctx.storage()->quickCheck(&error);
-        QGuiApplication::restoreOverrideCursor();
+        const bool ok = runWithProgress(this, tr("Checking integrity…"), [this, &error] {
+            return m_ctx.storage()->quickCheck(&error);
+        });
         if (ok) {
             QMessageBox::information(this, tr("Integrity check"),
                                      tr("PRAGMA quick_check reports no problems."));
@@ -1160,9 +1190,9 @@ QWidget *SettingsDialog::buildStoragePage()
                                        tr("Rebuild search index"), maintenanceBox);
     reindexBtn->setToolTip(tr("Recreates the FTS5 index from the history. Safe: no entry data is touched."));
     connect(reindexBtn, &QPushButton::clicked, this, [this] {
-        QGuiApplication::setOverrideCursor(Qt::WaitCursor);
-        const bool ok = m_ctx.storage()->rebuildSearchIndex();
-        QGuiApplication::restoreOverrideCursor();
+        const bool ok = runWithProgress(this, tr("Rebuilding search index…"), [this] {
+            return m_ctx.storage()->rebuildSearchIndex();
+        });
         if (ok)
             QMessageBox::information(this, tr("Search index"),
                                      tr("The full-text index was rebuilt."));
@@ -1195,9 +1225,9 @@ QWidget *SettingsDialog::buildStoragePage()
             tr("Klipper history (history3.sqlite *.sqlite);;All files (*)"));
         if (path.isEmpty())
             return;
-        QGuiApplication::setOverrideCursor(Qt::WaitCursor);
-        const auto result = m_ctx.io()->importKlipperHistory(path);
-        QGuiApplication::restoreOverrideCursor();
+        const auto result = runWithProgress(this, tr("Importing Klipper history…"), [this, path] {
+            return m_ctx.io()->importKlipperHistory(path);
+        });
         if (!result.ok) {
             QMessageBox::warning(this, tr("Klipper import"), result.error);
             return;
@@ -1232,10 +1262,9 @@ QWidget *SettingsDialog::buildStoragePage()
             break;
         }
         QString error;
-        // A full-history export can take seconds; show that the app is working.
-        QGuiApplication::setOverrideCursor(Qt::WaitCursor);
-        const bool exported = m_ctx.io()->exportToFile(request, &error);
-        QGuiApplication::restoreOverrideCursor();
+        const bool exported = runWithProgress(this, tr("Exporting…"), [this, request, &error] {
+            return m_ctx.io()->exportToFile(request, &error);
+        });
         if (!exported)
             QMessageBox::warning(this, tr("Export failed"), error);
         else
@@ -1247,9 +1276,9 @@ QWidget *SettingsDialog::buildStoragePage()
         ExportImportDialogs::ImportDialog dialog(this);
         if (dialog.exec() != QDialog::Accepted)
             return;
-        QGuiApplication::setOverrideCursor(Qt::WaitCursor);
-        const auto result = m_ctx.io()->importFromFile(dialog.filePath(), dialog.mode());
-        QGuiApplication::restoreOverrideCursor();
+        const auto result = runWithProgress(this, tr("Importing…"), [this, path = dialog.filePath(), mode = dialog.mode()] {
+            return m_ctx.io()->importFromFile(path, mode);
+        });
         if (!result.ok) {
             QMessageBox::warning(this, tr("Import failed"), result.error);
             return;

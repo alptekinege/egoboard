@@ -76,14 +76,11 @@ public:
     void pasteEntry(qint64 entryId, PasteVariant variant = PasteVariant::Normal);
     void deleteLastEntry(); // drop the newest capture (global hotkey)
     void vacuumNow();
-
-    // Pauses/resumes recording on both capture paths (tray, global shortcut or
-    // the session being locked). Lock pauses are lifted when the lock ends.
     void setCapturePaused(bool paused, bool fromLock = false);
     bool isCapturePaused() const { return m_capturePaused; }
 
     // Expands a snippet with the current clipboard text and pastes it into the
-    // focused window (global snippet shortcut).
+    // active window (global snippet shortcut).
     void pasteSnippet(qint64 snippetId);
 
     // Wheel over the tray icon: puts the entry `steps` further into the recent
@@ -101,6 +98,9 @@ public:
     // not change, for when Plasma rewrote a scheme file behind them.
     void applyThemes(const QString &colorTheme, const QString &iconTheme,
                      const TextAppearance::Overrides &text, bool force = false);
+
+signals:
+    void vacuumFinished(bool ok, qint64 databaseSizeBytes);
 
 private slots:
     // DBus ScreenSaver ActiveChanged → pause/resume while locked.

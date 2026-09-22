@@ -31,6 +31,7 @@
 #include <QStackedWidget>
 #include <QTextBrowser>
 #include <QTextEdit>
+#include <QTimer>
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -105,6 +106,25 @@ PreviewPane::PreviewPane(QWidget *parent)
     m_metaLabel->setOpenExternalLinks(true);
     m_metaLabel->setContentsMargins(8, 4, 8, 4);
     layout->addWidget(m_metaLabel);
+
+    // U11 skeleton overlay: covers the stack while content loads.
+    m_skeletonOverlay = new QWidget(m_stack);
+    m_skeletonOverlay->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    auto *skelLayout = new QVBoxLayout(m_skeletonOverlay);
+    skelLayout->setContentsMargins(DesignTokens::SpaceM, DesignTokens::SpaceM,
+                                   DesignTokens::SpaceM, DesignTokens::SpaceM);
+    skelLayout->setSpacing(DesignTokens::SpaceS);
+    for (int i = 0; i < 4; ++i) {
+        auto *row = UiHelpers::makeSkeleton(m_skeletonOverlay);
+        row->setFixedHeight(DesignTokens::IconL);
+        skelLayout->addWidget(row);
+    }
+    skelLayout->addStretch(1);
+    m_skeletonOverlay->hide();
+
+    m_skeletonTimer = new QTimer(this);
+    m_skeletonTimer->setSingleShot(true);
+    m_skeletonTimer->setInterval(80);
 
     setMinimumWidth(260);
 }
@@ -515,6 +535,21 @@ void PreviewPane::updateBlurOverlay()
     m_blurLabel->show();
 }
 
+void PreviewPane::showSkeleton()
+{
+    if (!m_skeletonOverlay || !m_stack)
+        return;
+    m_skeletonOverlay->setGeometry(m_stack->rect());
+    m_skeletonOverlay->raise();
+    m_skeletonOverlay->show();
+}
+
+void PreviewPane::hideSkeleton()
+{
+    if (m_skeletonOverlay)
+        m_skeletonOverlay->hide();
+}
+
 void PreviewPane::setEditing(bool editing)
 {
     const bool isText = m_current.type == ContentType::Text;
@@ -632,6 +667,8 @@ void PreviewPane::resizeEvent(QResizeEvent *event)
         updateImageView();
     if (m_blurLabel && m_blurLabel->isVisible() && m_stack)
         m_blurLabel->setGeometry(m_stack->rect().adjusted(8, 8, -8, -8));
+    if (m_skeletonOverlay && m_skeletonOverlay->isVisible() && m_stack)
+        m_skeletonOverlay->setGeometry(m_stack->rect());
 }
 
 void PreviewPane::setCloseVisible(bool visible)
@@ -656,6 +693,7 @@ void PreviewPane::showEmpty(const QString &message)
     m_current = {};
     setMeta({});
     updateBlurOverlay();
+    hideSkeleton();
 }
 
 void PreviewPane::showRecord(const ClipboardRecord &record)
@@ -669,6 +707,8 @@ void PreviewPane::showRecord(const ClipboardRecord &record)
     m_copyResultBtn->setVisible(false);
     m_revertBtn->setVisible(false);
     m_transformStatus->clear();
+    showSkeleton();
+    QTimer::singleShot(0, this, &PreviewPane::hideSkeleton);
 
     // R2 header: source label + pin state, visible for any record.
     if (m_headerBar)

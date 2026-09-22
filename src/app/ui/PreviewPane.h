@@ -108,4 +108,10 @@ private:
     bool m_isTransformed = false;
     ScriptActionManager *m_scripts = nullptr;
     SettingsManager *m_settings = nullptr;
+
+    // U11 shimmer overlay while content loads
+    QWidget *m_skeletonOverlay = nullptr;
+    QTimer *m_skeletonTimer = nullptr;
+    void showSkeleton();
+    void hideSkeleton();
 };

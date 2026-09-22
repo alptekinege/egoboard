@@ -11,6 +11,7 @@
 #include <QFont>
 #include <QFrame>
 #include <QGraphicsDropShadowEffect>
+#include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -299,6 +300,31 @@ void UiHelpers::ensureTouchTarget(QWidget *widget, const QString &density)
     const int floor = DesignTokens::rowMinHeightForDensity(density);
     if (widget->minimumHeight() < floor)
         widget->setMinimumHeight(floor);
+}
+
+QWidget *UiHelpers::makeSkeleton(QWidget *parent)
+{
+    auto *widget = new QWidget(parent);
+    const QColor color = DesignTokens::skeletonBase(QApplication::palette());
+    widget->setStyleSheet(
+        QStringLiteral("QWidget { background: rgba(%1, %2, %3, %4); border-radius: %5px; }")
+            .arg(color.red())
+            .arg(color.green())
+            .arg(color.blue())
+            .arg(QString::number(color.alphaF(), 'f', 2))
+            .arg(DesignTokens::RadiusS));
+    if (!reduceMotion()) {
+        auto *effect = new QGraphicsOpacityEffect(widget);
+        widget->setGraphicsEffect(effect);
+        auto *animation = new QPropertyAnimation(effect, "opacity", widget);
+        animation->setDuration(1200);
+        animation->setStartValue(0.4);
+        animation->setEndValue(1.0);
+        animation->setEasingCurve(QEasingCurve::InOutSine);
+        animation->setLoopCount(-1);
+        animation->start();
+    }
+    return widget;
 }
 
 QString UiHelpers::positiveStyle()

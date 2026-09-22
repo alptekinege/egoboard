@@ -47,6 +47,7 @@
 #include <QSplitter>
 #include <QTimer>
 #include <QDockWidget>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QShortcut>
@@ -1583,9 +1584,14 @@ void MainWindow::exportHistoryToFormat(const QString &format)
         break;
     }
     QString error;
-    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+    QProgressDialog progressDialog(tr("Exporting…"), QString(), 0, 0, this);
+    progressDialog.setWindowModality(Qt::WindowModal);
+    progressDialog.setMinimumDuration(0);
+    progressDialog.setCancelButton(nullptr);
+    progressDialog.show();
+    QApplication::processEvents();
     const bool exported = m_ctx.io()->exportToFile(request, &error);
-    QGuiApplication::restoreOverrideCursor();
+    progressDialog.close();
     if (!exported)
         QMessageBox::warning(this, tr("Export failed"), error);
     else

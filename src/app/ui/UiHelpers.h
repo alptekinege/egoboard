@@ -73,6 +73,11 @@ QWidget *makeToast(const QString &message, QWidget *parent, const QString &actio
 // the touch floor so compact rows stay tappable.
 void ensureTouchTarget(QWidget *widget, const QString &density);
 
+// One placeholder row (U11): translucent rounded rect with a pulse shimmer
+// when motion is enabled, static when Reduce motion is on. Used for skeleton
+// rows in the list and shimmer overlays in the preview while content loads.
+QWidget *makeSkeleton(QWidget *parent = nullptr);
+
 // --- motion ------------------------------------------------------------------
 
 // Settings ▸ Appearance ▸ "Reduce motion". Set by ApplicationContext; the

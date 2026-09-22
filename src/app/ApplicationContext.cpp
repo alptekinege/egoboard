@@ -100,6 +100,7 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
     m_vacuumWorker = new VacuumWorker(databasePath);
     m_vacuumWorker->moveToThread(m_vacuumThread);
     connect(m_vacuumThread, &QThread::finished, m_vacuumWorker, &QObject::deleteLater);
+    connect(m_vacuumWorker, &VacuumWorker::finished, this, &ApplicationContext::vacuumFinished);
     m_vacuumThread->start();
 
     m_encryption = new EncryptionManager(this);
