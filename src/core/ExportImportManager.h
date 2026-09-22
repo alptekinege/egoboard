@@ -67,8 +67,21 @@ public:
         int savedSearchesImported = 0;
     };
 
-    // Image-only export (U17): which entries are candidates for dumping.
     struct ImageExportRequest {
+        // Pixel format choice (U17 follow-up): PNG writes the stored blobs
+        // verbatim; JPEG converts them through a caller-provided encoder (core
+        // stays GUI-free, so QImage-based conversion lives in the app layer).
+        enum class ImageFileFormat {
+            Png,
+            Jpeg,
+        };
+
+        static QString imageFileFormatName(ImageFileFormat format)
+        {
+            return format == ImageFileFormat::Jpeg ? QStringLiteral("jpeg")
+                                                   : QStringLiteral("png");
+        }
+
         enum class Scope {
             Selection, // the explicit entryIds (bulk bar)
             CurrentFilter, // the caller's live FilterSpec (list filter)
@@ -82,6 +95,8 @@ public:
         FilterSpec filter; // CurrentFilter scope
         qint64 groupId = 0; // GroupSubtree scope
         QString dir; // target folder (created when missing)
+        ImageFileFormat fileFormat = ImageFileFormat::Png;
+        int jpegQuality = 85; // 1..100, used when fileFormat == Jpeg
         // Explicit sensitive policy (shown in the dialog before export):
         // false skips sensitive entries and reports them, true exports them.
         bool includeSensitive = false;
@@ -109,6 +124,12 @@ public:
     using ImageExportProgress = std::function<void(int exportedSoFar, int skippedSoFar,
                                                    qint64 bytesSoFar)>;
 
+    // Converts one stored PNG blob into the requested file payload. Sets
+    // *extension (without dot, e.g. "jpg") and returns the bytes; an empty
+    // return with *error set aborts the run with that message (no manifest).
+    using ImageEncoder = std::function<QByteArray(const QByteArray &storedPng, qint64 entryId,
+                                                  QString *extension, QString *error)>;
+
     static QString imageExportFormatTag() { return QStringLiteral("egoboard-image-export"); }
     static int imageExportFormatVersion() { return 1; }
 
@@ -120,14 +141,18 @@ public:
 
     // Writes the stored PNG blobs of the requested scope into `request.dir`
     // (created when missing) with collision-safe deterministic filenames plus
-    // a `manifest.json` describing them. Streams bounded pages so a 50k-image
-    // history stays within bounded memory; read-only (the history is never
-    // modified, no transaction needed). Existing files are never overwritten.
-    // On cancel or write failure no manifest is written and already-written
-    // images stay in place; the result message says how far the run got.
+    // a `manifest.json` describing them. With `fileFormat == Jpeg` every blob
+    // is converted through `encode` (core cannot depend on QtGui); without an
+    // encoder only verbatim PNG is available. Streams bounded pages so a
+    // 50k-image history stays within bounded memory; read-only (the history is
+    // never modified, no transaction needed). Existing files are never
+    // overwritten. On cancel, conversion failure or write failure no manifest
+    // is written and already-written images stay in place; the result message
+    // says how far the run got.
     ImageExportResult exportImages(const ImageExportRequest &request,
                                    std::atomic<bool> *cancel = nullptr,
-                                   ImageExportProgress progress = {});
+                                   ImageExportProgress progress = {},
+                                   ImageEncoder encode = {});
 
     // Imports the text entries of a Klipper database (`history3.sqlite`, the
     // current Klipper format). Starred items become pinned and Klipper's copy

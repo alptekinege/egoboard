@@ -51,6 +51,9 @@ private slots:
     void cancelLeavesNoManifest();
     void manifestOmitsPayloadTextUnlessOptedIn();
     void reportsUnwritableImageTarget();
+    void exportsImagesAsJpegThroughEncoderHook();
+    void reportsEncoderFailuresWithoutManifest();
+    void requiresEncoderForJpegFormat();
 
 private:
     void seed(StorageManager *storage, BookmarkManager *bookmarks);
@@ -1030,6 +1033,92 @@ void TestExportImport::reportsUnwritableImageTarget()
     QVERIFY(!result.ok);
     QVERIFY(!result.canceled);
     QVERIFY(!result.error.isEmpty());
+    QVERIFY(result.manifestPath.isEmpty());
+}
+
+void TestExportImport::exportsImagesAsJpegThroughEncoderHook()
+{
+    const qint64 first = seedImage(m_storage, QByteArrayLiteral("img-a"),
+                                   QByteArrayLiteral("PNG-DATA-A"), 1700000000000);
+    const qint64 second = seedImage(m_storage, QByteArrayLiteral("img-b"),
+                                    QByteArrayLiteral("PNG-DATA-B"), 1700000001000);
+    // Core stays GUI-free: the caller converts (the app passes a QImage-based
+    // encoder); this fake stands in for it and proves the hook contract.
+    QSet<qint64> encodedIds;
+    ExportImportManager::ImageEncoder fakeJpeg =
+        [&](const QByteArray &storedPng, qint64 entryId, QString *extension, QString *) {
+            encodedIds.insert(entryId);
+            if (extension)
+                *extension = QStringLiteral("jpg");
+            return QByteArrayLiteral("JPEG:") + storedPng;
+        };
+
+    ExportImportManager::ImageExportRequest request;
+    request.scope = ExportImportManager::ImageExportRequest::Scope::Selection;
+    request.entryIds = {first, second};
+    request.fileFormat = ExportImportManager::ImageExportRequest::ImageFileFormat::Jpeg;
+    request.jpegQuality = 70;
+    request.dir = m_dir.filePath(QStringLiteral("images-jpeg"));
+    const auto result = m_io->exportImages(request, nullptr, {}, fakeJpeg);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.exported, 2);
+    QCOMPARE(result.bytesWritten,
+             qint64(QByteArrayLiteral("JPEG:PNG-DATA-A").size()
+                    + QByteArrayLiteral("JPEG:PNG-DATA-B").size()));
+    QVERIFY(encodedIds.contains(first));
+    QVERIFY(encodedIds.contains(second));
+    for (const QString &path : result.files) {
+        QVERIFY(path.endsWith(QStringLiteral(".jpg")));
+        QFile file(path);
+        QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(path));
+        QVERIFY(file.readAll().startsWith(QByteArrayLiteral("JPEG:")));
+    }
+    const QJsonObject root = readImageManifest(result.manifestPath);
+    QCOMPARE(root.value(QStringLiteral("fileFormat")).toString(), QStringLiteral("jpeg"));
+    QCOMPARE(root.value(QStringLiteral("jpegQuality")).toInt(), 70);
+    const QJsonArray files = root.value(QStringLiteral("files")).toArray();
+    QCOMPARE(files.size(), 2);
+    for (const auto &value : files)
+        QVERIFY(value.toObject().value(QStringLiteral("file")).toString().endsWith(
+            QStringLiteral(".jpg")));
+}
+
+void TestExportImport::reportsEncoderFailuresWithoutManifest()
+{
+    seedImage(m_storage, QByteArrayLiteral("img-a"), QByteArrayLiteral("PNG-A"), 1700000000000);
+    seedImage(m_storage, QByteArrayLiteral("img-b"), QByteArrayLiteral("PNG-B"), 1700000001000);
+    ExportImportManager::ImageEncoder failing =
+        [](const QByteArray &, qint64 entryId, QString *, QString *error) {
+            if (error)
+                *error = QStringLiteral("no decoder for entry %1").arg(entryId);
+            return QByteArray();
+        };
+
+    ExportImportManager::ImageExportRequest request;
+    request.scope = ExportImportManager::ImageExportRequest::Scope::Everything;
+    request.fileFormat = ExportImportManager::ImageExportRequest::ImageFileFormat::Jpeg;
+    request.dir = m_dir.filePath(QStringLiteral("images-encode-fail"));
+    const auto result = m_io->exportImages(request, nullptr, {}, failing);
+    QVERIFY(!result.ok);
+    QVERIFY(!result.canceled);
+    QVERIFY(result.error.contains(QStringLiteral("no decoder")));
+    QVERIFY(result.manifestPath.isEmpty());
+    QVERIFY(!QFile::exists(request.dir + QStringLiteral("/manifest.json")));
+}
+
+void TestExportImport::requiresEncoderForJpegFormat()
+{
+    seedImage(m_storage, QByteArrayLiteral("img-a"), QByteArrayLiteral("PNG-A"), 1700000000000);
+
+    ExportImportManager::ImageExportRequest request;
+    request.scope = ExportImportManager::ImageExportRequest::Scope::Everything;
+    request.fileFormat = ExportImportManager::ImageExportRequest::ImageFileFormat::Jpeg;
+    request.dir = m_dir.filePath(QStringLiteral("images-no-encoder"));
+    const auto result = m_io->exportImages(request); // no encoder hooked up
+    QVERIFY(!result.ok);
+    QVERIFY(!result.canceled);
+    QVERIFY(!result.error.isEmpty());
+    QCOMPARE(result.exported, 0);
     QVERIFY(result.manifestPath.isEmpty());
 }
 

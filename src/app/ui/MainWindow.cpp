@@ -1434,11 +1434,24 @@ void MainWindow::runImageExport(ExportImportManager::ImageExportRequest::Scope i
     request.filter = currentFilter;
     request.groupId = dialog.groupId();
     request.dir = dialog.folder();
+    request.fileFormat = dialog.fileFormat();
+    request.jpegQuality = dialog.jpegQuality();
     request.includeSensitive = dialog.includeSensitive();
     request.includeText = dialog.includeText();
     if (request.dir.isEmpty()) {
         QMessageBox::warning(this, tr("Export images"), tr("Choose a target folder first."));
         return;
+    }
+    // JPEG conversion needs QImage, which core must not depend on: the dialog
+    // supplies the format, this layer supplies the encoder behind core's hook.
+    ExportImportManager::ImageEncoder encoder;
+    if (request.fileFormat == ExportImportManager::ImageExportRequest::ImageFileFormat::Jpeg) {
+        const int quality = request.jpegQuality;
+        encoder = [quality](const QByteArray &storedPng, qint64 entryId, QString *extension,
+                            QString *error) {
+            return ExportImportDialogs::encodeImageForExport(storedPng, entryId, quality,
+                                                             extension, error);
+        };
     }
 
     // Chunked synchronous run on the GUI thread (same thread as the storage
@@ -1462,7 +1475,8 @@ void MainWindow::runImageExport(ExportImportManager::ImageExportRequest::Scope i
                     .arg(skipped)
                     .arg(UiHelpers::humanSize(bytes)));
             QApplication::processEvents();
-        });
+        },
+        encoder);
     progress.close();
 
     if (result.canceled) {
@@ -1475,7 +1489,11 @@ void MainWindow::runImageExport(ExportImportManager::ImageExportRequest::Scope i
     }
     QString message = result.exported == 0
         ? tr("No image entries found in this scope.")
-        : tr("%n image(s) written to %1.", nullptr, result.exported).arg(request.dir);
+        : tr("%n image(s) written as %2 to %1.", nullptr, result.exported)
+              .arg(request.dir)
+              .arg(ExportImportManager::ImageExportRequest::imageFileFormatName(
+                       request.fileFormat)
+                       .toUpper());
     const int skipped = result.skippedNoBlob + result.skippedNonImage + result.skippedSensitive;
     if (skipped > 0) {
         message += QLatin1Char('\n')

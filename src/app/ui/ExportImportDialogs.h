@@ -10,9 +10,16 @@ class QDateEdit;
 class QLineEdit;
 class QListWidget;
 class QRadioButton;
+class QSpinBox;
 
 // Small dialogs for JSON export/import and custom date-range filtering.
 namespace ExportImportDialogs {
+
+// Converts one stored PNG blob into JPEG bytes for the image export flow
+// (core stays GUI-free, so this QImage-based step lives here). Sets
+// *extension to "jpg"; an empty return with *error set aborts the run.
+QByteArray encodeImageForExport(const QByteArray &storedPng, qint64 entryId, int jpegQuality,
+                                QString *extension, QString *error);
 
 struct DateRange {
     bool isValid = false;
@@ -76,6 +83,8 @@ public:
     Scope scope() const;
     qint64 groupId() const;
     QString folder() const;
+    ExportImportManager::ImageExportRequest::ImageFileFormat fileFormat() const;
+    int jpegQuality() const;
     bool includeSensitive() const;
     bool includeText() const;
     // Preselects a scope (the bulk bar starts on Selection, ">export images"
@@ -92,6 +101,8 @@ private:
     QRadioButton *m_groupRadio = nullptr;
     QComboBox *m_groupCombo = nullptr;
     QLineEdit *m_folderEdit = nullptr;
+    QComboBox *m_formatCombo = nullptr;
+    QSpinBox *m_qualitySpin = nullptr;
     QCheckBox *m_sensitiveCheck = nullptr;
     QCheckBox *m_textCheck = nullptr;
 };

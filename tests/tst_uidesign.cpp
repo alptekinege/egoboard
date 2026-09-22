@@ -22,8 +22,10 @@
 #include <KSharedConfig>
 
 #include <QApplication>
+#include <QBuffer>
 #include <QDateTime>
 #include <QFontMetrics>
+#include <QImage>
 #include <QLineEdit>
 #include <QPalette>
 #include <QPointer>
@@ -36,6 +38,8 @@
 
 #include "ClipboardRecord.h"
 #include "StorageManager.h"
+#include "BookmarkManager.h"
+#include "ExportImportDialogs.h"
 
 namespace {
 
@@ -99,6 +103,9 @@ private slots:
     void settingsDeferredSnapshotsNeverTouchStorageOffThread();
     void settingsDeferredDeliverySurvivesEarlyClose();
     void settingsRepeatedOpenCloseStressesTheHandoff();
+    void imageJpegEncoderRoundTripsPixels();
+    void imageJpegEncoderRejectsUndecodableBlobs();
+    void imageExportDialogDefaultsToSelection();
 };
 
 void TestUiDesign::delegateTextRolesKeepTheirContrastFloor()
@@ -711,6 +718,75 @@ void TestUiDesign::settingsRepeatedOpenCloseStressesTheHandoff()
     for (int i = 0; i < 50 && !liveDelivered; ++i)
         QTest::qWait(10);
     QVERIFY(liveDelivered);
+}
+
+void TestUiDesign::imageJpegEncoderRoundTripsPixels()
+{
+    // U17 (format choice): the app-layer encoder behind core's hook turns the
+    // stored PNG into a readable JPEG of the same dimensions.
+    QImage source(16, 12, QImage::Format_ARGB32);
+    source.fill(QColor(0xd0, 0x20, 0x20, 0xff));
+    QByteArray png;
+    {
+        QBuffer buffer(&png);
+        QVERIFY(buffer.open(QIODevice::WriteOnly));
+        QVERIFY(source.save(&buffer, "PNG"));
+    }
+    QString extension;
+    QString error;
+    const QByteArray jpeg =
+        ExportImportDialogs::encodeImageForExport(png, 42, 90, &extension, &error);
+    QVERIFY2(!jpeg.isEmpty(), qPrintable(error));
+    QCOMPARE(extension, QStringLiteral("jpg"));
+    // Real JPEG bitstream, same frame size.
+    QVERIFY(jpeg.size() >= 2);
+    QCOMPARE(static_cast<unsigned char>(jpeg.at(0)), 0xff);
+    QCOMPARE(static_cast<unsigned char>(jpeg.at(1)), 0xd8);
+    const QImage decoded = QImage::fromData(jpeg, "JPEG");
+    QCOMPARE(decoded.size(), source.size());
+}
+
+void TestUiDesign::imageJpegEncoderRejectsUndecodableBlobs()
+{
+    // Corrupt blobs abort the run with an actionable message instead of
+    // writing an empty file.
+    QString extension = QStringLiteral("kept");
+    QString error;
+    const QByteArray out = ExportImportDialogs::encodeImageForExport(
+        QByteArrayLiteral("not an image"), 7, 85, &extension, &error);
+    QVERIFY(out.isEmpty());
+    QVERIFY(!error.isEmpty());
+    QVERIFY(error.contains(QStringLiteral("7")));
+}
+
+void TestUiDesign::imageExportDialogDefaultsToSelection()
+{
+    // U17: the bulk bar opens the dialog on its selection; other scopes stay
+    // one click away and privacy defaults stay opt-in.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    StorageManager storage(dir.filePath(QStringLiteral("image-dialog.db")));
+    BookmarkManager bookmarks(storage.database());
+    ClipboardRecord record;
+    record.type = ContentType::Image;
+    record.hash = QByteArrayLiteral("dlg-1");
+    record.blobData = QByteArrayLiteral("PNG-DATA");
+    record.hasBlob = true;
+    record.preview = QStringLiteral("image");
+    record.timestamp = QDateTime::currentMSecsSinceEpoch();
+    const qint64 id = storage.insertOrUpdate(record);
+    QVERIFY(id != 0);
+
+    ExportImportDialogs::ImageExportDialog dialog(&bookmarks, {id}, FilterSpec{}, false, nullptr);
+    QCOMPARE(dialog.scope(), ExportImportDialogs::ImageExportDialog::Scope::Selection);
+    QVERIFY(dialog.folder().isEmpty());
+    QVERIFY(!dialog.includeSensitive());
+    QVERIFY(!dialog.includeText());
+    QCOMPARE(dialog.fileFormat(),
+             ExportImportManager::ImageExportRequest::ImageFileFormat::Png);
+    QCOMPARE(dialog.jpegQuality(), 85);
+    dialog.setScope(ExportImportDialogs::ImageExportDialog::Scope::Everything);
+    QCOMPARE(dialog.scope(), ExportImportDialogs::ImageExportDialog::Scope::Everything);
 }
 
 QTEST_MAIN(TestUiDesign)

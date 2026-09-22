@@ -129,6 +129,7 @@
 - Explicit sensitive policy (skip-and-report by default), per-batch progress callback + atomic cancel (chunked synchronous run on the GUI thread — no worker-thread SQL), cancel/write-failure writes no manifest and reports how far the run got; history is never modified and JSON/Markdown/CSV/HTML exports are unchanged.
 - UI: bulk-bar Export opens an `ImageExportDialog` (scope radios, folder picker, sensitive/text checkboxes, privacy hint) with cancelable progress and a result breakdown; `>export images` (palette completion + usage) routes to the same flow.
 - Scale probe: 5000 images × 20 KB (100 MB) in ~0.6 s (~8500 img/s); 10 new `tst_exportimport` slots (selection/filter/pinned/group, skipped blobs, sensitive default + opt-in, collisions incl. pre-existing files, cancel, text opt-in, unwritable target) — 26/26 pass, full suite 29/29 + `--smoke` OK.
+- Follow-up (format choice): PNG writes blobs verbatim; JPEG converts via a caller-provided `ImageEncoder` hook (core stays GUI-free, QImage conversion in `ExportImportDialogs::encodeImageForExport` with white-flattened alpha + quality 1–100), dialog format combo, manifest records `fileFormat`/`jpegQuality`; covered by encoder-hook slots plus real round-trip/reject/dialog-default slots in `tst_uidesign`.
 
 ---
 

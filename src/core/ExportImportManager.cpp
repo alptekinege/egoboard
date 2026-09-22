@@ -380,7 +380,8 @@ bool ExportImportManager::exportToFile(const ExportRequest &request, QString *er
 ExportImportManager::ImageExportResult
 ExportImportManager::exportImages(const ImageExportRequest &request,
                                   std::atomic<bool> *cancel,
-                                  ImageExportProgress progress)
+                                  ImageExportProgress progress,
+                                  ImageEncoder encode)
 {
     ImageExportResult result;
     const auto isCanceled = [&] { return cancel && cancel->load(std::memory_order_relaxed); };
@@ -393,6 +394,10 @@ ExportImportManager::exportImages(const ImageExportRequest &request,
     if (isCanceled()) {
         result.canceled = true;
         result.error = tr("Image export canceled before it started.");
+        return result;
+    }
+    if (request.fileFormat == ImageExportRequest::ImageFileFormat::Jpeg && !encode) {
+        result.error = tr("JPEG conversion is unavailable: no image encoder was provided.");
         return result;
     }
     if (request.dir.trimmed().isEmpty()) {
@@ -514,15 +519,31 @@ ExportImportManager::exportImages(const ImageExportRequest &request,
             ++result.skippedNoBlob;
             return true;
         }
-        QString name = imageFileBaseName(record) + QStringLiteral(".png");
+        // Pixel encoding: verbatim PNG by default, caller-provided conversion
+        // (e.g. JPEG via QImage in the app layer) when an encoder is set.
+        QByteArray payload = record.blobData;
+        QString extension = QStringLiteral("png");
+        if (encode) {
+            QString encodeError;
+            QString encodedExtension;
+            payload = encode(record.blobData, record.id, &encodedExtension, &encodeError);
+            if (payload.isEmpty()) {
+                result.error = encodeError.isEmpty()
+                    ? tr("Cannot convert the image of entry %1.").arg(record.id)
+                    : encodeError;
+                return false;
+            }
+            if (!encodedExtension.trimmed().isEmpty())
+                extension = encodedExtension.trimmed().toLower();
+        }
+        const QString stem = imageFileBaseName(record);
+        QString name = stem + QLatin1Char('.') + extension;
         QString path;
         QFile file;
         bool opened = false;
         for (int attempt = 0; attempt < kImageExportNameAttempts; ++attempt) {
-            if (attempt > 0) {
-                const QString stem = imageFileBaseName(record);
-                name = QStringLiteral("%1-%2.png").arg(stem).arg(attempt + 1);
-            }
+            if (attempt > 0)
+                name = QStringLiteral("%1-%2.%3").arg(stem).arg(attempt + 1).arg(extension);
             path = absDir + QLatin1Char('/') + name;
             file.setFileName(path);
             // NewOnly: an existing file — ours or the user's — is never
@@ -536,7 +557,7 @@ ExportImportManager::exportImages(const ImageExportRequest &request,
             result.error = tr("Cannot write %1: %2").arg(path, file.errorString());
             return false;
         }
-        if (file.write(record.blobData) != record.blobData.size()) {
+        if (file.write(payload) != payload.size()) {
             const QString writeError = file.errorString();
             file.close();
             file.remove(); // no truncated image is left behind
@@ -545,7 +566,7 @@ ExportImportManager::exportImages(const ImageExportRequest &request,
         }
         file.close();
         ++result.exported;
-        result.bytesWritten += record.blobData.size();
+        result.bytesWritten += payload.size();
         result.files.append(path);
 
         QJsonObject entry;
@@ -664,6 +685,10 @@ ExportImportManager::exportImages(const ImageExportRequest &request,
     root.insert(QStringLiteral("exportedAt"),
                 QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
     root.insert(QStringLiteral("scope"), imageScopeName(request.scope));
+    root.insert(QStringLiteral("fileFormat"),
+                ImageExportRequest::imageFileFormatName(request.fileFormat));
+    if (request.fileFormat == ImageExportRequest::ImageFileFormat::Jpeg)
+        root.insert(QStringLiteral("jpegQuality"), qBound(1, request.jpegQuality, 100));
     root.insert(QStringLiteral("includeSensitive"), request.includeSensitive);
     root.insert(QStringLiteral("includeText"), request.includeText);
     root.insert(QStringLiteral("counts"), counts);

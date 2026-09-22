@@ -2,8 +2,11 @@
 
 #include "BookmarkManager.h"
 
+#include <QBuffer>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCoreApplication>
+#include <QSpinBox>
 #include <QDateEdit>
 #include <QDateTime>
 #include <QDialogButtonBox>
@@ -13,6 +16,8 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QImage>
+#include <QPainter>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -22,6 +27,43 @@
 #include <QVBoxLayout>
 
 namespace ExportImportDialogs {
+
+QByteArray encodeImageForExport(const QByteArray &storedPng, qint64 entryId, int jpegQuality,
+                                QString *extension, QString *error)
+{
+    const auto trEncode = [](const char *text) {
+        return QCoreApplication::translate("ExportImportDialogs", text);
+    };
+    QImage image = QImage::fromData(storedPng, "PNG");
+    if (image.isNull()) {
+        if (error)
+            *error = trEncode("Cannot convert the image of entry %1: the stored data is not a "
+                              "readable image.")
+                         .arg(entryId);
+        return {};
+    }
+    // JPEG has no alpha channel: flatten translucent pixels onto white instead
+    // of letting them fall back to black.
+    if (image.hasAlphaChannel()) {
+        QImage opaque(image.size(), QImage::Format_RGB32);
+        opaque.fill(Qt::white);
+        QPainter painter(&opaque);
+        painter.drawImage(0, 0, image);
+        painter.end();
+        image = opaque;
+    }
+    QByteArray out;
+    QBuffer buffer(&out);
+    if (!buffer.open(QIODevice::WriteOnly)
+        || !image.save(&buffer, "JPEG", qBound(1, jpegQuality, 100))) {
+        if (error)
+            *error = trEncode("Cannot convert the image of entry %1 to JPEG.").arg(entryId);
+        return {};
+    }
+    if (extension)
+        *extension = QStringLiteral("jpg");
+    return out;
+}
 
 DateRangeDialog::DateRangeDialog(QWidget *parent)
     : QDialog(parent)
@@ -334,7 +376,31 @@ ImageExportDialog::ImageExportDialog(BookmarkManager *bookmarks, const QList<qin
                                "needs the payloads for indexing."));
     layout->addWidget(m_textCheck);
 
-    auto *hint = new QLabel(tr("Writes one PNG per stored image plus <code>manifest.json</code> "
+    auto *formatRow = new QHBoxLayout();
+    formatRow->addWidget(new QLabel(tr("Format:"), this));
+    m_formatCombo = new QComboBox(this);
+    m_formatCombo->addItem(tr("PNG — as stored"),
+                           int(ExportImportManager::ImageExportRequest::ImageFileFormat::Png));
+    m_formatCombo->addItem(tr("JPEG — converted"),
+                           int(ExportImportManager::ImageExportRequest::ImageFileFormat::Jpeg));
+    m_formatCombo->setToolTip(tr("PNG writes the stored image untouched. JPEG re-encodes it "
+                                 "(transparency is flattened onto white)."));
+    formatRow->addWidget(m_formatCombo, 1);
+    formatRow->addWidget(new QLabel(tr("Quality:"), this));
+    m_qualitySpin = new QSpinBox(this);
+    m_qualitySpin->setRange(1, 100);
+    m_qualitySpin->setValue(85);
+    m_qualitySpin->setEnabled(false);
+    m_qualitySpin->setToolTip(tr("JPEG quality (PNG ignores it)."));
+    formatRow->addWidget(m_qualitySpin);
+    connect(m_formatCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
+        m_qualitySpin->setEnabled(
+            m_formatCombo->itemData(index).toInt()
+            == int(ExportImportManager::ImageExportRequest::ImageFileFormat::Jpeg));
+    });
+    layout->addLayout(formatRow);
+
+    auto *hint = new QLabel(tr("Writes one image file per stored image plus <code>manifest.json</code> "
                                "(source app, capture time, tags, OCR text). Entries without a "
                                "stored image are skipped and reported. Existing files are never "
                                "overwritten; canceling writes no manifest."), this);
@@ -407,6 +473,17 @@ qint64 ImageExportDialog::groupId() const
 QString ImageExportDialog::folder() const
 {
     return m_folderEdit->text().trimmed();
+}
+
+ExportImportManager::ImageExportRequest::ImageFileFormat ImageExportDialog::fileFormat() const
+{
+    return static_cast<ExportImportManager::ImageExportRequest::ImageFileFormat>(
+        m_formatCombo->currentData().toInt());
+}
+
+int ImageExportDialog::jpegQuality() const
+{
+    return m_qualitySpin->value();
 }
 
 bool ImageExportDialog::includeSensitive() const
