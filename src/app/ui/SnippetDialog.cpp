@@ -38,6 +38,14 @@ SnippetDialog::SnippetDialog(SnippetManager *manager, const QString &clipboardTe
     UiHelpers::styleItemList(m_list);
     splitter->addWidget(m_list);
 
+    // U13 empty state overlay for the snippet list.
+    m_emptyState = UiHelpers::makeEmptyState(
+        QStringLiteral("document-edit"), tr("No snippets yet"), tr("Fill the form and press Create."),
+        m_list->viewport());
+    m_emptyState->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    m_emptyState->hide();
+    m_list->viewport()->installEventFilter(this);
+
     auto *right = new QWidget(splitter);
     auto *form = new QVBoxLayout(right);
     form->addWidget(new QLabel(tr("Name:"), right));
@@ -119,11 +127,10 @@ void SnippetDialog::reload()
         it->setToolTip(s.templateText);
     }
     if (m_list->count() == 0) {
-        // First-run hint in the list itself, where the missing snippets would be.
-        auto *placeholder =
-            new QListWidgetItem(tr("No snippets yet — fill the form and press Create."), m_list);
-        placeholder->setFlags(Qt::NoItemFlags);
-        placeholder->setForeground(QApplication::palette().color(QPalette::Mid));
+        m_emptyState->setGeometry(m_list->viewport()->rect());
+        m_emptyState->show();
+    } else {
+        m_emptyState->hide();
     }
 }
 
@@ -284,4 +291,11 @@ void SnippetDialog::onInsert()
         return;
     }
     emit insertRequested(expanded);
+}
+
+bool SnippetDialog::eventFilter(QObject *watched, QEvent *event)
+{
+    if (m_emptyState && watched == m_list->viewport() && event->type() == QEvent::Resize)
+        m_emptyState->setGeometry(m_list->viewport()->rect());
+    return QDialog::eventFilter(watched, event);
 }

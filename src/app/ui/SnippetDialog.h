@@ -20,8 +20,11 @@ class SnippetDialog : public QDialog {
 public:
     explicit SnippetDialog(SnippetManager *manager, const QString &clipboardText = {}, QWidget *parent = nullptr);
 
-signals:
-    void insertRequested(const QString &expandedText);
+    signals:
+        void insertRequested(const QString &expandedText);
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void reload();
@@ -39,6 +42,7 @@ private:
     SnippetManager *m_manager = nullptr;
     QString m_clipboard;
     QListWidget *m_list = nullptr;
+    QWidget *m_emptyState = nullptr; // U13 empty state overlay
     QLineEdit *m_name = nullptr;
     QPlainTextEdit *m_template = nullptr;
     KKeySequenceWidget *m_shortcut = nullptr;
