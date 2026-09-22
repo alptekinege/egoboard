@@ -152,6 +152,45 @@ std::optional<qint64> findByHash(QSqlDatabase db, const QByteArray &hash)
     return std::nullopt;
 }
 
+// --- image export (U17) ------------------------------------------------------
+
+// One streamed batch: small enough to keep a progress dialog responsive
+// between batches and to bound memory no matter how large the history grows.
+constexpr int kImageExportPageSize = 200;
+// Suffix attempts before giving up (row ids make true collisions impossible;
+// this only guards pathological pre-existing directory content).
+constexpr int kImageExportNameAttempts = 1000;
+
+// Deterministic, collision-safe base name: capture time + row id + content
+// hash prefix. The id alone already guarantees uniqueness within a database;
+// the timestamp keeps folder listings chronological and the hash prefix makes
+// identical re-exports recognizable.
+QString imageFileBaseName(const ClipboardRecord &record)
+{
+    const QString stamp = QDateTime::fromMSecsSinceEpoch(record.timestamp)
+                              .toString(QStringLiteral("yyyyMMdd-HHmmss-zzz"));
+    const QString hash = QString::fromLatin1(record.hash.left(8));
+    return QStringLiteral("egoboard-%1-%2-%3").arg(stamp).arg(record.id).arg(hash);
+}
+
+QString imageScopeName(ExportImportManager::ImageExportRequest::Scope scope)
+{
+    using Scope = ExportImportManager::ImageExportRequest::Scope;
+    switch (scope) {
+    case Scope::Selection:
+        return QStringLiteral("selection");
+    case Scope::CurrentFilter:
+        return QStringLiteral("filter");
+    case Scope::PinnedOnly:
+        return QStringLiteral("pinned");
+    case Scope::GroupSubtree:
+        return QStringLiteral("group");
+    case Scope::Everything:
+        break;
+    }
+    return QStringLiteral("everything");
+}
+
 } // namespace
 
 ExportImportManager::ExportImportManager(StorageManager *storage, BookmarkManager *bookmarks,
@@ -336,6 +375,335 @@ bool ExportImportManager::exportToFile(const ExportRequest &request, QString *er
         return false;
     }
     return true;
+}
+
+ExportImportManager::ImageExportResult
+ExportImportManager::exportImages(const ImageExportRequest &request,
+                                  std::atomic<bool> *cancel,
+                                  ImageExportProgress progress)
+{
+    ImageExportResult result;
+    const auto isCanceled = [&] { return cancel && cancel->load(std::memory_order_relaxed); };
+    const auto reportProgress = [&] {
+        if (progress)
+            progress(result.exported,
+                     result.skippedNoBlob + result.skippedNonImage + result.skippedSensitive,
+                     result.bytesWritten);
+    };
+    if (isCanceled()) {
+        result.canceled = true;
+        result.error = tr("Image export canceled before it started.");
+        return result;
+    }
+    if (request.dir.trimmed().isEmpty()) {
+        result.error = tr("No target folder selected.");
+        return result;
+    }
+    QDir dir(request.dir);
+    if (!dir.exists() && !dir.mkpath(QStringLiteral("."))) {
+        result.error = tr("Cannot create the folder %1.").arg(request.dir);
+        return result;
+    }
+    const QString absDir = dir.absolutePath();
+
+    // --- resolve candidates ---------------------------------------------------
+    // Selection/group scopes enumerate bounded id lists; filter scopes stream
+    // keyset pages so memory stays flat no matter how large the history is.
+    QList<qint64> listedIds;
+    if (request.scope == ImageExportRequest::Scope::Selection) {
+        QSet<qint64> seen;
+        listedIds.reserve(request.entryIds.size());
+        for (const qint64 id : request.entryIds) {
+            if (id != 0 && !seen.contains(id)) {
+                seen.insert(id);
+                listedIds.append(id);
+            }
+        }
+    } else if (request.scope == ImageExportRequest::Scope::GroupSubtree) {
+        const QSet<qint64> groupIds = descendantGroupIds(m_bookmarks->groups(), request.groupId);
+        QSet<qint64> seen;
+        for (const qint64 groupId : groupIds) {
+            for (const qint64 id : m_bookmarks->entryIdsForGroup(groupId)) {
+                if (id != 0 && !seen.contains(id)) {
+                    seen.insert(id);
+                    listedIds.append(id);
+                }
+            }
+        }
+    }
+    FilterSpec filter;
+    if (request.scope == ImageExportRequest::Scope::CurrentFilter)
+        filter = request.filter;
+    else if (request.scope == ImageExportRequest::Scope::PinnedOnly)
+        filter.pinnedOnly = true;
+    const bool streamed = request.scope == ImageExportRequest::Scope::Everything
+        || request.scope == ImageExportRequest::Scope::CurrentFilter
+        || request.scope == ImageExportRequest::Scope::PinnedOnly;
+
+    // One payload batch for <= kImageExportPageSize ids: a single
+    // parameterized IN query (no per-row N+1, no unbounded fetchAllFull).
+    // Column order mirrors StorageManager::fetchAllFull; hasBlob is derived
+    // from the payload exactly like recordFromFull does.
+    const auto fetchPayloads = [&](const QVector<qint64> &ids, QVector<ClipboardRecord> *out,
+                                   QString *error) {
+        if (ids.isEmpty())
+            return true;
+        QStringList placeholders;
+        placeholders.reserve(ids.size());
+        for (int i = 0; i < ids.size(); ++i)
+            placeholders << QStringLiteral("?");
+        QSqlQuery query(m_storage->database());
+        query.prepare(QStringLiteral(
+            "SELECT id, timestamp_ms, content_type, content_hash, text_data, blob_data, preview,"
+            " size_bytes, pinned, sensitive, use_count, source_app, source_window, ocr_text"
+            " FROM entries WHERE id IN (%1)").arg(placeholders.join(QLatin1Char(','))));
+        for (int i = 0; i < ids.size(); ++i)
+            query.bindValue(i, ids.at(i));
+        if (!query.exec()) {
+            if (error)
+                *error = tr("Database read failed: %1").arg(query.lastError().text());
+            return false;
+        }
+        QHash<qint64, ClipboardRecord> byId;
+        byId.reserve(ids.size());
+        while (query.next()) {
+            ClipboardRecord record;
+            record.id = query.value(0).toLongLong();
+            record.timestamp = query.value(1).toLongLong();
+            record.type = static_cast<ContentType>(query.value(2).toInt());
+            record.hash = query.value(3).toByteArray();
+            record.textData = query.value(4).toString();
+            record.blobData = query.value(5).toByteArray();
+            record.hasBlob = !record.blobData.isEmpty();
+            record.preview = query.value(6).toString();
+            record.sizeBytes = query.value(7).toLongLong();
+            record.pinned = query.value(8).toInt() != 0;
+            record.sensitive = query.value(9).toInt() != 0;
+            record.useCount = query.value(10).toInt();
+            record.sourceApp = query.value(11).toString();
+            record.sourceWindow = query.value(12).toString();
+            record.ocrText = query.value(13).toString();
+            byId.insert(record.id, record);
+        }
+        out->reserve(out->size() + ids.size());
+        for (const qint64 id : ids) {
+            const auto it = byId.constFind(id);
+            if (it != byId.constEnd())
+                out->append(*it);
+        }
+        return true;
+    };
+
+    QJsonArray manifestFiles;
+    QString batchError;
+    bool readFailed = false;
+
+    // Writes one image record; false only on cancel or an I/O failure.
+    const auto writeRecord = [&](const ClipboardRecord &record) {
+        if (isCanceled())
+            return false;
+        if (record.type != ContentType::Image) {
+            ++result.skippedNonImage;
+            return true;
+        }
+        if (record.sensitive && !request.includeSensitive) {
+            ++result.skippedSensitive;
+            return true;
+        }
+        if (record.blobData.isEmpty()) {
+            ++result.skippedNoBlob;
+            return true;
+        }
+        QString name = imageFileBaseName(record) + QStringLiteral(".png");
+        QString path;
+        QFile file;
+        bool opened = false;
+        for (int attempt = 0; attempt < kImageExportNameAttempts; ++attempt) {
+            if (attempt > 0) {
+                const QString stem = imageFileBaseName(record);
+                name = QStringLiteral("%1-%2.png").arg(stem).arg(attempt + 1);
+            }
+            path = absDir + QLatin1Char('/') + name;
+            file.setFileName(path);
+            // NewOnly: an existing file — ours or the user's — is never
+            // overwritten; the next suffix is tried instead.
+            if (file.open(QIODevice::WriteOnly | QIODevice::NewOnly))
+                opened = true;
+            if (opened || file.error() != QFile::FileError::OpenError)
+                break;
+        }
+        if (!opened) {
+            result.error = tr("Cannot write %1: %2").arg(path, file.errorString());
+            return false;
+        }
+        if (file.write(record.blobData) != record.blobData.size()) {
+            const QString writeError = file.errorString();
+            file.close();
+            file.remove(); // no truncated image is left behind
+            result.error = tr("Write to %1 failed: %2").arg(path, writeError);
+            return false;
+        }
+        file.close();
+        ++result.exported;
+        result.bytesWritten += record.blobData.size();
+        result.files.append(path);
+
+        QJsonObject entry;
+        entry.insert(QStringLiteral("file"), name);
+        entry.insert(QStringLiteral("id"), double(record.id));
+        entry.insert(QStringLiteral("timestamp"),
+                     QDateTime::fromMSecsSinceEpoch(record.timestamp).toString(Qt::ISODateWithMs));
+        entry.insert(QStringLiteral("sourceApp"), record.sourceApp);
+        entry.insert(QStringLiteral("sourceWindow"), record.sourceWindow);
+        entry.insert(QStringLiteral("pinned"), record.pinned);
+        entry.insert(QStringLiteral("sensitive"), record.sensitive);
+        const QStringList tags = m_storage->tagsForEntry(record.id);
+        if (!tags.isEmpty()) {
+            QJsonArray tagArray;
+            for (const QString &tag : tags)
+                tagArray.append(tag);
+            entry.insert(QStringLiteral("tags"), tagArray);
+        }
+        if (!record.ocrText.isEmpty())
+            entry.insert(QStringLiteral("ocrText"), record.ocrText);
+        // Payload text stays out of the manifest unless explicitly requested.
+        if (request.includeText && !record.textData.isEmpty())
+            entry.insert(QStringLiteral("text"), record.textData);
+        manifestFiles.append(entry);
+        return true;
+    };
+
+    if (streamed) {
+        PageCursor cursor;
+        while (true) {
+            if (isCanceled())
+                break;
+            bool hasMore = false;
+            const QVector<ClipboardRecord> page =
+                m_storage->fetchPage(filter, cursor, kImageExportPageSize, &hasMore);
+            if (page.isEmpty())
+                break;
+            QVector<qint64> ids;
+            ids.reserve(page.size());
+            for (const ClipboardRecord &summary : page)
+                ids.append(summary.id);
+            QVector<ClipboardRecord> payloads;
+            if (!fetchPayloads(ids, &payloads, &batchError)) {
+                readFailed = true;
+                break;
+            }
+            bool stopped = false;
+            for (const ClipboardRecord &record : payloads) {
+                if (!writeRecord(record)) {
+                    stopped = true;
+                    break;
+                }
+            }
+            reportProgress();
+            if (stopped)
+                break;
+            if (!hasMore)
+                break;
+            // Same cursor discipline as fetchAllFull: every key the active
+            // sort compares must travel, or paging silently truncates.
+            cursor = PageCursor{true, page.last().timestamp, page.last().id,
+                                page.last().useCount};
+        }
+    } else {
+        for (int offset = 0; offset < listedIds.size();) {
+            if (isCanceled())
+                break;
+            const int chunk = qMin(kImageExportPageSize, listedIds.size() - offset);
+            QVector<qint64> ids;
+            ids.reserve(chunk);
+            for (int i = 0; i < chunk; ++i)
+                ids.append(listedIds.at(offset + i));
+            offset += chunk;
+            QVector<ClipboardRecord> payloads;
+            if (!fetchPayloads(ids, &payloads, &batchError)) {
+                readFailed = true;
+                break;
+            }
+            bool stopped = false;
+            for (const ClipboardRecord &record : payloads) {
+                if (!writeRecord(record)) {
+                    stopped = true;
+                    break;
+                }
+            }
+            reportProgress();
+            if (stopped)
+                break;
+        }
+    }
+    reportProgress();
+
+    if (isCanceled()) {
+        result.canceled = true;
+        result.error = tr("Image export canceled after %n file(s) were written. "
+                          "No manifest was written.", nullptr, result.exported);
+        return result;
+    }
+    if (readFailed) {
+        result.error = batchError.isEmpty() ? tr("Database read failed.") : batchError;
+        return result;
+    }
+    if (!result.error.isEmpty()) // writeRecord reported an I/O failure above
+        return result;
+
+    // --- manifest (only on a completed run) ----------------------------------
+    QJsonObject counts;
+    counts.insert(QStringLiteral("exported"), result.exported);
+    counts.insert(QStringLiteral("skippedNoBlob"), result.skippedNoBlob);
+    counts.insert(QStringLiteral("skippedNonImage"), result.skippedNonImage);
+    counts.insert(QStringLiteral("skippedSensitive"), result.skippedSensitive);
+    counts.insert(QStringLiteral("bytesWritten"), double(result.bytesWritten));
+    QJsonObject root;
+    root.insert(QStringLiteral("format"), imageExportFormatTag());
+    root.insert(QStringLiteral("version"), imageExportFormatVersion());
+    root.insert(QStringLiteral("exportedAt"),
+                QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    root.insert(QStringLiteral("scope"), imageScopeName(request.scope));
+    root.insert(QStringLiteral("includeSensitive"), request.includeSensitive);
+    root.insert(QStringLiteral("includeText"), request.includeText);
+    root.insert(QStringLiteral("counts"), counts);
+    root.insert(QStringLiteral("files"), manifestFiles);
+
+    QString manifestPath;
+    QFile manifest;
+    bool manifestOpened = false;
+    for (int attempt = 0; attempt < kImageExportNameAttempts; ++attempt) {
+        manifestPath = absDir
+            + (attempt == 0 ? QStringLiteral("/manifest.json")
+                            : QStringLiteral("/manifest-%1.json").arg(attempt + 1));
+        manifest.setFileName(manifestPath);
+        if (manifest.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
+            manifestOpened = true;
+            break;
+        }
+        if (manifest.error() != QFile::FileError::OpenError)
+            break;
+    }
+    if (!manifestOpened) {
+        result.error = tr("Images were written, but the manifest could not be created "
+                          "in %1: %2. The image files are on disk; export them again "
+                          "into an empty folder to get a manifest.")
+                           .arg(absDir, manifest.errorString());
+        return result;
+    }
+    const QByteArray manifestPayload = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    if (manifest.write(manifestPayload) != manifestPayload.size()) {
+        const QString writeError = manifest.errorString();
+        manifest.close();
+        manifest.remove();
+        result.error = tr("Images were written, but writing the manifest failed: %1. "
+                          "The image files are on disk; export them again into an empty "
+                          "folder to get a manifest.").arg(writeError);
+        return result;
+    }
+    result.manifestPath = manifestPath;
+    result.ok = true;
+    return result;
 }
 
 ExportImportManager::ImportResult

@@ -3,6 +3,7 @@
 > Local-first clipboard history for KDE Plasma. This roadmap is UI/UX-only: make the existing Qt Widgets + KF6 app feel modern and responsive at any window size, on X11 and Wayland, without a rewrite, without cloud, without breaking the `src/core` (QtCore+Sql only) boundary.
 
 **Status:** `v0.1.0` · Qt 6 + KF6 Widgets · local-only · MIT
+**Revision 2026-09-22 (U17):** Delivered U17 (P1 bulk image export): `ExportImportManager::exportImages()` streams bounded 200-row pages into a folder of collision-safe PNGs + `manifest.json` (metadata only unless text is opted in), with explicit sensitive policy, cancelable progress and no-overwrite guarantees; wired to the bulk-action bar and `>export images`; 10 new `tst_exportimport` slots (26/26 pass, full suite 29/29 + `--smoke` OK). Previous revision notes preserved below.
 **Revision 2026-09-22 (U19):** Delivered U19 (P0 Settings crash diagnosis and hardening): the deferred `QtConcurrent` workers no longer touch GUI-owned storage/settings off-thread — DB values are snapshotted on the GUI thread, workers run only external probes, app suggestions load synchronously off the indexed scan, and `tst_uidesign` gains 3 open/close regression slots (24/24 pass, full suite 29/29 + `--smoke` OK). Previous revision note preserved below.
 **Revision 2026-09-22:** Full-repo re-read (`src/core`, `src/app`, `src/app/ui` × 15 widgets, `tests/` × 29, `docs/`, packaging). Prior roadmap (Phases 1–9, Tracks A–M) archived in git history (`git log -- ROADMAP.md`) — its delivered work (Search 2.0, backups/restore, palette commands, KRunner actions, tray clicks/wheel, Track M design tokens) remains the baseline. This revision adds the requested bulk image export, tray UI refresh, Settings crash diagnosis, and crash-report collection/reader toolkit. What follows remains the single forward plan, focused on modern responsive UI/UX and the new stability/data-portability work.
 
@@ -54,7 +55,7 @@
 | ◐ G9 | List/preview skeletons and shimmer are delivered; progress dialogs exist but import/export paths are still non-cancelable and not fully progress-aware | `MainWindow.cpp`, `PreviewPane.cpp`, `SettingsDialog.cpp` |
 | ◐ G10 | Touch-target tokens and font-relative timeline sizing are delivered; fractional-scale and full touch/HiDPI validation remain open | `DesignTokens.h`, `TimelineStrip.h` |
 | G11 | First-run tour, settings search, per-page reset — still open (§3.7) | `SettingsDialog` |
-| G12 | There is no image-only bulk export: JSON embeds image blobs as base64, while the file export path has no folder/manifest workflow and `fetchAllFull()` retains every payload in memory | `ExportImportManager.cpp:180-219,517-561` |
+| ✅ G12 | No image-only bulk export — fixed in U17: `exportImages()` streams bounded pages (no `fetchAllFull`), writes PNG blobs + manifest, reports skipped blobs | `ExportImportManager.cpp`, `ExportImportDialogs.cpp`, `MainWindow.cpp` |
 | G13 | Tray mode is persisted but not enforced by `TrayController`; the menu is rebuilt as eight plain-text recent actions with a static tooltip/icon and no image/type/status treatment | `SettingsManager.cpp:717-730`, `TrayController.cpp:31-170` |
 | ✅ G14 | Opening Settings deferred workers calling GUI-owned storage/QSqlDatabase methods (`sourceApps()` / `stats()`) from `QtConcurrent` threads — fixed in U19 (snapshots on the GUI thread, workers probe-only, sync suggestions); open/close regression covered in `tst_uidesign` | `MainWindow.cpp:1288-1293`, `SettingsDialog.cpp` (constructor + `refreshDiagnostics`), `tests/tst_uidesign.cpp` |
 | G15 | Diagnostics is a live text panel only: there is no structured crash bundle, coredump/backtrace reader, symbol/build metadata or privacy review step for sharing a failure report | `SettingsDialog.cpp:1557-1830`, `src/main.cpp`, `docs/build.md` |
@@ -123,11 +124,11 @@
 - Timeline: keyboard-navigable bars (←/→ + Enter), accessible names per bar ("12 entries, Monday"), collapses to a combo under `Narrow`.
 - Groups: overlay drawer mode under `Medium`; drop-target highlight already done — add count badge on drag (reuse quick-paste badge language); empty state with "New group" action.
 
-**U17 — Bulk image export (P1)** (`ExportImportManager`, `ExportImportDialogs`, bulk-action bar)
-- Add an image-only export flow for the current selection/filter, all entries, pinned entries, and a group subtree. It writes the stored PNG blobs to a user-selected directory without changing history; entries with no stored blob are reported as skipped rather than producing empty files.
-- Use deterministic, collision-safe filenames (timestamp + entry id/hash) and write a small manifest containing the source app/window, capture time, pinned/sensitive flags, tags, OCR text and the generated filename. The manifest must not expose payload text unless the user explicitly chooses a metadata format that includes it.
-- Stream bounded pages instead of calling `fetchAllFull()` for the whole database. The dialog shows count/bytes/progress, supports cancel, reports write failures, and makes the sensitive-entry policy explicit before export. Existing JSON/Markdown/CSV/HTML export behavior stays unchanged.
-- Acceptance: multi-image export at 50k entries stays within the export budget and bounded memory; duplicate timestamps/names never overwrite; cancellation leaves no misleading manifest; read/write errors are actionable; offscreen tests cover selection/filter scopes, skipped blobs, sensitive entries and filename collisions.
+**U17 — Bulk image export (P1)** ✅ *delivered 2026-09-22* (`ExportImportManager`, `ExportImportDialogs`, bulk-action bar)
+- `exportImages()` covers selection / current filter / everything / pinned / group-subtree scopes: bounded 200-row keyset streaming plus single parameterized IN-query payload batches (never `fetchAllFull`), deterministic `egoboard-<timestamp>-<id>-<hash8>.png` names with `-n` collision suffixes and `QIODevice::NewOnly` so existing files are never overwritten, and a `manifest.json` (source app/window, time, pinned/sensitive, tags, OCR; payload text only with explicit opt-in).
+- Explicit sensitive policy (skip-and-report by default), per-batch progress callback + atomic cancel (chunked synchronous run on the GUI thread — no worker-thread SQL), cancel/write-failure writes no manifest and reports how far the run got; history is never modified and JSON/Markdown/CSV/HTML exports are unchanged.
+- UI: bulk-bar Export opens an `ImageExportDialog` (scope radios, folder picker, sensitive/text checkboxes, privacy hint) with cancelable progress and a result breakdown; `>export images` (palette completion + usage) routes to the same flow.
+- Scale probe: 5000 images × 20 KB (100 MB) in ~0.6 s (~8500 img/s); 10 new `tst_exportimport` slots (selection/filter/pinned/group, skipped blobs, sensitive default + opt-in, collisions incl. pre-existing files, cancel, text opt-in, unwritable target) — 26/26 pass, full suite 29/29 + `--smoke` OK.
 
 ---
 
@@ -220,12 +221,12 @@
 | **R1 — Responsive shell** ✅ *landed 2026-09-20* | Breakpoints, wrapping filter bar, toolbar overflow | U1 (Wide/Medium/Narrow via `resizeEvent`, preview splitter↔drawer reparent, timeline collapse <560px, per-mode splitter keys), U2 (search row + collapsible filter row, `Filters (n)` live-mirror menu, expanding combos), U3 (Paste/Copy/Pin/Delete + Palette stay, 6 actions → `More` menu off Wide); `tst_uidesign` 19/19, full suite 29/29 + `--smoke` OK |
 | **R2 — List & preview** ✅ *landed 2026-09-20* | Chips, bulk bar, day headers, drawer preview, zoom/edit | U6 (removable filter chips + `Filters (n)` count, bulk bar Pin/Unpin/Tag/Group/Export/Delete, entry-index + use-count row extras, day-header helper), U7 (preview header Copy/Pin/source/Close, image zoom slider + Fit/100%, wrap toggle, inline edit, sensitive blur overlay), undo toast on delete/bulk/clear (re-insert restore); `tst_uidesign` 21/21, full suite 29/29 + `--smoke` OK |
 | **R3 — Popups 2.0** ✅ *landed 2026-09-20* | Quick-paste search + two-line rows + monitor memory; palette rows + recents | U8 (search-as-you-type over bounded 200 recents + `type:`/`app:` filters, two-line preview+meta rows behind setting, per-screen placement memory, ↑↓/Enter/Esc in search), U9 (rich two-line delegate with type icon + app + age, empty-input recents section, Tab ghost hint, window feeds recents); `tst_paletteui` 15/15, full suite 29/29 + `--smoke` OK |
-| **R4 — Feedback & states ◐ partial** | Skeletons, empty-state/toast/motion foundations and capture sound+notification delivered; undo/progress polish and bulk image export remain | U11, U12, U13, **U16** ✅; U17 |
+| **R4 — Feedback & states ◐ partial** | Skeletons, empty-state/toast/motion foundations, capture sound+notification and bulk image export delivered; undo/progress polish remains | U11, U12, U13, **U16** ✅, **U17** ✅ |
 | **R5 — Settings & onboarding** ◐ *partial (U19 landed 2026-09-22)* | Settings search + reset + profiles + responsive dialog; first-run tour; cheatsheet; Settings crash hardening ✅ and crash-report toolkit | U14, U15, **U19** ✅, **U20** |
 | **R6 — Platform polish** | Portal-paste consent UI, screencast blur, KRunner preview, tray UI refresh | **U18**, §8 |
 | **Later** | Semantic search UI, LAN-sync pairing UI, browser companion, stats dashboard, CopyQ `.cpq` reader, `.zip` backups | Carried long-term; each needs its own UI pass against this system |
 
-> R0–R2 are sequential (shell before surfaces). R3–R6 can reorder by need — each ships independently. **U19 (P0) is delivered**; next are U17/U18/U20 (P1), which can proceed independently.
+> R0–R2 are sequential (shell before surfaces). R3–R6 can reorder by need — each ships independently. **U19 (P0) and U17 (P1) are delivered**; next are U18/U20 (P1), which can proceed independently.
 
 ---
 
@@ -238,4 +239,4 @@
 
 ---
 
-*Last updated: 2026-09-22 (status synced: U1–U9, U16 and U19 delivered; U11–U13 partial; U17/U18/U20 open) · Next: U17 (P1 bulk image export), U18 (P1 tray refresh), U20 (P1 crash-report toolkit) — independent.*
+*Last updated: 2026-09-22 (status synced: U1–U9, U16, U17 and U19 delivered; U11–U13 partial; U18/U20 open) · Next: U18 (P1 tray refresh), U20 (P1 crash-report toolkit) — independent.*

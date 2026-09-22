@@ -8,8 +8,15 @@
 #include <QObject>
 #include <QString>
 
+#include <atomic>
+#include <functional>
+
 // JSON export/import of history + groups. The format is self-contained so a
 // file written on one machine can be merged into another instance.
+//
+// Image export (U17) is a separate, read-only flow: stored PNG blobs are
+// written as files into a folder plus a small manifest. It never touches the
+// history and never embeds payload text unless explicitly asked.
 class ExportImportManager : public QObject {
     Q_OBJECT
 public:
@@ -60,11 +67,67 @@ public:
         int savedSearchesImported = 0;
     };
 
+    // Image-only export (U17): which entries are candidates for dumping.
+    struct ImageExportRequest {
+        enum class Scope {
+            Selection, // the explicit entryIds (bulk bar)
+            CurrentFilter, // the caller's live FilterSpec (list filter)
+            Everything, // whole database
+            PinnedOnly, // pinned entries
+            GroupSubtree, // a group, its descendants and their entries
+        };
+
+        Scope scope = Scope::Everything;
+        QList<qint64> entryIds; // Selection scope
+        FilterSpec filter; // CurrentFilter scope
+        qint64 groupId = 0; // GroupSubtree scope
+        QString dir; // target folder (created when missing)
+        // Explicit sensitive policy (shown in the dialog before export):
+        // false skips sensitive entries and reports them, true exports them.
+        bool includeSensitive = false;
+        // The manifest carries metadata only; text payloads are added solely
+        // when the user explicitly opts in (e.g. for local search indexing).
+        bool includeText = false;
+    };
+
+    struct ImageExportResult {
+        bool ok = false;
+        bool canceled = false;
+        QString error;
+        int exported = 0;
+        int skippedNoBlob = 0; // image entries with no stored blob
+        int skippedNonImage = 0; // entries of another content type in scope
+        int skippedSensitive = 0; // sensitive entries left out by policy
+        qint64 bytesWritten = 0;
+        QString manifestPath;
+        QStringList files; // absolute paths written by this run
+    };
+
+    // Per-batch progress (exported/skipped/bytes so far); called on the
+    // caller's thread. Returning callers pump the event loop here so a
+    // progress dialog stays responsive and Cancel takes effect promptly.
+    using ImageExportProgress = std::function<void(int exportedSoFar, int skippedSoFar,
+                                                   qint64 bytesSoFar)>;
+
+    static QString imageExportFormatTag() { return QStringLiteral("egoboard-image-export"); }
+    static int imageExportFormatVersion() { return 1; }
+
     explicit ExportImportManager(StorageManager *storage, BookmarkManager *bookmarks,
                                  SnippetManager *snippets = nullptr, QObject *parent = nullptr);
 
     bool exportToFile(const ExportRequest &request, QString *error = nullptr);
     ImportResult importFromFile(const QString &path, ImportMode mode);
+
+    // Writes the stored PNG blobs of the requested scope into `request.dir`
+    // (created when missing) with collision-safe deterministic filenames plus
+    // a `manifest.json` describing them. Streams bounded pages so a 50k-image
+    // history stays within bounded memory; read-only (the history is never
+    // modified, no transaction needed). Existing files are never overwritten.
+    // On cancel or write failure no manifest is written and already-written
+    // images stay in place; the result message says how far the run got.
+    ImageExportResult exportImages(const ImageExportRequest &request,
+                                   std::atomic<bool> *cancel = nullptr,
+                                   ImageExportProgress progress = {});
 
     // Imports the text entries of a Klipper database (`history3.sqlite`, the
     // current Klipper format). Starred items become pinned and Klipper's copy

@@ -43,7 +43,8 @@ public:
     void applySavedSearch(const FilterSpec &filter);
     void openSettings();
     void clearHistory();
-    // Palette ">export [format]": opens the export dialog, preselected.
+    // Palette ">export [format]": opens the export dialog, preselected
+    // ("images" opens the image-only folder flow).
     void exportHistoryToFormat(const QString &format);
 
 protected:
@@ -87,6 +88,9 @@ private:
     void bulkTag();
     void bulkMoveToGroup();
     void bulkExport();
+    // Image-only export flow (U17): folder + manifest, cancelable progress.
+    void runImageExport(ExportImportManager::ImageExportRequest::Scope initialScope,
+                        const QList<qint64> &selectedIds);
     void bulkDelete();
     void showUndoToast(const QString &message, const QVector<ClipboardRecord> &deleted);
     void updateEmptyState(); // "no entries yet" vs "nothing matches this filter"

@@ -144,7 +144,7 @@ void TestPalette::offersStaticFormatCandidates()
 {
     QCOMPARE(PaletteCommands::staticCandidates(PaletteCommands::Argument::Format),
              (QStringList{QStringLiteral("json"), QStringLiteral("markdown"), QStringLiteral("csv"),
-                          QStringLiteral("html")}));
+                          QStringLiteral("html"), QStringLiteral("images")}));
     QVERIFY(PaletteCommands::staticCandidates(PaletteCommands::Argument::Tag).isEmpty());
     QVERIFY(PaletteCommands::staticCandidates(PaletteCommands::Argument::Group).isEmpty());
     QVERIFY(PaletteCommands::staticCandidates(PaletteCommands::Argument::None).isEmpty());

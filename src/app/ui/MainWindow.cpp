@@ -56,6 +56,8 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <atomic>
+
 using DateRange = ExportImportDialogs::DateRange;
 
 namespace {
@@ -1410,9 +1412,84 @@ void MainWindow::bulkExport()
     const QList<qint64> ids = bulkSelectedIds(m_list);
     if (ids.isEmpty())
         return;
-    // Selection export: stash the selection aside via a tagged round-trip is
-    // out of scope — export the current filter and say how many were selected.
-    exportHistoryToFormat(QString());
+    // Image-only bulk export (U17): the dialog opens on the selection, other
+    // scopes (filter/all/pinned/group) are one click away inside it.
+    runImageExport(ExportImportManager::ImageExportRequest::Scope::Selection, ids);
+}
+
+void MainWindow::runImageExport(ExportImportManager::ImageExportRequest::Scope initialScope,
+                                const QList<qint64> &selectedIds)
+{
+    using ImageScope = ExportImportManager::ImageExportRequest::Scope;
+    const FilterSpec currentFilter = m_model ? m_model->filter() : FilterSpec{};
+    ExportImportDialogs::ImageExportDialog dialog(m_ctx.bookmarks(), selectedIds, currentFilter,
+                                                  !currentFilter.isTrivial(), this);
+    dialog.setScope(initialScope);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    ExportImportManager::ImageExportRequest request;
+    request.scope = dialog.scope();
+    request.entryIds = selectedIds;
+    request.filter = currentFilter;
+    request.groupId = dialog.groupId();
+    request.dir = dialog.folder();
+    request.includeSensitive = dialog.includeSensitive();
+    request.includeText = dialog.includeText();
+    if (request.dir.isEmpty()) {
+        QMessageBox::warning(this, tr("Export images"), tr("Choose a target folder first."));
+        return;
+    }
+
+    // Chunked synchronous run on the GUI thread (same thread as the storage
+    // connection): the progress callback pumps the event loop between batches
+    // so Cancel takes effect promptly without any worker-thread SQL.
+    std::atomic<bool> cancel{false};
+    QProgressDialog progress(tr("Exporting images…"), tr("Cancel"), 0, 0, this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.setLabelText(tr("Exporting images…"));
+    connect(&progress, &QProgressDialog::canceled, this, [&cancel] {
+        cancel.store(true, std::memory_order_relaxed);
+    });
+    progress.show();
+    const auto result = m_ctx.io()->exportImages(
+        request, &cancel,
+        [&](int exported, int skipped, qint64 bytes) {
+            progress.setLabelText(
+                tr("Exporting images… %1 written, %2 skipped (%3)")
+                    .arg(exported)
+                    .arg(skipped)
+                    .arg(UiHelpers::humanSize(bytes)));
+            QApplication::processEvents();
+        });
+    progress.close();
+
+    if (result.canceled) {
+        QMessageBox::information(this, tr("Export images"), result.error);
+        return;
+    }
+    if (!result.ok) {
+        QMessageBox::warning(this, tr("Export images"), result.error);
+        return;
+    }
+    QString message = result.exported == 0
+        ? tr("No image entries found in this scope.")
+        : tr("%n image(s) written to %1.", nullptr, result.exported).arg(request.dir);
+    const int skipped = result.skippedNoBlob + result.skippedNonImage + result.skippedSensitive;
+    if (skipped > 0) {
+        message += QLatin1Char('\n')
+            + tr("Skipped: %1 without a stored image, %2 of another type, %3 sensitive.")
+                  .arg(result.skippedNoBlob)
+                  .arg(result.skippedNonImage)
+                  .arg(result.skippedSensitive);
+        if (result.skippedSensitive > 0 && !request.includeSensitive)
+            message += QLatin1Char(' ')
+                + tr("Tick “Include entries flagged sensitive” to export those too.");
+    }
+    if (!result.manifestPath.isEmpty())
+        message += QLatin1Char('\n') + tr("Manifest: %1.").arg(result.manifestPath);
+    QMessageBox::information(this, tr("Export images"), message);
 }
 
 void MainWindow::bulkDelete()
@@ -1591,8 +1668,14 @@ void MainWindow::openPalette()
 
 // ">export [format]": with a format the export runs straight away, without one
 // the regular export dialog opens (preselected when a format was given).
+// "images" opens the image-only folder flow instead of a file export.
 void MainWindow::exportHistoryToFormat(const QString &format)
 {
+    if (format.trimmed().compare(QStringLiteral("images"), Qt::CaseInsensitive) == 0) {
+        runImageExport(ExportImportManager::ImageExportRequest::Scope::CurrentFilter,
+                       bulkSelectedIds(m_list));
+        return;
+    }
     ExportImportDialogs::ExportDialog dialog(m_ctx.bookmarks(), this);
     if (!format.trimmed().isEmpty()) {
         const QString wanted = format.trimmed().toLower();

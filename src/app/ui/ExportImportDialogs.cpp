@@ -2,6 +2,7 @@
 
 #include "BookmarkManager.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDateEdit>
 #include <QDateTime>
@@ -11,6 +12,7 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -276,6 +278,145 @@ ExportImportManager::ImportMode RestoreBackupDialog::mode() const
 {
     return m_overwriteRadio->isChecked() ? ExportImportManager::ImportMode::Overwrite
                                          : ExportImportManager::ImportMode::Merge;
+}
+
+ImageExportDialog::ImageExportDialog(BookmarkManager *bookmarks, const QList<qint64> &selectedIds,
+                                     const FilterSpec &currentFilter, bool filterActive,
+                                     QWidget *parent)
+    : QDialog(parent)
+{
+    Q_UNUSED(currentFilter);
+    setWindowTitle(tr("Export images"));
+
+    auto *layout = new QVBoxLayout(this);
+
+    auto *scopeBox = new QGroupBox(tr("Which images"), this);
+    auto *scopeLayout = new QVBoxLayout(scopeBox);
+    m_selectionRadio = new QRadioButton(
+        tr("Selected entries (%n image candidates)", nullptr, selectedIds.size()), scopeBox);
+    m_selectionRadio->setEnabled(!selectedIds.isEmpty());
+    m_filterRadio = new QRadioButton(tr("Current list filter"), scopeBox);
+    m_filterRadio->setEnabled(filterActive);
+    m_allRadio = new QRadioButton(tr("Everything (all images in history)"), scopeBox);
+    m_pinnedRadio = new QRadioButton(tr("Pinned entries only"), scopeBox);
+    m_groupRadio = new QRadioButton(tr("A group and its subgroups:"), scopeBox);
+    m_groupCombo = new QComboBox(scopeBox);
+    for (const BookmarkGroup &group : bookmarks->groups())
+        m_groupCombo->addItem(group.name, group.id);
+    m_groupCombo->setEnabled(false);
+    connect(m_groupRadio, &QRadioButton::toggled, m_groupCombo, &QComboBox::setEnabled);
+    scopeLayout->addWidget(m_selectionRadio);
+    scopeLayout->addWidget(m_filterRadio);
+    scopeLayout->addWidget(m_allRadio);
+    scopeLayout->addWidget(m_pinnedRadio);
+    scopeLayout->addWidget(m_groupRadio);
+    scopeLayout->addWidget(m_groupCombo);
+    layout->addWidget(scopeBox);
+
+    auto *folderRow = new QHBoxLayout();
+    folderRow->addWidget(new QLabel(tr("Folder:"), this));
+    m_folderEdit = new QLineEdit(this);
+    m_folderEdit->setPlaceholderText(tr("/path/to/egoboard-images"));
+    auto *browse = new QPushButton(QIcon::fromTheme(QStringLiteral("folder-open")),
+                                   tr("Browse…"), this);
+    connect(browse, &QPushButton::clicked, this, &ImageExportDialog::pickFolder);
+    folderRow->addWidget(m_folderEdit, 1);
+    folderRow->addWidget(browse);
+    layout->addLayout(folderRow);
+
+    m_sensitiveCheck = new QCheckBox(tr("Include entries flagged sensitive"), this);
+    m_sensitiveCheck->setToolTip(tr("When unchecked (default), sensitive images are skipped "
+                                    "and reported instead of written."));
+    layout->addWidget(m_sensitiveCheck);
+    m_textCheck = new QCheckBox(tr("Include text payloads in manifest.json"), this);
+    m_textCheck->setToolTip(tr("The manifest otherwise carries metadata only (source app, "
+                               "time, tags, OCR text). Check this only when a local tool "
+                               "needs the payloads for indexing."));
+    layout->addWidget(m_textCheck);
+
+    auto *hint = new QLabel(tr("Writes one PNG per stored image plus <code>manifest.json</code> "
+                               "(source app, capture time, tags, OCR text). Entries without a "
+                               "stored image are skipped and reported. Existing files are never "
+                               "overwritten; canceling writes no manifest."), this);
+    hint->setTextFormat(Qt::RichText);
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    // Default to the widest sensible scope: the selection when there is one,
+    // otherwise the whole history (callers override via setScope).
+    if (!selectedIds.isEmpty())
+        m_selectionRadio->setChecked(true);
+    else
+        m_allRadio->setChecked(true);
+}
+
+void ImageExportDialog::setScope(Scope scope)
+{
+    QRadioButton *target = m_allRadio;
+    switch (scope) {
+    case Scope::Selection:
+        target = m_selectionRadio->isEnabled() ? m_selectionRadio : m_allRadio;
+        break;
+    case Scope::CurrentFilter:
+        target = m_filterRadio->isEnabled() ? m_filterRadio : m_allRadio;
+        break;
+    case Scope::PinnedOnly:
+        target = m_pinnedRadio;
+        break;
+    case Scope::GroupSubtree:
+        target = m_groupRadio;
+        break;
+    case Scope::Everything:
+        target = m_allRadio;
+        break;
+    }
+    target->setChecked(true);
+}
+
+void ImageExportDialog::pickFolder()
+{
+    const QString dir = QFileDialog::getExistingDirectory(this, tr("Image export folder"),
+                                                          m_folderEdit->text().trimmed());
+    if (!dir.isEmpty())
+        m_folderEdit->setText(dir);
+}
+
+ImageExportDialog::Scope ImageExportDialog::scope() const
+{
+    if (m_selectionRadio->isChecked())
+        return Scope::Selection;
+    if (m_filterRadio->isChecked())
+        return Scope::CurrentFilter;
+    if (m_pinnedRadio->isChecked())
+        return Scope::PinnedOnly;
+    if (m_groupRadio->isChecked())
+        return Scope::GroupSubtree;
+    return Scope::Everything;
+}
+
+qint64 ImageExportDialog::groupId() const
+{
+    return m_groupCombo->currentData().toLongLong();
+}
+
+QString ImageExportDialog::folder() const
+{
+    return m_folderEdit->text().trimmed();
+}
+
+bool ImageExportDialog::includeSensitive() const
+{
+    return m_sensitiveCheck->isChecked();
+}
+
+bool ImageExportDialog::includeText() const
+{
+    return m_textCheck->isChecked();
 }
 
 } // namespace ExportImportDialogs

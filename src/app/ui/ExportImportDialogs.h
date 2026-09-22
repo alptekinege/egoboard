@@ -4,6 +4,7 @@
 
 #include <QDialog>
 
+class QCheckBox;
 class QComboBox;
 class QDateEdit;
 class QLineEdit;
@@ -58,6 +59,41 @@ private:
     QRadioButton *m_groupRadio = nullptr;
     QComboBox *m_groupCombo = nullptr;
     QComboBox *m_formatCombo = nullptr;
+};
+
+// Image-only export (U17): dumps the stored PNG blobs of a scope into a
+// folder plus a small manifest.json (metadata only, unless text is opted in).
+// Entries without a stored blob are skipped and reported, never written as
+// empty files; existing files are never overwritten.
+class ImageExportDialog : public QDialog {
+    Q_OBJECT
+public:
+    using Scope = ExportImportManager::ImageExportRequest::Scope;
+
+    ImageExportDialog(class BookmarkManager *bookmarks, const QList<qint64> &selectedIds,
+                      const FilterSpec &currentFilter, bool filterActive, QWidget *parent);
+
+    Scope scope() const;
+    qint64 groupId() const;
+    QString folder() const;
+    bool includeSensitive() const;
+    bool includeText() const;
+    // Preselects a scope (the bulk bar starts on Selection, ">export images"
+    // on the current filter).
+    void setScope(Scope scope);
+
+private:
+    void pickFolder();
+
+    QRadioButton *m_selectionRadio = nullptr;
+    QRadioButton *m_filterRadio = nullptr;
+    QRadioButton *m_allRadio = nullptr;
+    QRadioButton *m_pinnedRadio = nullptr;
+    QRadioButton *m_groupRadio = nullptr;
+    QComboBox *m_groupCombo = nullptr;
+    QLineEdit *m_folderEdit = nullptr;
+    QCheckBox *m_sensitiveCheck = nullptr;
+    QCheckBox *m_textCheck = nullptr;
 };
 
 class ImportDialog : public QDialog {

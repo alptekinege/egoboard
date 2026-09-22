@@ -6,10 +6,19 @@
 #include "StorageManager.h"
 
 #include <QCryptographicHash>
+#include <QDateTime>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QRandomGenerator>
+#include <QSet>
 #include <QSqlQuery>
 #include <QTemporaryDir>
+
+#include <atomic>
 
 class TestExportImport : public QObject
 {
@@ -32,9 +41,26 @@ private slots:
     void writesAndPrunesAutomaticBackups();
     void importsKlipperHistory();
     void exportsReadingFormats();
+    void exportsImagesForSelectionScope();
+    void exportsImagesForFilterScope();
+    void exportsImagesForPinnedAndGroupSubtree();
+    void skipsEntriesWithoutStoredBlob();
+    void excludesSensitiveImagesByDefault();
+    void includesSensitiveImagesWhenOptedIn();
+    void neverOverwritesAndUsesCollisionSafeNames();
+    void cancelLeavesNoManifest();
+    void manifestOmitsPayloadTextUnlessOptedIn();
+    void reportsUnwritableImageTarget();
 
 private:
     void seed(StorageManager *storage, BookmarkManager *bookmarks);
+    // One stored image; returns the row id. The blob is opaque bytes — the
+    // exporter writes them verbatim, so fixtures need no real PNG codec.
+    qint64 seedImage(StorageManager *storage, const QByteArray &hash, const QByteArray &blob,
+                     qint64 timestamp, const QString &app = QStringLiteral("camera"),
+                     bool pinned = false, bool sensitive = false,
+                     const QString &text = QString());
+    QJsonObject readImageManifest(const QString &manifestPath);
 
     QTemporaryDir m_dir;
     StorageManager *m_storage = nullptr;
@@ -636,6 +662,375 @@ void TestExportImport::reportsExportWriteErrors()
     QString error;
     QVERIFY(!m_io->exportToFile(request, &error));
     QVERIFY(!error.isEmpty());
+}
+
+qint64 TestExportImport::seedImage(StorageManager *storage, const QByteArray &hash,
+                                   const QByteArray &blob, qint64 timestamp, const QString &app,
+                                   bool pinned, bool sensitive, const QString &text)
+{
+    ClipboardRecord record;
+    record.hash = hash;
+    record.type = ContentType::Image;
+    record.blobData = blob;
+    record.hasBlob = !blob.isEmpty();
+    record.textData = text;
+    record.preview = QStringLiteral("image");
+    record.timestamp = timestamp;
+    record.sizeBytes = blob.size();
+    record.sourceApp = app;
+    record.pinned = pinned;
+    record.sensitive = sensitive;
+    const qint64 id = storage->insertOrUpdate(record);
+    if (id == 0)
+        qWarning("seedImage: insert failed for hash %s", hash.constData());
+    return id;
+}
+
+QJsonObject TestExportImport::readImageManifest(const QString &manifestPath)
+{
+    QFile file(manifestPath);
+    if (manifestPath.isEmpty() || !file.open(QIODevice::ReadOnly)) {
+        qWarning("readImageManifest: cannot open %s", qPrintable(manifestPath));
+        return {};
+    }
+    QJsonParseError parseError{};
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        qWarning("readImageManifest: invalid JSON in %s", qPrintable(manifestPath));
+        return {};
+    }
+    const QJsonObject root = document.object();
+    if (root.value(QStringLiteral("format")).toString() != QStringLiteral("egoboard-image-export")
+        || root.value(QStringLiteral("version")).toInt() != 1) {
+        qWarning("readImageManifest: unexpected schema in %s", qPrintable(manifestPath));
+        return {};
+    }
+    return root;
+}
+
+void TestExportImport::exportsImagesForSelectionScope()
+{
+    const qint64 first = seedImage(m_storage, QByteArrayLiteral("img-a"),
+                                   QByteArrayLiteral("PNG-DATA-A"), 1700000000000);
+    const qint64 second = seedImage(m_storage, QByteArrayLiteral("img-b"),
+                                    QByteArrayLiteral("PNG-DATA-B"), 1700000001000);
+    seed(m_storage, m_bookmarks); // 3 text entries: skipped as non-images
+
+    ExportImportManager::ImageExportRequest request;
+    request.scope = ExportImportManager::ImageExportRequest::Scope::Selection;
+    request.entryIds = {first, second, first}; // duplicates collapse to one file each
+    request.dir = m_dir.filePath(QStringLiteral("images-selection"));
+    int progressCalls = 0;
+    int lastExported = -1;
+    const auto result = m_io->exportImages(
+        request, nullptr,
+        [&](int exported, int skipped, qint64 bytes) {
+            ++progressCalls;
+            lastExported = exported;
+            Q_UNUSED(skipped);
+            Q_UNUSED(bytes);
+        });
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QVERIFY(!result.canceled);
+    QCOMPARE(result.exported, 2);
+    QCOMPARE(result.skippedNonImage, 0); // selection listed images only
+    QCOMPARE(result.skippedNoBlob, 0);
+    QCOMPARE(result.skippedSensitive, 0);
+    QCOMPARE(result.bytesWritten, qint64(QByteArrayLiteral("PNG-DATA-A").size()
+                                         + QByteArrayLiteral("PNG-DATA-B").size()));
+    QCOMPARE(result.files.size(), 2);
+    QVERIFY(progressCalls > 0);
+    QCOMPARE(lastExported, 2);
+    for (const QString &path : result.files) {
+        QVERIFY(path.endsWith(QStringLiteral(".png")));
+        QFile file(path);
+        QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(path));
+        const QByteArray payload = file.readAll();
+        QVERIFY(payload == QByteArrayLiteral("PNG-DATA-A")
+                || payload == QByteArrayLiteral("PNG-DATA-B"));
+    }
+
+    const QJsonObject root = readImageManifest(result.manifestPath);
+    QCOMPARE(root.value(QStringLiteral("scope")).toString(), QStringLiteral("selection"));
+    const QJsonArray files = root.value(QStringLiteral("files")).toArray();
+    QCOMPARE(files.size(), 2);
+    QSet<qint64> manifestIds;
+    for (const auto &value : files) {
+        const QJsonObject entry = value.toObject();
+        QVERIFY(!entry.value(QStringLiteral("file")).toString().isEmpty());
+        manifestIds.insert(qint64(entry.value(QStringLiteral("id")).toDouble()));
+        QCOMPARE(entry.value(QStringLiteral("sourceApp")).toString(), QStringLiteral("camera"));
+        // Payload text stays out of the manifest unless explicitly requested.
+        QVERIFY(!entry.contains(QStringLiteral("text")));
+    }
+    QVERIFY(manifestIds.contains(first));
+    QVERIFY(manifestIds.contains(second));
+    // The history itself is untouched by the export.
+    QCOMPARE(m_storage->stats().entryCount, qint64(5));
+}
+
+void TestExportImport::exportsImagesForFilterScope()
+{
+    seedImage(m_storage, QByteArrayLiteral("img-cam"), QByteArrayLiteral("PNG-CAM"), 1700000000000,
+              QStringLiteral("camera"));
+    seedImage(m_storage, QByteArrayLiteral("img-shot"), QByteArrayLiteral("PNG-SHOT"),
+              1700000001000, QStringLiteral("screenshot-tool"));
+    seed(m_storage, m_bookmarks); // text entries from "seeder"
+
+    ExportImportManager::ImageExportRequest request;
+    request.scope = ExportImportManager::ImageExportRequest::Scope::CurrentFilter;
+    request.filter.sourceApp = QStringLiteral("camera");
+    request.filter.contentType = int(ContentType::Image);
+    request.dir = m_dir.filePath(QStringLiteral("images-filter"));
+    const auto result = m_io->exportImages(request);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.exported, 1);
+    QCOMPARE(result.files.size(), 1);
+    const QJsonObject root = readImageManifest(result.manifestPath);
+    QCOMPARE(root.value(QStringLiteral("scope")).toString(), QStringLiteral("filter"));
+    const QJsonArray files = root.value(QStringLiteral("files")).toArray();
+    QCOMPARE(files.size(), 1);
+    QCOMPARE(files.first().toObject().value(QStringLiteral("sourceApp")).toString(),
+             QStringLiteral("camera"));
+}
+
+void TestExportImport::exportsImagesForPinnedAndGroupSubtree()
+{
+    const qint64 pinned = seedImage(m_storage, QByteArrayLiteral("img-pin"),
+                                    QByteArrayLiteral("PNG-PIN"), 1700000000000,
+                                    QStringLiteral("camera"), true);
+    const qint64 plain = seedImage(m_storage, QByteArrayLiteral("img-plain"),
+                                   QByteArrayLiteral("PNG-PLAIN"), 1700000001000);
+    const qint64 group = m_bookmarks->createGroup(QStringLiteral("Shots"), 0,
+                                                  QStringLiteral("#3daee9"), QStringLiteral("folder"));
+    QVERIFY(group != 0);
+    QVERIFY(m_bookmarks->assignEntry(pinned, group));
+    QVERIFY(m_bookmarks->assignEntry(plain, group));
+
+    ExportImportManager::ImageExportRequest request;
+    request.scope = ExportImportManager::ImageExportRequest::Scope::PinnedOnly;
+    request.dir = m_dir.filePath(QStringLiteral("images-pinned"));
+    const auto pinnedResult = m_io->exportImages(request);
+    QVERIFY2(pinnedResult.ok, qPrintable(pinnedResult.error));
+    QCOMPARE(pinnedResult.exported, 1);
+    QCOMPARE(pinnedResult.files.size(), 1);
+
+    request.scope = ExportImportManager::ImageExportRequest::Scope::GroupSubtree;
+    request.groupId = group;
+    request.dir = m_dir.filePath(QStringLiteral("images-group"));
+    const auto groupResult = m_io->exportImages(request);
+    QVERIFY2(groupResult.ok, qPrintable(groupResult.error));
+    QCOMPARE(groupResult.exported, 2);
+    const QJsonObject root = readImageManifest(groupResult.manifestPath);
+    QCOMPARE(root.value(QStringLiteral("scope")).toString(), QStringLiteral("group"));
+    QCOMPARE(root.value(QStringLiteral("files")).toArray().size(), 2);
+}
+
+void TestExportImport::skipsEntriesWithoutStoredBlob()
+{
+    seedImage(m_storage, QByteArrayLiteral("img-blob"), QByteArrayLiteral("PNG-REAL"),
+              1700000000000);
+    // Image entry whose blob never arrived (e.g. capped capture): reported as
+    // skipped instead of producing an empty file.
+    seedImage(m_storage, QByteArrayLiteral("img-empty"), QByteArray(), 1700000001000);
+    ClipboardRecord text;
+    text.hash = QByteArrayLiteral("txt-1");
+    text.type = ContentType::Text;
+    text.textData = QStringLiteral("not an image");
+    text.preview = text.textData;
+    text.timestamp = 1700000002000;
+    QVERIFY(m_storage->insertOrUpdate(text) != 0);
+
+    ExportImportManager::ImageExportRequest request;
+    request.scope = ExportImportManager::ImageExportRequest::Scope::Everything;
+    request.dir = m_dir.filePath(QStringLiteral("images-skipped"));
+    const auto result = m_io->exportImages(request);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.exported, 1);
+    QCOMPARE(result.skippedNoBlob, 1);
+    QCOMPARE(result.skippedNonImage, 1);
+    QCOMPARE(result.files.size(), 1);
+    const QDir dir(request.dir);
+    QCOMPARE(dir.entryList(QStringList{QStringLiteral("*.png")}, QDir::Files).size(), 1);
+}
+
+void TestExportImport::excludesSensitiveImagesByDefault()
+{
+    seedImage(m_storage, QByteArrayLiteral("img-safe"), QByteArrayLiteral("PNG-SAFE"),
+              1700000000000);
+    seedImage(m_storage, QByteArrayLiteral("img-secret"), QByteArrayLiteral("PNG-SECRET"),
+              1700000001000, QStringLiteral("camera"), false, true);
+
+    ExportImportManager::ImageExportRequest request;
+    request.scope = ExportImportManager::ImageExportRequest::Scope::Everything;
+    request.dir = m_dir.filePath(QStringLiteral("images-nosensitive"));
+    const auto result = m_io->exportImages(request);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.exported, 1);
+    QCOMPARE(result.skippedSensitive, 1);
+    const QJsonObject root = readImageManifest(result.manifestPath);
+    QCOMPARE(root.value(QStringLiteral("includeSensitive")).toBool(), false);
+    QCOMPARE(root.value(QStringLiteral("files")).toArray().size(), 1);
+}
+
+void TestExportImport::includesSensitiveImagesWhenOptedIn()
+{
+    seedImage(m_storage, QByteArrayLiteral("img-safe"), QByteArrayLiteral("PNG-SAFE"),
+              1700000000000);
+    seedImage(m_storage, QByteArrayLiteral("img-secret"), QByteArrayLiteral("PNG-SECRET"),
+              1700000001000, QStringLiteral("camera"), false, true);
+    QVERIFY(m_storage->addTag(2, QStringLiteral("private")));
+    QVERIFY(m_storage->setOcrText(2, QStringLiteral("recognized secret")));
+
+    ExportImportManager::ImageExportRequest request;
+    request.scope = ExportImportManager::ImageExportRequest::Scope::Everything;
+    request.includeSensitive = true;
+    request.dir = m_dir.filePath(QStringLiteral("images-sensitive"));
+    const auto result = m_io->exportImages(request);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.exported, 2);
+    QCOMPARE(result.skippedSensitive, 0);
+    const QJsonObject root = readImageManifest(result.manifestPath);
+    QCOMPARE(root.value(QStringLiteral("includeSensitive")).toBool(), true);
+    const QJsonArray files = root.value(QStringLiteral("files")).toArray();
+    QCOMPARE(files.size(), 2);
+    // Metadata (tags, OCR) travels with the manifest entry.
+    bool sawTags = false;
+    bool sawOcr = false;
+    for (const auto &value : files) {
+        const QJsonObject entry = value.toObject();
+        if (entry.value(QStringLiteral("id")).toDouble() == 2.0) {
+            sawTags = entry.value(QStringLiteral("tags")).toArray().size() == 1;
+            sawOcr = entry.value(QStringLiteral("ocrText")).toString()
+                == QStringLiteral("recognized secret");
+        }
+    }
+    QVERIFY(sawTags);
+    QVERIFY(sawOcr);
+}
+
+void TestExportImport::neverOverwritesAndUsesCollisionSafeNames()
+{
+    // Same capture timestamp twice: the row id keeps the names distinct.
+    const qint64 first = seedImage(m_storage, QByteArrayLiteral("img-dup-a"),
+                                   QByteArrayLiteral("PNG-DUP-A"), 1700000000000);
+    const qint64 second = seedImage(m_storage, QByteArrayLiteral("img-dup-b"),
+                                    QByteArrayLiteral("PNG-DUP-B"), 1700000000000);
+    QVERIFY(first != second);
+
+    // A pre-existing user file at the first image's deterministic name must
+    // survive: the exporter takes a `-2` suffix instead of overwriting.
+    const QString stamp = QDateTime::fromMSecsSinceEpoch(1700000000000)
+                              .toString(QStringLiteral("yyyyMMdd-HHmmss-zzz"));
+    const QString clashingName = QStringLiteral("egoboard-%1-%2-%3.png")
+                                     .arg(stamp)
+                                     .arg(first)
+                                     .arg(QString::fromLatin1(QByteArrayLiteral("img-dup-a").left(8)));
+    const QString targetDir = m_dir.filePath(QStringLiteral("images-collision"));
+    QVERIFY(QDir().mkpath(targetDir));
+    {
+        QFile clash(targetDir + QLatin1Char('/') + clashingName);
+        QVERIFY(clash.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(clash.write("user content") > 0);
+    }
+    // Same for the manifest: a sentinel manifest.json forces a numbered one.
+    {
+        QFile sentinel(targetDir + QStringLiteral("/manifest.json"));
+        QVERIFY(sentinel.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(sentinel.write("sentinel") > 0);
+    }
+
+    ExportImportManager::ImageExportRequest request;
+    request.scope = ExportImportManager::ImageExportRequest::Scope::Everything;
+    request.dir = targetDir;
+    const auto result = m_io->exportImages(request);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.exported, 2);
+    // Both files are distinct and neither is the clashing name.
+    QCOMPARE(result.files.size(), 2);
+    QVERIFY(result.files.at(0) != result.files.at(1));
+    QVERIFY(!result.files.at(0).endsWith(clashingName));
+    QVERIFY(!result.files.at(1).endsWith(clashingName));
+    bool sawSuffixed = false;
+    for (const QString &path : result.files)
+        sawSuffixed = sawSuffixed || QFileInfo(path).fileName().contains(QStringLiteral("-2.png"));
+    QVERIFY(sawSuffixed);
+    // The user's files are byte-identical afterwards.
+    {
+        QFile clash(targetDir + QLatin1Char('/') + clashingName);
+        QVERIFY(clash.open(QIODevice::ReadOnly));
+        QCOMPARE(clash.readAll(), QByteArrayLiteral("user content"));
+        QFile sentinel(targetDir + QStringLiteral("/manifest.json"));
+        QVERIFY(sentinel.open(QIODevice::ReadOnly));
+        QCOMPARE(sentinel.readAll(), QByteArrayLiteral("sentinel"));
+    }
+    QVERIFY(result.manifestPath.endsWith(QStringLiteral("manifest-2.json")));
+    const QJsonObject root = readImageManifest(result.manifestPath);
+    QCOMPARE(root.value(QStringLiteral("files")).toArray().size(), 2);
+}
+
+void TestExportImport::cancelLeavesNoManifest()
+{
+    seedImage(m_storage, QByteArrayLiteral("img-a"), QByteArrayLiteral("PNG-A"), 1700000000000);
+    seedImage(m_storage, QByteArrayLiteral("img-b"), QByteArrayLiteral("PNG-B"), 1700000001000);
+
+    ExportImportManager::ImageExportRequest request;
+    request.scope = ExportImportManager::ImageExportRequest::Scope::Everything;
+    request.dir = m_dir.filePath(QStringLiteral("images-canceled"));
+    std::atomic<bool> cancel{true}; // canceled before the first batch
+    const auto result = m_io->exportImages(request, &cancel);
+    QVERIFY(!result.ok);
+    QVERIFY(result.canceled);
+    QVERIFY(!result.error.isEmpty());
+    QVERIFY(result.manifestPath.isEmpty());
+    QVERIFY(!QFile::exists(request.dir + QStringLiteral("/manifest.json")));
+    QCOMPARE(result.exported, 0);
+}
+
+void TestExportImport::manifestOmitsPayloadTextUnlessOptedIn()
+{
+    seedImage(m_storage, QByteArrayLiteral("img-t"), QByteArrayLiteral("PNG-T"), 1700000000000,
+              QStringLiteral("camera"), false, false, QStringLiteral("alt text payload"));
+
+    ExportImportManager::ImageExportRequest request;
+    request.scope = ExportImportManager::ImageExportRequest::Scope::Everything;
+    request.dir = m_dir.filePath(QStringLiteral("images-notext"));
+    const auto plain = m_io->exportImages(request);
+    QVERIFY2(plain.ok, qPrintable(plain.error));
+    QJsonArray files = readImageManifest(plain.manifestPath).value(QStringLiteral("files")).toArray();
+    QCOMPARE(files.size(), 1);
+    QVERIFY(!files.first().toObject().contains(QStringLiteral("text")));
+
+    request.includeText = true;
+    request.dir = m_dir.filePath(QStringLiteral("images-withtext"));
+    const auto withText = m_io->exportImages(request);
+    QVERIFY2(withText.ok, qPrintable(withText.error));
+    const QJsonObject root = readImageManifest(withText.manifestPath);
+    QCOMPARE(root.value(QStringLiteral("includeText")).toBool(), true);
+    files = root.value(QStringLiteral("files")).toArray();
+    QCOMPARE(files.size(), 1);
+    QCOMPARE(files.first().toObject().value(QStringLiteral("text")).toString(),
+             QStringLiteral("alt text payload"));
+}
+
+void TestExportImport::reportsUnwritableImageTarget()
+{
+    seedImage(m_storage, QByteArrayLiteral("img-a"), QByteArrayLiteral("PNG-A"), 1700000000000);
+    // A regular file where the folder should be: mkpath fails deterministically.
+    const QString blocker = m_dir.filePath(QStringLiteral("blocker"));
+    {
+        QFile file(blocker);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(file.write("block") > 0);
+    }
+    ExportImportManager::ImageExportRequest request;
+    request.scope = ExportImportManager::ImageExportRequest::Scope::Everything;
+    request.dir = blocker + QStringLiteral("/subfolder");
+    const auto result = m_io->exportImages(request);
+    QVERIFY(!result.ok);
+    QVERIFY(!result.canceled);
+    QVERIFY(!result.error.isEmpty());
+    QVERIFY(result.manifestPath.isEmpty());
 }
 
 QTEST_GUILESS_MAIN(TestExportImport)

@@ -33,7 +33,7 @@ const QVector<Command> &table()
          QStringLiteral("Move the selected entry into a group (created if unknown)"),
          Argument::Group},
         {QStringLiteral("export"), {QStringLiteral("export"), QStringLiteral("ex")},
-         QStringLiteral(">export [json|markdown|csv|html]"),
+         QStringLiteral(">export [json|markdown|csv|html|images]"),
          QStringLiteral("Export the history; without a format the export dialog opens"),
          Argument::Format},
         {QStringLiteral("pause"), {QStringLiteral("pause"), QStringLiteral("resume")},
@@ -145,7 +145,7 @@ QStringList staticCandidates(Argument kind)
     switch (kind) {
     case Argument::Format:
         return {QStringLiteral("json"), QStringLiteral("markdown"), QStringLiteral("csv"),
-                QStringLiteral("html")};
+                QStringLiteral("html"), QStringLiteral("images")};
     case Argument::None:
     case Argument::Tag:
     case Argument::Group:

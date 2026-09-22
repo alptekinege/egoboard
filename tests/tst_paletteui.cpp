@@ -219,12 +219,17 @@ void TestPaletteUi::completesExportFormats()
     QSignalSpy exportSpy(m_palette, &CommandPalette::exportRequested);
 
     type(QStringLiteral(">export "));
-    QCOMPARE(m_list->model()->rowCount(), 4);
+    QCOMPARE(m_list->model()->rowCount(), 5);
     QCOMPARE(firstRow().data(Qt::UserRole).toString(), QStringLiteral("json"));
     type(QStringLiteral(">export mar"));
     QCOMPARE(m_list->model()->rowCount(), 1);
     QCOMPARE(firstRow().data(Qt::UserRole).toString(), QStringLiteral("markdown"));
+    type(QStringLiteral(">export ima"));
+    QCOMPARE(m_list->model()->rowCount(), 1);
+    QCOMPARE(firstRow().data(Qt::UserRole).toString(), QStringLiteral("images"));
 
+    type(QStringLiteral(">export mar"));
+    QCOMPARE(m_list->model()->rowCount(), 1);
     QTest::keyClick(m_input, Qt::Key_Return);
     QCOMPARE(exportSpy.count(), 1);
     QCOMPARE(exportSpy.first().first().toString(), QStringLiteral("markdown"));
