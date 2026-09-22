@@ -39,6 +39,23 @@ Optional build/feature dependencies:
 
 ## Build and test
 
+Build with the repository helper (Ninja, Release by default):
+
+```bash
+./scripts/build.sh
+```
+
+Set `EGOBOARD_BUILD_DIR` or `EGOBOARD_BUILD_TYPE` to override the build
+directory or CMake configuration.
+
+Build and run the test suite plus the headless smoke check with:
+
+```bash
+./scripts/test.sh
+```
+
+To configure and build manually:
+
 ```bash
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build

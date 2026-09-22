@@ -92,7 +92,7 @@ void fadeIn(QWidget *window);
 // Single entry point for widget motion (U12): drawer slide / chip fade / toast
 // rise. Honors the Reduce motion switch; durations come from DesignTokens, so
 // no caller passes its own.
-enum class MotionKind { Fade, SlideUp, SlideSide };
+enum class MotionKind { Fade, Chip, SlideUp, SlideSide };
 void animate(QWidget *widget, MotionKind kind = MotionKind::Fade);
 
 } // namespace UiHelpers

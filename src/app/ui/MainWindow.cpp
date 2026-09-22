@@ -971,8 +971,10 @@ void MainWindow::onSelectionChanged()
             m_preview->showRecord(full);
         // Medium: selecting reveals the bottom drawer (Wide/Narrow unaffected).
         if (m_previewDocked && m_previewDock
-            && m_shellMode == DesignTokens::ShellMode::Medium)
+            && m_shellMode == DesignTokens::ShellMode::Medium) {
             m_previewDock->show();
+            UiHelpers::animate(m_previewDock, UiHelpers::MotionKind::SlideSide);
+        }
     }
     updateActionStates();
     // Reflect pin state in the toolbar toggle.
@@ -2030,7 +2032,7 @@ void MainWindow::rebuildFilterChips()
         QWidget *widget = UiHelpers::makeChip(chip.label, chip.accessibleName, m_chipRow,
                                               chip.clear);
         m_chipLayout->insertWidget(m_chipLayout->count() - 1, widget);
-        UiHelpers::animate(widget, UiHelpers::MotionKind::Fade);
+        UiHelpers::animate(widget, UiHelpers::MotionKind::Chip);
     }
     m_chipRow->setVisible(!chips.isEmpty());
 }

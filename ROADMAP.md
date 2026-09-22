@@ -9,6 +9,38 @@
 **Revision 2026-09-22 (U19):** Delivered U19 (P0 Settings crash diagnosis and hardening): the deferred `QtConcurrent` workers no longer touch GUI-owned storage/settings off-thread — DB values are snapshotted on the GUI thread, workers run only external probes, app suggestions load synchronously off the indexed scan, and `tst_uidesign` gains 3 open/close regression slots (24/24 pass, full suite 29/29 + `--smoke` OK). Previous revision note preserved below.
 **Revision 2026-09-22:** Full-repo re-read (`src/core`, `src/app`, `src/app/ui` × 15 widgets, `tests/` × 29, `docs/`, packaging). Prior roadmap (Phases 1–9, Tracks A–M) archived in git history (`git log -- ROADMAP.md`) — its delivered work (Search 2.0, backups/restore, palette commands, KRunner actions, tray clicks/wheel, Track M design tokens) remains the baseline. This revision adds the requested bulk image export, tray UI refresh, Settings crash diagnosis, and crash-report collection/reader toolkit. What follows remains the single forward plan, focused on modern responsive UI/UX and the new stability/data-portability work.
 
+**Repository review and roadmap update (2026-09-23):** Reviewed all tracked project surfaces: `src/core`, `src/app` and UI, KRunner, all test sources, build configuration, desktop metadata, build/package scripts, and user/build documentation. The detailed prior roadmap below remains intact as the specification and delivery ledger. This concise forward plan consolidates its open work and adds repository-wide maintenance work grounded in the current architecture. Theme implementation and theme resource files are intentionally left untouched.
+
+### Forward roadmap — repository-wide priorities
+
+**Current architecture and baseline**
+
+- Native C++20 / Qt 6.8+ / KF6 application, with SQLite-backed `egoboard_core` separated from the desktop runtime and `ApplicationContext` as composition root. `GroupTreeModel` is the documented GUI-dependent exception compiled into the app.
+- Core capabilities include WAL-backed deduplicated history, schema migrations, FTS and filtering, keyset paging, snippets/transforms, groups/bookmarks, import/export, sensitive-data rules, expiry, and background vacuuming. App integration covers clipboard capture, X11/Wayland metadata and paste paths, shortcuts, tray, D-Bus, KRunner, OCR, optional SQLCipher/KWallet, themes, settings, backups, and crash reports.
+- UI includes responsive history/preview, quick paste, command palette, groups, timeline, settings, and export/import dialogs. The repository has broad QtTest coverage plus `--smoke` and `--bench`; CMake supports optional integrations and AppImage scripts. Build instructions and README are concise and do not yet describe the full shipped feature set.
+- Preserve the established constraints: Qt Widgets/KF6, local-only operation, no bundled themes/icons, GUI-free core, additive data-safe migrations, parameterized SQL, Wayland-safe paste behavior, and existing theme discovery/application behavior.
+
+**P0 — Finish the already-started user-facing work**
+
+1. **R4 feedback and states:** complete U11 undo semantics (including expiry and bulk operations), cancellable progress for backup/import/export/restore, and non-blocking loading placeholders; finish U12 shared motion behavior and U13 consistent empty/error states. Keep `Reduce motion` and accessibility behavior throughout.
+2. **R5 settings and onboarding:** complete U14 settings search, per-page reset, responsive narrow layout, storage status/quota/integrity presentation, settings JSON portability, and named profiles; complete U15 first-run tour, shortcut cheatsheet, and last-capture tray guidance. Retain the delivered thread-safe diagnostics and crash-report flows (U19/U20).
+3. **R6 platform polish:** provide the opt-in Wayland portal paste consent/revocation flow, best-effort screencast status/blur, and KRunner live preview/result categories. U18 tray refresh is complete; retain parity across SNI and fallback surfaces.
+4. **U10 and accessibility tail:** finish keyboard navigation/accessible labels for timeline and groups, narrow groups overlay/empty state/count feedback, touch scrolling, and pseudo-long translation layout checks. Keep high-contrast and keyboard-first behavior as acceptance requirements.
+
+**P1 — Reliability, portability, and maintainability**
+
+5. **Document the actual product:** expand README and build/package docs to cover shipped capture types, search syntax, privacy/encryption options, backups/import/export, shortcuts, KRunner/D-Bus, optional dependencies, platform differences, and diagnostics. Keep claims aligned with runtime feature detection and optional build flags.
+6. **Platform and packaging verification:** establish a repeatable release checklist for X11 and Plasma Wayland, optional-feature builds (KRunner, layer shell, XTest, SQLCipher), installed desktop entry/autostart behavior, and AppImage validation. Record graceful behavior when optional protocols, tools, services, or plugins are absent.
+7. **Data safety and recovery UX:** make backup/restore/import cancellation, progress, integrity results, and failure recovery understandable in the UI; preserve forward-only migrations and validate compatibility with older exported/backup data. Keep large-data operations bounded and avoid GUI-thread database work.
+8. **Privacy controls and diagnostics:** keep sensitive-data handling explicit across capture, previews, notifications, exports, backups, and crash reports; make effective settings and optional subsystem availability discoverable without exposing clipboard contents or secrets.
+9. **Integration regression coverage:** add focused automated coverage for platform/fallback decisions and packaging metadata where they can be tested headlessly; retain manual Plasma X11/Wayland checks for compositor-dependent behavior. Do not weaken existing assertions or the core/app boundary.
+
+**P2 — Long-term product extensions**
+
+10. Evaluate semantic search UI, LAN-sync pairing, browser companion, usage dashboard, CopyQ `.cpq` import, and `.zip` backups as separate scoped proposals. Define privacy, compatibility, dependency, migration, and performance requirements before implementation; each must fit the local-first model and receive its own UI/architecture review.
+
+**Delivery order:** P0 items first (R4 → R5 → R6/U10, with independent items reorderable); then P1 documentation, release verification, recovery/privacy polish, and regression coverage; P2 only after explicit design and scope. Each change keeps Qt Widgets, current theme behavior, the GUI-free core, data-preserving migrations, and the established build/test/smoke/benchmark gates. The detailed U-item descriptions, acceptance notes, statuses, tests, and prior delivery history below remain authoritative; this summary does not replace or discard them.
+
 **Guiding principles (unchanged):**
 1. Local-first, private by default. No telemetry, no network.
 2. Performance is a feature — instant at 50k+ entries (`setUniformItemSizes`, `Batched`, keyset paging stay).
@@ -144,6 +176,7 @@
 
 **U12 — Motion language ◐ partial** (extends Track M M4)
 - Keep 120 ms cap; add: drawer slide (80 ms), chip fade/scale (80 ms), toast slide-up (120 ms) — all skipped under `Reduce motion`. One `UiHelpers::animate()` entry; no per-widget durations.
+- 2026-09-23 progress: filter chips now use the 80 ms `Chip` kind; the Medium preview drawer invokes the 80 ms shared `SlideSide` kind when opened. Both honor `Reduce motion`. The shared implementation still animates opacity only, so true positional drawer/toast motion and chip scale remain open.
 
 **U13 — Empty / error / offline states ◐ partial**
 - One `makeEmptyState` everywhere: no-entries-yet (with shortcut hints), no-match (with "Clear filters"), group-empty, snippet-empty (already hinted — unify), OCR-missing (with install hint), DB-error (with integrity-check action). Each has icon + title + one action, never bare text.

@@ -381,10 +381,12 @@ void UiHelpers::animate(QWidget *widget, MotionKind kind)
     int duration = DesignTokens::MotionDurationMs;
     if (kind == MotionKind::SlideSide)
         duration = DesignTokens::MotionDrawerMs;
+    else if (kind == MotionKind::Chip)
+        duration = DesignTokens::MotionChipMs;
     else if (kind == MotionKind::SlideUp)
         duration = DesignTokens::MotionToastMs;
-    // Fade is the base for every kind; slide kinds shift position via the
-    // window opacity only (no layout move), keeping this headless-testable.
+    // All motion kinds currently use an opacity transition; positional slide
+    // and scale effects remain future work so layout geometry stays stable.
     widget->setWindowOpacity(0.0);
     auto *animation = new QPropertyAnimation(widget, "windowOpacity", widget);
     animation->setDuration(duration);
