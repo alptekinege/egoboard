@@ -87,10 +87,11 @@ PreviewPane::PreviewPane(QWidget *parent)
 
     auto *emptyPage = new QWidget(this);
     auto *emptyLayout = new QVBoxLayout(emptyPage);
-    m_emptyLabel = new QLabel(tr("Select an entry to preview"), emptyPage);
-    m_emptyLabel->setAlignment(Qt::AlignCenter);
-    m_emptyLabel->setWordWrap(true);
-    emptyLayout->addWidget(m_emptyLabel);
+    emptyLayout->setContentsMargins(0, 0, 0, 0);
+    m_emptyState = UiHelpers::makeEmptyState(
+        QStringLiteral("view-preview"), tr("Select an entry to preview"), {}, emptyPage);
+    m_emptyState->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    emptyLayout->addWidget(m_emptyState);
     m_stack->addWidget(emptyPage);
 
     m_stack->addWidget(pageText());
@@ -681,8 +682,15 @@ void PreviewPane::showEmpty(const QString &message)
 {
     if (m_editing)
         setEditing(false);
-    m_emptyLabel->setText(message.isEmpty() ? tr("Select an entry to preview") : message);
-    m_stack->setCurrentWidget(m_emptyLabel->parentWidget());
+    auto *emptyPage = m_emptyState->parentWidget();
+    if (!message.isEmpty()) {
+        delete m_emptyState;
+        m_emptyState = UiHelpers::makeEmptyState(
+            QStringLiteral("image-missing"), message, {}, emptyPage);
+        m_emptyState->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        emptyPage->layout()->addWidget(m_emptyState);
+    }
+    m_stack->setCurrentWidget(emptyPage);
     m_transformBar->setVisible(false);
     if (m_headerBar)
         m_headerBar->setVisible(false);

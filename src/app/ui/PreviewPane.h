@@ -65,7 +65,7 @@ private:
     void saveEdit();
 
     QStackedWidget *m_stack = nullptr;
-    QLabel *m_emptyLabel = nullptr;
+    QWidget *m_emptyState = nullptr; // U13 empty state
     // R2 header: copy, pin, source-app label, close (drawer only).
     QWidget *m_headerBar = nullptr;
     QToolButton *m_copyBtn = nullptr;
