@@ -327,11 +327,7 @@ void MainWindow::buildUi()
     splitter->addWidget(m_list);
 
     // "No entries yet" / "nothing matches this filter", over the empty viewport.
-    m_emptyHint = UiHelpers::makeHint(QString(), m_list->viewport(), /*richText=*/false);
-    m_emptyHint->setAlignment(Qt::AlignCenter);
-    m_emptyHint->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-    m_emptyHint->setGeometry(m_list->viewport()->rect());
-    m_emptyHint->hide();
+    m_emptyHint = nullptr;
     m_list->viewport()->installEventFilter(this);
 
     // U11 skeleton rows while the first page is loading.
@@ -908,16 +904,27 @@ void MainWindow::applyCurrentFilter()
 // different situations; which one shows comes from the active filter.
 void MainWindow::updateEmptyState()
 {
-    if (!m_emptyHint || !m_model)
+    if (!m_model)
         return;
     const bool empty = m_model->rowCount() == 0;
-    m_emptyHint->setGeometry(m_list->viewport()->rect());
-    m_emptyHint->setVisible(empty);
+    if (m_emptyHint) {
+        m_emptyHint->deleteLater();
+        m_emptyHint = nullptr;
+    }
     if (!empty)
         return;
-    m_emptyHint->setText(m_model->filter().isTrivial()
-                             ? tr("No entries yet — copy something and it will show up here.")
-                             : tr("Nothing matches this filter."));
+    const bool trivial = m_model->filter().isTrivial();
+    m_emptyHint = UiHelpers::makeEmptyState(
+        trivial ? QStringLiteral("edit-paste") : QStringLiteral("view-filter"),
+        trivial ? tr("No entries yet") : tr("Nothing matches this filter"),
+        trivial ? tr("Copy something and it will show up here.") : tr("Try clearing some filters."),
+        m_list->viewport(),
+        trivial ? QString() : tr("Clear filters"),
+        trivial ? std::function<void()>() : [this] { m_search->clear(); applyCurrentFilter(); }
+    );
+    m_emptyHint->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    m_emptyHint->setGeometry(m_list->viewport()->rect());
+    m_emptyHint->show();
 }
 
 void MainWindow::showListSkeleton()
@@ -937,7 +944,7 @@ void MainWindow::hideListSkeleton()
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
-    if (m_emptyHint && watched == m_emptyHint->parentWidget() && event->type() == QEvent::Resize) {
+    if (m_emptyHint && watched == m_list->viewport() && event->type() == QEvent::Resize) {
         m_emptyHint->setGeometry(m_list->viewport()->rect());
         if (m_listSkeleton)
             m_listSkeleton->setGeometry(m_list->viewport()->rect());

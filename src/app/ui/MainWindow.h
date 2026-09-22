@@ -124,7 +124,7 @@ private:
     QHBoxLayout *m_chipLayout = nullptr;
     QWidget *m_bulkBar = nullptr; // R2: bulk actions for multi-select
     QLabel *m_bulkCount = nullptr;
-    QLabel *m_emptyHint = nullptr; // over the list viewport while it has no rows
+    QWidget *m_emptyHint = nullptr; // U13 empty state over the list viewport
     QWidget *m_listSkeleton = nullptr; // U11 shimmer rows while the first page loads
     void showListSkeleton();
     void hideListSkeleton();
