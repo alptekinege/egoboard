@@ -3,7 +3,7 @@
 > Local-first clipboard history for KDE Plasma. This roadmap is UI/UX-only: make the existing Qt Widgets + KF6 app feel modern and responsive at any window size, on X11 and Wayland, without a rewrite, without cloud, without breaking the `src/core` (QtCore+Sql only) boundary.
 
 **Status:** `v0.1.0` · Qt 6 + KF6 Widgets · local-only · MIT
-**Revision 2026-09-20:** Full-repo re-read (`src/core`, `src/app`, `src/app/ui` × 15 widgets, `tests/` × 23, `docs/`, packaging). Prior roadmap (Phases 1–9, Tracks A–M) archived in git history (`git log -- ROADMAP.md`) — its delivered work (Search 2.0, backups/restore, palette commands, KRunner actions, tray clicks/wheel, Track M design tokens) is taken as the baseline. What follows replaces it as the single forward plan, focused purely on modern responsive UI/UX.
+**Revision 2026-09-22:** Full-repo re-read (`src/core`, `src/app`, `src/app/ui` × 15 widgets, `tests/` × 29, `docs/`, packaging). Prior roadmap (Phases 1–9, Tracks A–M) archived in git history (`git log -- ROADMAP.md`) — its delivered work (Search 2.0, backups/restore, palette commands, KRunner actions, tray clicks/wheel, Track M design tokens) remains the baseline. This revision adds the requested bulk image export, tray UI refresh, Settings crash diagnosis, and crash-report collection/reader toolkit. What follows remains the single forward plan, focused on modern responsive UI/UX and the new stability/data-portability work.
 
 **Guiding principles (unchanged):**
 1. Local-first, private by default. No telemetry, no network.
@@ -53,6 +53,10 @@
 | G9 | No skeleton/shimmer for slow list/preview loads; import/export is wait-cursor only, no progress | §4 leftover |
 | G10 | Touch/HiDPI: small hit targets at compact density, timeline 48 px fixed height, no fractional-scale check | `TimelineStrip.h:17`, `DesignTokens.h` |
 | G11 | First-run tour, settings search, per-page reset — still open (§3.7) | `SettingsDialog` |
+| G12 | There is no image-only bulk export: JSON embeds image blobs as base64, while the file export path has no folder/manifest workflow and `fetchAllFull()` retains every payload in memory | `ExportImportManager.cpp:180-219,517-561` |
+| G13 | Tray mode is persisted but not enforced by `TrayController`; the menu is rebuilt as eight plain-text recent actions with a static tooltip/icon and no image/type/status treatment | `SettingsManager.cpp:717-730`, `TrayController.cpp:31-170` |
+| G14 | Opening Settings constructs all nine pages, then deferred workers call GUI-owned storage/QSqlDatabase methods (`sourceApps()` / `stats()`) from `QtConcurrent` threads; there is no open/close regression path that proves this is safe | `MainWindow.cpp:1288-1293`, `SettingsDialog.cpp:206-243,1687-1699` |
+| G15 | Diagnostics is a live text panel only: there is no structured crash bundle, coredump/backtrace reader, symbol/build metadata or privacy review step for sharing a failure report | `SettingsDialog.cpp:1557-1830`, `src/main.cpp`, `docs/build.md` |
 
 ---
 
@@ -118,6 +122,12 @@
 - Timeline: keyboard-navigable bars (←/→ + Enter), accessible names per bar ("12 entries, Monday"), collapses to a combo under `Narrow`.
 - Groups: overlay drawer mode under `Medium`; drop-target highlight already done — add count badge on drag (reuse quick-paste badge language); empty state with "New group" action.
 
+**U17 — Bulk image export (P1)** (`ExportImportManager`, `ExportImportDialogs`, bulk-action bar)
+- Add an image-only export flow for the current selection/filter, all entries, pinned entries, and a group subtree. It writes the stored PNG blobs to a user-selected directory without changing history; entries with no stored blob are reported as skipped rather than producing empty files.
+- Use deterministic, collision-safe filenames (timestamp + entry id/hash) and write a small manifest containing the source app/window, capture time, pinned/sensitive flags, tags, OCR text and the generated filename. The manifest must not expose payload text unless the user explicitly chooses a metadata format that includes it.
+- Stream bounded pages instead of calling `fetchAllFull()` for the whole database. The dialog shows count/bytes/progress, supports cancel, reports write failures, and makes the sensitive-entry policy explicit before export. Existing JSON/Markdown/CSV/HTML export behavior stays unchanged.
+- Acceptance: multi-image export at 50k entries stays within the export budget and bounded memory; duplicate timestamps/names never overwrite; cancellation leaves no misleading manifest; read/write errors are actionable; offscreen tests cover selection/filter scopes, skipped blobs, sensitive entries and filename collisions.
+
 ---
 
 ## 5. Feedback, motion, states
@@ -150,6 +160,18 @@
 - Responsive: sidebar → top tabs under 640 px width; pages scroll (`QScrollArea` already partial — finish); Storage page shows DB path + quota bar + integrity actions in one card.
 - Profiles ("Work"/"Personal"): switch whole setting sets from palette (`>profile`); stored as named `KConfig` groups.
 
+**U19 — Settings crash diagnosis and hardening (P0)** (`MainWindow::openSettings`, `SettingsDialog`)
+- Reproduce the crash through every entry point (tray menu, command palette and shortcut), including opening then immediately closing the dialog while the deferred diagnostics/list jobs are pending. Capture a symbolized backtrace and Qt warnings under an offscreen test session before changing behavior.
+- Audit the deferred work identified in G14: GUI-owned `StorageManager`/`QSqlDatabase` calls must not run on worker threads. Snapshot database values on the owning thread before dispatching external probes, keep worker jobs independent of `QObject` state, and deliver results through lifetime-safe queued callbacks. Preserve the non-blocking Settings open path.
+- Add a regression path that opens/closes Settings repeatedly and verifies all pages, diagnostics, app suggestions, theme preview and dynamic lists complete without a crash, dangling callback or cross-thread SQL warning. Exercise both normal and no-history databases; the fix must be root-cause based, not a test-only guard.
+
+**U20 — Crash report collection and reader toolkit (P1)** (`src/main.cpp`, `SettingsDialog`, diagnostics tooling)
+- Add a local-first support workflow exposed both from Settings ▸ Diagnostics and the CLI: create a bounded, structured report containing Egoboard version/build ID, debug-symbol availability, Qt/KF6 versions, QPA/session, X11/Wayland/KWin details, recent sanitized application logs, the failing signal/thread and a symbolized backtrace when one is available. Provide an `Open/Read crash report` path that renders the same schema for a user or developer.
+- Integrate with standard tools when present: `coredumpctl`/systemd-coredump for locating and extracting the latest Egoboard dump, `journalctl --user` for scoped logs, and `gdb`/`addr2line` (or an equivalent installed symbolizer) for stack resolution. Detect missing tools and report a useful manual command/fallback instead of failing or requiring root. Never invent a parser for an unavailable dump format.
+- Ship a `RelWithDebInfo`/symbol guidance path and include executable/build-id information so a report can explain when a backtrace is unsymbolized. The reader must accept partial or malformed reports, highlight the first Egoboard frame, and keep raw tool output available for debugging.
+- Privacy is opt-in and visible before saving: never include clipboard text, image blobs, history.db, SQLCipher/KWallet material, full environment secrets or unredacted home paths. Redact usernames/paths where practical, show the final bundle contents, and make network upload explicitly out of scope.
+- Acceptance: reports can be created and read with and without systemd-coredump/gdb installed; malformed/partial fixtures render safely; size and log windows are capped; an intentional test fixture verifies signal/backtrace parsing without crashing the production app; offscreen tests cover schema, redaction and CLI/Settings parity.
+
 **U15 — First-run + discoverability**
 - 4-step overlay tour (hotkeys, palette, privacy, settings search) on first launch only; skippable, never re-shows without asking.
 - Shortcut cheatsheet (`?` in main window + palette footer); tray tooltip shows pause state + last capture time.
@@ -170,7 +192,13 @@
 - **Wayland portal paste**: opt-in toggle with per-session consent explainer UI (what it does, how to revoke); fallback notification path stays.
 - **Screencast awareness**: status-bar/dot indicator + auto-blur (U7); best-effort via compositor signals.
 - **KRunner**: live preview pane + result categories (open Track J tail).
-- **Tray**: tooltip + menu already rich — add paused-state icon overlay (tinted, theme-safe).
+- **Tray**: tooltip + menu refresh and paused-state icon overlay are tracked in U18 (theme-safe, SNI/fallback parity).
+
+**U18 — Tray UI refresh (P1)** (`TrayController`, `SettingsManager`, tray tests)
+- Make `TrayMode` live and authoritative: `auto` follows the history/visibility policy, `always` keeps the icon available, and `hidden` removes the tray surface while leaving hotkeys and the process running. React to `SettingsManager::changed()` without requiring a restart.
+- Refresh the menu into clear action groups: current capture state and history count, quick paste/show history, pause/resume, recent entries, Settings, clear history and Quit. Recent rows remain bounded and lazy, but gain type-aware icons/labels, image-friendly previews and explicit empty/loading states. Keep configured primary/secondary click behavior, wheel cycling, and `KStatusNotifierItem`/`QSystemTrayIcon` fallback semantics intact.
+- Update tooltip and icon state when paused/resumed or a new capture arrives; use only `QIcon::fromTheme()` and palette/theme-safe state treatment, including the paused overlay. Do not add bundled tray artwork.
+- Acceptance: SNI and fallback expose the same actions and labels; changing tray mode/click actions is visible immediately; no menu rebuild signal storm or stale pause state; tests cover menu actions, mode transitions, empty/recent/image entries and pause/capture tooltip updates.
 
 ---
 
@@ -191,12 +219,12 @@
 | **R1 — Responsive shell** ✅ *landed 2026-09-20* | Breakpoints, wrapping filter bar, toolbar overflow | U1 (Wide/Medium/Narrow via `resizeEvent`, preview splitter↔drawer reparent, timeline collapse <560px, per-mode splitter keys), U2 (search row + collapsible filter row, `Filters (n)` live-mirror menu, expanding combos), U3 (Paste/Copy/Pin/Delete + Palette stay, 6 actions → `More` menu off Wide); `tst_uidesign` 19/19, full suite 29/29 + `--smoke` OK |
 | **R2 — List & preview** ✅ *landed 2026-09-20* | Chips, bulk bar, day headers, drawer preview, zoom/edit | U6 (removable filter chips + `Filters (n)` count, bulk bar Pin/Unpin/Tag/Group/Export/Delete, entry-index + use-count row extras, day-header helper), U7 (preview header Copy/Pin/source/Close, image zoom slider + Fit/100%, wrap toggle, inline edit, sensitive blur overlay), undo toast on delete/bulk/clear (re-insert restore); `tst_uidesign` 21/21, full suite 29/29 + `--smoke` OK |
 | **R3 — Popups 2.0** ✅ *landed 2026-09-20* | Quick-paste search + two-line rows + monitor memory; palette rows + recents | U8 (search-as-you-type over bounded 200 recents + `type:`/`app:` filters, two-line preview+meta rows behind setting, per-screen placement memory, ↑↓/Enter/Esc in search), U9 (rich two-line delegate with type icon + app + age, empty-input recents section, Tab ghost hint, window feeds recents); `tst_paletteui` 15/15, full suite 29/29 + `--smoke` OK |
-| **R4 — Feedback & states** | Progress dialogs, skeletons, empty states, motion language, capture sound+notification (top-aware) | U11, U12, U13, **U16** |
-| **R5 — Settings & onboarding** | Settings search + reset + profiles + responsive dialog; first-run tour; cheatsheet | U14, U15 |
-| **R6 — Platform polish** | Portal-paste consent UI, screencast blur, KRunner preview, tray overlay | §8 |
+| **R4 — Feedback & states** | Progress dialogs, skeletons, empty states, motion language, capture sound+notification (top-aware), bulk image export | U11, U12, U13, **U16**, **U17** |
+| **R5 — Settings & onboarding** | Settings search + reset + profiles + responsive dialog; first-run tour; cheatsheet; Settings crash hardening and crash-report toolkit | U14, U15, **U19**, **U20** |
+| **R6 — Platform polish** | Portal-paste consent UI, screencast blur, KRunner preview, tray UI refresh | **U18**, §8 |
 | **Later** | Semantic search UI, LAN-sync pairing UI, browser companion, stats dashboard, CopyQ `.cpq` reader, `.zip` backups | Carried long-term; each needs its own UI pass against this system |
 
-> R0–R2 are sequential (shell before surfaces). R3–R6 can reorder by need — each ships independently.
+> R0–R2 are sequential (shell before surfaces). R3–R6 can reorder by need — each ships independently. For the newly requested work, resolve **U19 (P0)** first; then U17/U18/U20 (P1) can proceed independently.
 
 ---
 
@@ -209,4 +237,4 @@
 
 ---
 
-*Last updated: 2026-09-20 (R0–R3 landed; full suite 29/29 + smoke OK) · Next: R4 (feedback & states — progress dialogs, skeletons, empty states, motion language).*
+*Last updated: 2026-09-22 (U17 bulk image export, U18 tray UI refresh, U19 Settings crash diagnosis and U20 crash-report toolkit tracked; no implementation claims changed) · Next: U19 (P0 Settings crash diagnosis and hardening), then U20/U17/U18.*
