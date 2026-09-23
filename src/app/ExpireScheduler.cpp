@@ -29,6 +29,13 @@ void ExpireScheduler::start()
     applyRules(); // catch anything that aged out while egoboard wasn't running
 }
 
+QList<qint64> ExpireScheduler::takeLastExpiredIds()
+{
+    QList<qint64> victims = m_lastExpiredIds;
+    m_lastExpiredIds.clear();
+    return victims;
+}
+
 void ExpireScheduler::applyRules()
 {
     if (!m_storage || !m_settings)
@@ -37,16 +44,17 @@ void ExpireScheduler::applyRules()
     if (rules.isEmpty())
         return;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    int removed = 0;
+    QList<qint64> victims;
     for (const ExpireRule &rule : rules) {
         if (!rule.isValid())
             continue;
         const qint64 cutoff = now - rule.ageSeconds * 1000;
-        removed += m_storage->expireEntries(cutoff, rule.contentType,
-                                            rule.sourceAppWildcard, rule.keepPinned);
+        victims.append(m_storage->expireEntriesToTrash(cutoff, rule.contentType,
+                                                       rule.sourceAppWildcard, rule.keepPinned));
     }
-    if (removed > 0)
-        emit expired(removed);
+    m_lastExpiredIds = victims;
+    if (!victims.isEmpty())
+        emit expired(victims.size());
 }
 
 void ExpireScheduler::scheduleAfterCapture()

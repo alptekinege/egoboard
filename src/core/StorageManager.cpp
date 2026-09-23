@@ -21,6 +21,12 @@ constexpr int kRegexScanCap = 20000;
 constexpr int kRegexBatch = 200;
 constexpr int kRegexMaxSubjectChars = 20000;
 
+// U11 trash retention: soft-deleted rows stay restorable for an hour (far past
+// the 5 s toast undo window, as crash-session grace), then are purged lazily
+// on the next soft-delete and at open. Trash is invisible to history, stats,
+// dedup and caps meanwhile.
+constexpr qint64 kTrashRetentionMs = 3600 * 1000;
+
 bool matchesRegex(const ClipboardRecord &row, const QRegularExpression &regex,
                   FilterSpec::SearchScope scope)
 {
@@ -79,6 +85,8 @@ StorageManager::StorageManager(const QString &databasePath, QObject *parent)
         return;
     }
     DatabaseSchema::ensure(m_db);
+    // Drop trash left over by crashed sessions past the retention bound.
+    purgeTrash(QDateTime::currentMSecsSinceEpoch() - kTrashRetentionMs);
 }
 
 StorageManager::~StorageManager()
@@ -999,6 +1007,252 @@ int StorageManager::expireEntries(qint64 olderThanMs, int contentType,
     while (query.next())
         victims.append(query.value(0).toLongLong());
     return victims.isEmpty() ? 0 : removeEntries(victims);
+}
+
+namespace {
+
+// U11 trash column lists: entries and trash_entries share every column except
+// the trailing trashed_ms, so moves are explicit column copies (never SELECT *).
+const QString kEntryColumns = QStringLiteral("id, timestamp_ms, content_type, content_hash, "
+                                              "text_data, blob_data, preview, size_bytes, pinned, "
+                                              "sensitive, use_count, source_app, source_window, "
+                                              "ocr_text");
+
+} // namespace
+
+QList<qint64> StorageManager::softDeleteEntries(const QList<qint64> &ids)
+{
+    if (!m_db.isOpen() || ids.isEmpty())
+        return {};
+    // Bound the buffer before growing it.
+    purgeTrash(QDateTime::currentMSecsSinceEpoch() - kTrashRetentionMs);
+    if (!beginTransaction()) {
+        qWarning("egoboard: cannot begin transaction: %s", qPrintable(m_db.lastError().text()));
+        return {};
+    }
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QList<qint64> trashed;
+    trashed.reserve(ids.size());
+    for (const qint64 id : ids) {
+        // Links first: the entries DELETE below would CASCADE them away.
+        QSqlQuery tags(m_db);
+        tags.prepare(QStringLiteral("INSERT OR IGNORE INTO trash_entry_tags(entry_id, tag_id) "
+                                    "SELECT entry_id, tag_id FROM entry_tags WHERE entry_id = :id"));
+        tags.bindValue(QStringLiteral(":id"), id);
+        QSqlQuery groups(m_db);
+        groups.prepare(QStringLiteral("INSERT OR IGNORE INTO trash_entry_groups(entry_id, group_id) "
+                                      "SELECT entry_id, group_id FROM entry_groups WHERE entry_id = :id"));
+        groups.bindValue(QStringLiteral(":id"), id);
+        QSqlQuery move(m_db);
+        move.prepare(QStringLiteral("INSERT INTO trash_entries(%1, trashed_ms) "
+                                    "SELECT %1, :now FROM entries WHERE id = :id")
+                         .arg(kEntryColumns));
+        move.bindValue(QStringLiteral(":now"), now);
+        move.bindValue(QStringLiteral(":id"), id);
+        if (!tags.exec() || !groups.exec() || !move.exec() || move.numRowsAffected() == 0)
+            continue; // unknown id (or a move failure): nothing to trash
+        QSqlQuery drop(m_db);
+        drop.prepare(QStringLiteral("DELETE FROM entries WHERE id = :id"));
+        drop.bindValue(QStringLiteral(":id"), id);
+        if (drop.exec() && drop.numRowsAffected() > 0)
+            trashed.append(id);
+    }
+    if (!commitTransaction()) {
+        qWarning("egoboard: softDeleteEntries commit failed: %s",
+                 qPrintable(m_db.lastError().text()));
+        rollbackTransaction();
+        return {};
+    }
+    if (!trashed.isEmpty() && !signalsSuppressed())
+        emit entriesRemoved(trashed);
+    return trashed;
+}
+
+QList<qint64> StorageManager::softClearHistory(bool includePinned)
+{
+    if (!m_db.isOpen())
+        return {};
+    const QString where = includePinned ? QString() : QStringLiteral(" WHERE pinned = 0");
+    QList<qint64> victims;
+    {
+        QSqlQuery select(m_db);
+        if (!select.exec(QStringLiteral("SELECT id FROM entries") + where)) {
+            qWarning("egoboard: softClearHistory select failed: %s",
+                     qPrintable(select.lastError().text()));
+            return {};
+        }
+        while (select.next())
+            victims.append(select.value(0).toLongLong());
+    }
+    return victims.isEmpty() ? QList<qint64>{} : softDeleteEntries(victims);
+}
+
+QList<qint64> StorageManager::expireEntriesToTrash(qint64 olderThanMs, int contentType,
+                                                   const QString &sourceAppWildcard,
+                                                   bool keepPinned)
+{
+    if (!m_db.isOpen() || olderThanMs <= 0)
+        return {};
+
+    QStringList where;
+    QHash<QString, QVariant> binds;
+    int bindIndex = 0;
+    const auto addBind = [&binds, &bindIndex](const QVariant &value) {
+        const QString name = QStringLiteral(":w%1").arg(bindIndex++);
+        binds.insert(name, value);
+        return name;
+    };
+
+    where << QStringLiteral("timestamp_ms < %1").arg(addBind(olderThanMs));
+    if (contentType >= 0)
+        where << QStringLiteral("content_type = %1").arg(addBind(contentType));
+    if (keepPinned)
+        where << QStringLiteral("pinned = 0");
+    if (!sourceAppWildcard.isEmpty()) {
+        QString pattern = sourceAppWildcard;
+        pattern.replace(QStringLiteral("\\"), QStringLiteral("\\\\"))
+                .replace(QStringLiteral("%"), QStringLiteral("\\%"))
+                .replace(QStringLiteral("_"), QStringLiteral("\\_"));
+        pattern.replace(QStringLiteral("*"), QStringLiteral("%"));
+        pattern.replace(QStringLiteral("?"), QStringLiteral("_"));
+        where << QStringLiteral("source_app LIKE %1 ESCAPE '\\'").arg(addBind(pattern));
+    }
+
+    QString sql = QStringLiteral("SELECT id FROM entries");
+    if (!where.isEmpty())
+        sql += QStringLiteral(" WHERE ") + where.join(QStringLiteral(" AND "));
+
+    QSqlQuery query(m_db);
+    query.prepare(sql);
+    for (auto it = binds.cbegin(); it != binds.cend(); ++it)
+        query.bindValue(it.key(), it.value());
+    if (!query.exec()) {
+        qWarning("egoboard: expireEntriesToTrash failed: %s", qPrintable(query.lastError().text()));
+        return {};
+    }
+    QList<qint64> victims;
+    while (query.next())
+        victims.append(query.value(0).toLongLong());
+    return victims.isEmpty() ? QList<qint64>{} : softDeleteEntries(victims);
+}
+
+int StorageManager::restoreTrashEntries(const QList<qint64> &ids)
+{
+    if (!m_db.isOpen() || ids.isEmpty())
+        return 0;
+    if (!beginTransaction()) {
+        qWarning("egoboard: cannot begin transaction: %s", qPrintable(m_db.lastError().text()));
+        return 0;
+    }
+    int restored = 0;
+    for (const qint64 id : ids) {
+        QSqlQuery hash(m_db);
+        hash.prepare(QStringLiteral("SELECT content_hash FROM trash_entries WHERE id = :id"));
+        hash.bindValue(QStringLiteral(":id"), id);
+        if (!hash.exec() || !hash.next())
+            continue; // not in trash (already restored/purged)
+        const QString trashedHash = hash.value(0).toString();
+        QSqlQuery live(m_db);
+        live.prepare(QStringLiteral("SELECT 1 FROM entries WHERE content_hash = :h"));
+        live.bindValue(QStringLiteral(":h"), trashedHash);
+        if (!live.exec())
+            continue;
+        if (live.next()) {
+            // The content went live again while trashed (re-copied): drop the
+            // stale trash row instead of duplicating history.
+            QSqlQuery dropLinks(m_db);
+            dropLinks.prepare(QStringLiteral("DELETE FROM trash_entry_tags WHERE entry_id = :id"));
+            dropLinks.bindValue(QStringLiteral(":id"), id);
+            dropLinks.exec();
+            QSqlQuery dropGroups(m_db);
+            dropGroups.prepare(QStringLiteral("DELETE FROM trash_entry_groups WHERE entry_id = :id"));
+            dropGroups.bindValue(QStringLiteral(":id"), id);
+            dropGroups.exec();
+            QSqlQuery drop(m_db);
+            drop.prepare(QStringLiteral("DELETE FROM trash_entries WHERE id = :id"));
+            drop.bindValue(QStringLiteral(":id"), id);
+            drop.exec();
+            continue;
+        }
+        QSqlQuery back(m_db);
+        back.prepare(QStringLiteral("INSERT INTO entries(%1) SELECT %1 FROM trash_entries WHERE id = :id")
+                         .arg(kEntryColumns));
+        back.bindValue(QStringLiteral(":id"), id);
+        if (!back.exec() || back.numRowsAffected() == 0)
+            continue;
+        QSqlQuery tags(m_db);
+        tags.prepare(QStringLiteral("INSERT OR IGNORE INTO entry_tags(entry_id, tag_id) "
+                                    "SELECT entry_id, tag_id FROM trash_entry_tags WHERE entry_id = :id"));
+        tags.bindValue(QStringLiteral(":id"), id);
+        tags.exec();
+        QSqlQuery groups(m_db);
+        groups.prepare(QStringLiteral("INSERT OR IGNORE INTO entry_groups(entry_id, group_id) "
+                                      "SELECT entry_id, group_id FROM trash_entry_groups "
+                                      "WHERE entry_id = :id"));
+        groups.bindValue(QStringLiteral(":id"), id);
+        groups.exec();
+        QSqlQuery cleanLinks(m_db);
+        cleanLinks.prepare(QStringLiteral("DELETE FROM trash_entry_tags WHERE entry_id = :id"));
+        cleanLinks.bindValue(QStringLiteral(":id"), id);
+        cleanLinks.exec();
+        QSqlQuery cleanGroups(m_db);
+        cleanGroups.prepare(QStringLiteral("DELETE FROM trash_entry_groups WHERE entry_id = :id"));
+        cleanGroups.bindValue(QStringLiteral(":id"), id);
+        cleanGroups.exec();
+        QSqlQuery clean(m_db);
+        clean.prepare(QStringLiteral("DELETE FROM trash_entries WHERE id = :id"));
+        clean.bindValue(QStringLiteral(":id"), id);
+        if (clean.exec() && clean.numRowsAffected() > 0)
+            ++restored;
+    }
+    if (!commitTransaction()) {
+        qWarning("egoboard: restoreTrashEntries commit failed: %s",
+                 qPrintable(m_db.lastError().text()));
+        rollbackTransaction();
+        return 0;
+    }
+    if (restored > 0 && !signalsSuppressed())
+        emit storageReset();
+    return restored;
+}
+
+int StorageManager::purgeTrash(qint64 olderThanMs)
+{
+    if (!m_db.isOpen())
+        return 0;
+    if (!beginTransaction())
+        return 0;
+    QSqlQuery links(m_db);
+    links.prepare(QStringLiteral("DELETE FROM trash_entry_tags WHERE entry_id IN "
+                                 "(SELECT id FROM trash_entries WHERE trashed_ms <= :bound)"));
+    links.bindValue(QStringLiteral(":bound"), olderThanMs);
+    QSqlQuery groups(m_db);
+    groups.prepare(QStringLiteral("DELETE FROM trash_entry_groups WHERE entry_id IN "
+                                  "(SELECT id FROM trash_entries WHERE trashed_ms <= :bound)"));
+    groups.bindValue(QStringLiteral(":bound"), olderThanMs);
+    QSqlQuery rows(m_db);
+    rows.prepare(QStringLiteral("DELETE FROM trash_entries WHERE trashed_ms <= :bound"));
+    rows.bindValue(QStringLiteral(":bound"), olderThanMs);
+    if (!links.exec() || !groups.exec() || !rows.exec()) {
+        rollbackTransaction();
+        return 0;
+    }
+    const int purged = rows.numRowsAffected();
+    if (!commitTransaction()) {
+        rollbackTransaction();
+        return 0;
+    }
+    return purged;
+}
+
+int StorageManager::trashCount() const
+{
+    if (!m_db.isOpen())
+        return 0;
+    QSqlQuery query(m_db);
+    if (!query.exec(QStringLiteral("SELECT COUNT(*) FROM trash_entries")) || !query.next())
+        return 0;
+    return query.value(0).toInt();
 }
 
 int StorageManager::enforceDiskCap(qint64 maxBytes)

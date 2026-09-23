@@ -1,10 +1,14 @@
 #include <QtTest>
 
+#include "BookmarkManager.h"
 #include "ClipboardListModel.h"
 #include "StorageManager.h"
 
+#include <QDateTime>
 #include <QRandomGenerator>
 #include <QSignalSpy>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 
 class TestStorage : public QObject
@@ -41,6 +45,14 @@ private slots:
     void appliesInclusiveTimeBoundsAndCombinedFilters();
     void paginatesEntriesWithEqualTimestamps();
     void clearsOcrTextAndReturnsFullPayloads();
+    void softDeleteMovesRowsToTrashWithExactRestore();
+    void softDeletePreservesTagsGroupsAndPayloads();
+    void restoreDropsRowsWhoseHashWentLive();
+    void purgeTrashRespectsAgeBound();
+    void softClearHistoryKeepsPinned();
+    void expireEntriesToTrashSweepsRestorably();
+    void trashEmitsViewSignals();
+    void legacyDatabaseGainsTrashTables();
 
 private:
     ClipboardRecord makeRecord(const QByteArray &hash, const QString &text, qint64 timestamp);
@@ -888,6 +900,194 @@ void TestStorage::clearsOcrTextAndReturnsFullPayloads()
     QCOMPARE(allFull.size(), 1);
     QCOMPARE(allFull.first().id, id);
     QCOMPARE(allFull.first().textData, QStringLiteral("full text"));
+}
+
+void TestStorage::softDeleteMovesRowsToTrashWithExactRestore()
+{
+    // U11: soft-delete removes rows from history (invisible to queries and
+    // stats) while the trash buffer keeps them for an exact-ID restore.
+    const qint64 keep =
+        m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("t-keep"), QStringLiteral("stay"), 1000));
+    const qint64 doomed =
+        m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("t-gone"), QStringLiteral("go"), 2000));
+    QVERIFY(keep > 0 && doomed > 0);
+
+    QCOMPARE(m_storage->softDeleteEntries({}), QList<qint64>{});
+    QCOMPARE(m_storage->softDeleteEntries({doomed, 99999}), QList<qint64>({doomed}));
+    QCOMPARE(m_storage->stats().entryCount, qint64(1));
+    QCOMPARE(m_storage->trashCount(), 1);
+    ClipboardRecord gone;
+    QVERIFY(!m_storage->fetchFull(doomed, &gone)); // gone from history...
+    QVERIFY(m_storage->fetchFull(keep, &gone)); // ...but the survivor is intact
+
+    QCOMPARE(m_storage->restoreTrashEntries({}), 0);
+    QCOMPARE(m_storage->restoreTrashEntries({doomed}), 1);
+    QCOMPARE(m_storage->stats().entryCount, qint64(2));
+    QCOMPARE(m_storage->trashCount(), 0);
+    QVERIFY(m_storage->fetchFull(doomed, &gone));
+    QCOMPARE(gone.textData, QStringLiteral("go"));
+    QCOMPARE(gone.timestamp, qint64(2000)); // same row back, not a re-insert
+    QCOMPARE(m_storage->restoreTrashEntries({doomed}), 0); // already restored
+}
+
+void TestStorage::softDeletePreservesTagsGroupsAndPayloads()
+{
+    // Links and payloads (blob, pin, use-count, OCR) must survive the round
+    // trip — that is what makes trash restore exact where re-insert was lossy.
+    ClipboardRecord image;
+    image.hash = QByteArrayLiteral("t-img");
+    image.type = ContentType::Image;
+    image.blobData = QByteArrayLiteral("PNGDATA");
+    image.hasBlob = true;
+    image.timestamp = 5000;
+    image.preview = QStringLiteral("Image 10x10");
+    image.sizeBytes = image.blobData.size();
+    image.sourceApp = QStringLiteral("spectacle");
+    const qint64 id = m_storage->insertOrUpdate(image);
+    QVERIFY(id > 0);
+    QVERIFY(m_storage->addTag(id, QStringLiteral("proj")));
+    QVERIFY(m_storage->setPinned(id, true));
+    QVERIFY(m_storage->setOcrText(id, QStringLiteral("recognized")));
+    QVERIFY(m_storage->touchEntry(id)); // use_count 1, timestamp moves to now
+    BookmarkManager bookmarks(m_storage->database());
+    const qint64 gid = bookmarks.createGroup(QStringLiteral("Work"));
+    QVERIFY(gid != 0);
+    QVERIFY(bookmarks.assignEntry(id, gid));
+
+    ClipboardRecord before;
+    QVERIFY(m_storage->fetchFull(id, &before));
+    QCOMPARE(m_storage->softDeleteEntries({id}), QList<qint64>({id}));
+    QCOMPARE(m_storage->restoreTrashEntries({id}), 1);
+
+    ClipboardRecord after;
+    QVERIFY(m_storage->fetchFull(id, &after));
+    QCOMPARE(after.blobData, QByteArrayLiteral("PNGDATA"));
+    QVERIFY(after.hasBlob);
+    QVERIFY(after.pinned);
+    QCOMPARE(after.useCount, before.useCount);
+    QCOMPARE(after.timestamp, before.timestamp);
+    QCOMPARE(after.ocrText, QStringLiteral("recognized"));
+    QCOMPARE(after.sourceApp, QStringLiteral("spectacle"));
+    QCOMPARE(m_storage->tagsForEntry(id), QStringList({QStringLiteral("proj")}));
+    QCOMPARE(bookmarks.groupIdsForEntry(id), QList<qint64>({gid}));
+}
+
+void TestStorage::restoreDropsRowsWhoseHashWentLive()
+{
+    // Delete A, re-capture the same content (dedup cannot see the trashed
+    // row, so this is a new id), then Undo: the stale trash row is dropped
+    // instead of duplicating history — the content is already present.
+    const qint64 oldId =
+        m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("t-dup"), QStringLiteral("same"), 1000));
+    QCOMPARE(m_storage->softDeleteEntries({oldId}), QList<qint64>({oldId}));
+    const qint64 newId =
+        m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("t-dup"), QStringLiteral("same"), 2000));
+    QVERIFY(newId != oldId);
+    QCOMPARE(m_storage->restoreTrashEntries({oldId}), 0);
+    QCOMPARE(m_storage->stats().entryCount, qint64(1));
+    QCOMPARE(m_storage->trashCount(), 0);
+    ClipboardRecord live;
+    QVERIFY(m_storage->fetchFull(newId, &live));
+    QCOMPARE(live.textData, QStringLiteral("same"));
+}
+
+void TestStorage::purgeTrashRespectsAgeBound()
+{
+    const qint64 id =
+        m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("t-purge"), QStringLiteral("x"), 1000));
+    QCOMPARE(m_storage->softDeleteEntries({id}), QList<qint64>({id}));
+    QCOMPARE(m_storage->purgeTrash(0), 0); // trashed_ms is epoch-ms, never <= 0
+    QCOMPARE(m_storage->trashCount(), 1);
+    QCOMPARE(m_storage->purgeTrash(QDateTime::currentMSecsSinceEpoch() + 1000), 1);
+    QCOMPARE(m_storage->trashCount(), 0);
+    QCOMPARE(m_storage->restoreTrashEntries({id}), 0); // purged: nothing to restore
+    QCOMPARE(m_storage->stats().entryCount, qint64(0));
+}
+
+void TestStorage::softClearHistoryKeepsPinned()
+{
+    m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("t-c1"), QStringLiteral("one"), 1000));
+    m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("t-c2"), QStringLiteral("two"), 2000));
+    const qint64 pinnedId =
+        m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("t-c3"), QStringLiteral("three"), 3000));
+    QVERIFY(m_storage->setPinned(pinnedId, true));
+
+    const QList<qint64> trashed = m_storage->softClearHistory(false);
+    QCOMPARE(trashed.size(), 2);
+    QVERIFY(!trashed.contains(pinnedId));
+    QCOMPARE(m_storage->stats().entryCount, qint64(1));
+    QCOMPARE(m_storage->trashCount(), 2);
+    QCOMPARE(m_storage->restoreTrashEntries(trashed), 2);
+    QCOMPARE(m_storage->stats().entryCount, qint64(3));
+}
+
+void TestStorage::expireEntriesToTrashSweepsRestorably()
+{
+    // The scheduler's variant: victims leave history but stay restorable,
+    // while the hard expireEntries path is unchanged for its callers.
+    const qint64 oldId =
+        m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("t-old"), QStringLiteral("old"), 1000));
+    m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("t-new"), QStringLiteral("new"),
+                                         QDateTime::currentMSecsSinceEpoch()));
+    const QList<qint64> swept = m_storage->expireEntriesToTrash(50000, -1, QString(), true);
+    QCOMPARE(swept, QList<qint64>({oldId}));
+    QCOMPARE(m_storage->stats().entryCount, qint64(1));
+    ClipboardRecord gone;
+    QVERIFY(!m_storage->fetchFull(oldId, &gone));
+    QCOMPARE(m_storage->restoreTrashEntries(swept), 1);
+    QCOMPARE(m_storage->stats().entryCount, qint64(2));
+    QVERIFY(m_storage->fetchFull(oldId, &gone));
+}
+
+void TestStorage::trashEmitsViewSignals()
+{
+    // Views stay live: precise removal on delete, full reload on restore.
+    const qint64 id =
+        m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("t-sig"), QStringLiteral("s"), 1000));
+    QSignalSpy removedSpy(m_storage, &StorageManager::entriesRemoved);
+    QCOMPARE(m_storage->softDeleteEntries({id}), QList<qint64>({id}));
+    QCOMPARE(removedSpy.count(), 1);
+    QCOMPARE(removedSpy.at(0).at(0).value<QList<qint64>>(), QList<qint64>({id}));
+
+    QSignalSpy resetSpy(m_storage, &StorageManager::storageReset);
+    QCOMPARE(m_storage->restoreTrashEntries({id}), 1);
+    QCOMPARE(resetSpy.count(), 1);
+}
+
+void TestStorage::legacyDatabaseGainsTrashTables()
+{
+    // Additive migration: a database written before the trash tables existed
+    // gains them on open, and soft-delete works on it right away.
+    const QString path = m_dir.filePath(QStringLiteral("legacy.db"));
+    delete m_storage;
+    m_storage = nullptr;
+    {
+        StorageManager first(path);
+        QVERIFY(first.insertOrUpdate(makeRecord(QByteArrayLiteral("t-leg"), QStringLiteral("l"), 1000))
+                > 0);
+    } // closed: connection released with the instance
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                    QStringLiteral("legacy-drop"));
+        db.setDatabaseName(path);
+        QVERIFY(db.open());
+        QSqlQuery query(db);
+        QVERIFY(query.exec(QStringLiteral("DROP TABLE IF EXISTS trash_entry_tags")));
+        QVERIFY(query.exec(QStringLiteral("DROP TABLE IF EXISTS trash_entry_groups")));
+        QVERIFY(query.exec(QStringLiteral("DROP TABLE IF EXISTS trash_entries")));
+        db.close();
+        db = QSqlDatabase(); // release the handle before removing the connection
+        QSqlDatabase::removeDatabase(QStringLiteral("legacy-drop"));
+    }
+    m_storage = new StorageManager(path);
+    QCOMPARE(m_storage->stats().entryCount, qint64(1)); // legacy rows intact
+    bool hasMore = false;
+    const auto page = m_storage->fetchPage(FilterSpec{}, {}, 10, &hasMore);
+    QVERIFY(!page.isEmpty());
+    QCOMPARE(m_storage->softDeleteEntries({page.first().id}), QList<qint64>({page.first().id}));
+    QCOMPARE(m_storage->trashCount(), 1);
+    QCOMPARE(m_storage->restoreTrashEntries({page.first().id}), 1);
+    QCOMPARE(m_storage->stats().entryCount, qint64(1));
 }
 
 QTEST_GUILESS_MAIN(TestStorage)

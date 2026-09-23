@@ -53,6 +53,27 @@ public:
     // Returns the number of deleted rows.
     int expireEntries(qint64 olderThanMs, int contentType,
                       const QString &sourceAppWildcard, bool keepPinned = true);
+    // U11 soft-delete buffer (trash tables, additive schema): moves rows (+
+    // their tag/group links) out of history while preserving ids, timestamps,
+    // use-counts and pins, so Undo restores exactly instead of re-inserting
+    // as new rows. Trash is invisible to history queries, stats, dedup and
+    // caps; rows older than the retention bound are purged on the next
+    // soft-delete and at open. Emits entriesRemoved(ids) like removeEntries.
+    // Returns the trashed ids (unknown ids are skipped).
+    QList<qint64> softDeleteEntries(const QList<qint64> &ids);
+    // Soft clear-history variant behind MainWindow::clearHistory's Undo toast.
+    QList<qint64> softClearHistory(bool includePinned);
+    // Expiry variant behind ExpireScheduler (hard expireEntries stays for its
+    // tests and callers that want immediate deletion).
+    QList<qint64> expireEntriesToTrash(qint64 olderThanMs, int contentType,
+                                       const QString &sourceAppWildcard, bool keepPinned = true);
+    // Restores exactly the given trash ids. Rows whose hash went live again
+    // are dropped instead of duplicated (their content is already present).
+    // Emits storageReset() when anything was restored. Returns restored count.
+    int restoreTrashEntries(const QList<qint64> &ids);
+    // Hard-deletes trash rows with trashed_ms <= olderThanMs. Returns count.
+    int purgeTrash(qint64 olderThanMs);
+    int trashCount() const;
 
     // Opens an SQLCipher database: the key must be applied before the first
     // statement, so the constructor skips schema setup when the file is

@@ -43,6 +43,9 @@ public:
     void applySavedSearch(const FilterSpec &filter);
     void openSettings();
     void clearHistory();
+    // U11 expire-sweep undo (called by ApplicationContext): toast restoring
+    // exactly the swept ids.
+    void showExpiredToast(int count, const QList<qint64> &trashedIds);
     // Palette ">export [format]": opens the export dialog, preselected
     // ("images" opens the image-only folder flow).
     void exportHistoryToFormat(const QString &format);
@@ -95,7 +98,7 @@ private:
     void runImageExport(ExportImportManager::ImageExportRequest::Scope initialScope,
                         const QList<qint64> &selectedIds);
     void bulkDelete();
-    void showUndoToast(const QString &message, const QVector<ClipboardRecord> &deleted);
+    void showUndoToast(const QString &message, const std::function<void()> &onUndo);
     void updateEmptyState(); // "no entries yet" vs "nothing matches this filter"
     void onSelectionChanged();
     void onActivated(const QModelIndex &index);

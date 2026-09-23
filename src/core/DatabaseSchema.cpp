@@ -282,6 +282,41 @@ bool ensure(QSqlDatabase &db)
         // Queries match names with COLLATE NOCASE; enforce the same uniqueness.
         QStringLiteral(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_searches_name ON saved_searches(name COLLATE NOCASE)"),
+        // U11 soft-delete buffer: trashed rows keep their original ids
+        // (AUTOINCREMENT never reuses them) plus tag/group links, so Undo
+        // restores exactly instead of re-inserting as new rows. Trash is
+        // invisible to history queries, stats, dedup and caps; stale rows are
+        // purged by age (see StorageManager::purgeTrash). No foreign keys by
+        // design: trash must survive the deletion of referenced groups/tags,
+        // and restore re-links with OR IGNORE.
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS trash_entries ("
+            " id INTEGER PRIMARY KEY,"
+            " timestamp_ms INTEGER NOT NULL,"
+            " content_type INTEGER NOT NULL,"
+            " content_hash TEXT NOT NULL,"
+            " text_data TEXT,"
+            " blob_data BLOB,"
+            " preview TEXT,"
+            " size_bytes INTEGER NOT NULL DEFAULT 0,"
+            " pinned INTEGER NOT NULL DEFAULT 0,"
+            " sensitive INTEGER NOT NULL DEFAULT 0,"
+            " use_count INTEGER NOT NULL DEFAULT 0,"
+            " source_app TEXT,"
+            " source_window TEXT,"
+            " ocr_text TEXT,"
+            " trashed_ms INTEGER NOT NULL)"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_trash_entries_time ON trash_entries(trashed_ms)"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS trash_entry_tags ("
+            " entry_id INTEGER NOT NULL,"
+            " tag_id INTEGER NOT NULL,"
+            " PRIMARY KEY(entry_id, tag_id))"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS trash_entry_groups ("
+            " entry_id INTEGER NOT NULL,"
+            " group_id INTEGER NOT NULL,"
+            " PRIMARY KEY(entry_id, group_id))"),
     };
 
     for (const QString &statement : statements) {

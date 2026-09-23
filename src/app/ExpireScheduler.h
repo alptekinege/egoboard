@@ -10,14 +10,19 @@ class StorageManager;
 
 // Applies SettingsManager::expireRules() on a schedule — at startup, every
 // 15 minutes, and (debounced) shortly after clipboard captures — using the
-// core StorageManager::expireEntries() SQL. Emits expired(count) when rows
-// were deleted so the shell can show a notification.
+// core StorageManager::expireEntriesToTrash() SQL, so swept rows sit in the
+// U11 trash buffer (exact-ID restore) instead of vanishing. Emits
+// expired(count) when rows were swept so the shell can show an undoable
+// notification.
 class ExpireScheduler : public QObject {
     Q_OBJECT
 public:
     ExpireScheduler(StorageManager *storage, SettingsManager *settings, QObject *parent = nullptr);
 
     void start();
+    // Victims of the last sweep (cleared on take); the expired() handler uses
+    // these for the Undo action. Synchronous emission keeps this race-free.
+    QList<qint64> takeLastExpiredIds();
 
 public slots:
     void applyRules();
@@ -30,6 +35,7 @@ signals:
 private:
     StorageManager *m_storage = nullptr;
     SettingsManager *m_settings = nullptr;
+    QList<qint64> m_lastExpiredIds;
     QTimer m_timer;
     QTimer m_captureDebounce;
 };

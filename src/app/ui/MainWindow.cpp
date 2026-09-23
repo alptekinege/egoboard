@@ -1075,15 +1075,12 @@ void MainWindow::deleteSelected()
         ids.append(index.data(ClipboardListModel::IdRole).toLongLong());
     if (ids.isEmpty())
         return;
-    QVector<ClipboardRecord> deleted;
-    deleted.reserve(ids.size());
-    for (const qint64 id : ids) {
-        ClipboardRecord full;
-        if (m_ctx.storage()->fetchFull(id, &full))
-            deleted.append(full);
-    }
-    m_ctx.storage()->removeEntries(ids);
-    showUndoToast(tr("%n entry(ies) deleted", nullptr, ids.size()), deleted);
+    // U11 trash: no payload snapshots — ids are preserved for an exact Undo.
+    const QList<qint64> trashed = m_ctx.storage()->softDeleteEntries(ids);
+    if (trashed.isEmpty())
+        return;
+    showUndoToast(tr("%n entry(ies) deleted", nullptr, trashed.size()),
+                  [this, trashed] { m_ctx.storage()->restoreTrashEntries(trashed); });
 }
 
 void MainWindow::deleteFiltered()
@@ -1103,15 +1100,11 @@ void MainWindow::deleteFiltered()
     ids.reserve(all.size());
     for (const ClipboardRecord &record : all)
         ids.append(record.id);
-    QVector<ClipboardRecord> deleted;
-    deleted.reserve(all.size());
-    for (const ClipboardRecord &record : all) {
-        ClipboardRecord full;
-        if (m_ctx.storage()->fetchFull(record.id, &full))
-            deleted.append(full);
-    }
-    m_ctx.storage()->removeEntries(ids);
-    showUndoToast(tr("%n entry(ies) deleted", nullptr, ids.size()), deleted);
+    const QList<qint64> trashed = m_ctx.storage()->softDeleteEntries(ids);
+    if (trashed.isEmpty())
+        return;
+    showUndoToast(tr("%n entry(ies) deleted", nullptr, trashed.size()),
+                  [this, trashed] { m_ctx.storage()->restoreTrashEntries(trashed); });
 }
 
 void MainWindow::togglePinSelected()
@@ -1309,18 +1302,13 @@ void MainWindow::clearHistory()
     box.setCheckBox(includePinned);
     if (box.exec() != QMessageBox::Yes)
         return;
-    // Snapshot for Undo before clearing (bounded: full payloads, may be large
-    // but clear-history is explicit and rare).
-    const QVector<ClipboardRecord> deleted =
-        m_ctx.storage()->fetchAllFull(FilterSpec{});
-    const int removed = m_ctx.storage()->clearHistory(includePinned->isChecked());
-    QVector<ClipboardRecord> restorable;
-    for (const ClipboardRecord &record : deleted) {
-        if (!includePinned->isChecked() && record.pinned)
-            continue;
-        restorable.append(record);
-    }
-    showUndoToast(tr("%n entry(ies) deleted", nullptr, removed), restorable);
+    // U11 trash: exact-ID restore replaces the full-payload snapshot (which
+    // spiked memory on large histories).
+    const QList<qint64> trashed = m_ctx.storage()->softClearHistory(includePinned->isChecked());
+    if (trashed.isEmpty())
+        return;
+    showUndoToast(tr("%n entry(ies) deleted", nullptr, trashed.size()),
+                  [this, trashed] { m_ctx.storage()->restoreTrashEntries(trashed); });
 }
 
 void MainWindow::updateActionStates()
@@ -1526,36 +1514,33 @@ void MainWindow::bulkDelete()
     box.setDefaultButton(QMessageBox::Cancel);
     if (box.exec() != QMessageBox::Yes)
         return;
-    // Snapshot payloads for Undo before deleting.
-    QVector<ClipboardRecord> deleted;
-    deleted.reserve(ids.size());
-    for (const qint64 id : ids) {
-        ClipboardRecord full;
-        if (m_ctx.storage()->fetchFull(id, &full))
-            deleted.append(full);
-    }
-    m_ctx.storage()->removeEntries(ids);
-    showUndoToast(tr("%n entry(ies) deleted", nullptr, ids.size()), deleted);
+    const QList<qint64> trashed = m_ctx.storage()->softDeleteEntries(ids);
+    if (trashed.isEmpty())
+        return;
+    showUndoToast(tr("%n entry(ies) deleted", nullptr, trashed.size()),
+                  [this, trashed] { m_ctx.storage()->restoreTrashEntries(trashed); });
 }
 
-void MainWindow::showUndoToast(const QString &message, const QVector<ClipboardRecord> &deleted)
+void MainWindow::showUndoToast(const QString &message, const std::function<void()> &onUndo)
 {
-    QWidget *toast = UiHelpers::makeToast(
-        message, this, tr("Undo"), [this, deleted] {
-            m_ctx.storage()->beginBulk();
-            for (const ClipboardRecord &record : deleted) {
-                ClipboardRecord copy = record;
-                copy.id = 0; // re-insert as new rows (ids are not reused)
-                m_ctx.storage()->insertOrUpdate(copy);
-            }
-            m_ctx.storage()->endBulk();
-        });
+    QWidget *toast = UiHelpers::makeToast(message, this, tr("Undo"), [this, onUndo] {
+        if (onUndo)
+            onUndo();
+    });
     toast->setAttribute(Qt::WA_DeleteOnClose, false); // makeToast owns lifetime
     const QPoint at(width() / 2 - toast->sizeHint().width() / 2,
                     height() - toast->sizeHint().height() - DesignTokens::ToastMargin * 3);
     toast->move(mapToGlobal(at));
     UiHelpers::animate(toast, UiHelpers::MotionKind::SlideUp);
     toast->show();
+}
+
+void MainWindow::showExpiredToast(int count, const QList<qint64> &trashedIds)
+{
+    if (count <= 0 || trashedIds.isEmpty())
+        return;
+    showUndoToast(tr("%n entry(ies) expired", nullptr, count),
+                  [this, trashedIds] { m_ctx.storage()->restoreTrashEntries(trashedIds); });
 }
 
 void MainWindow::toggleVisibility()

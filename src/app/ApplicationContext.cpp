@@ -283,10 +283,15 @@ void ApplicationContext::start()
             &ExpireScheduler::scheduleAfterCapture);
     connect(m_dataControl, &WlrDataControlHelper::captured, m_expire,
             &ExpireScheduler::scheduleAfterCapture);
-    connect(m_expire, &ExpireScheduler::expired, this, [](int count) {
-        KNotification::event(QStringLiteral("entriesExpired"), QObject::tr("Auto-expire"),
-                             QObject::tr("%n old entrie(s) removed by your expire rules.", "", count),
-                             QStringLiteral("document-edit"), KNotification::CloseOnTimeout);
+    connect(m_expire, &ExpireScheduler::expired, this, [this](int count) {
+        // U11 expire-sweep undo: a toast restoring exactly the swept ids while
+        // the window is up; the background notification when it is not.
+        if (m_window && m_window->isVisible())
+            m_window->showExpiredToast(count, m_expire->takeLastExpiredIds());
+        else
+            KNotification::event(QStringLiteral("entriesExpired"), QObject::tr("Auto-expire"),
+                                 QObject::tr("%n old entrie(s) removed by your expire rules.", "", count),
+                                 QStringLiteral("document-edit"), KNotification::CloseOnTimeout);
     });
     m_expire->start();
     connect(m_settings, &SettingsManager::changed, this, [this] {
