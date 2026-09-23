@@ -57,6 +57,16 @@ QGraphicsDropShadowEffect *cardShadow(QObject *parent, bool elevated);
 void styleItemList(QListWidget *list);
 void styleItemList(QListView *list);
 
+// U14 settings search: harvest the visible texts of one settings page
+// (labels, buttons, group titles, placeholders, tooltips — HTML stripped) so
+// filtering needs no hand-kept keyword table and follows translations.
+QStringList collectSettingTexts(const QWidget *page);
+// Every whitespace-separated query token must occur somewhere in texts
+// (case-insensitive); an empty query matches everything (show all).
+bool settingQueryMatches(const QStringList &texts, const QString &query);
+// First page index whose texts match, or -1 (empty query: -1, no filtering).
+int firstSettingMatchRow(const QList<QStringList> &pages, const QString &query);
+
 // One active-filter chip (U6): horizontal pill with label + close button. The
 // close callback fires on click; the whole chip is keyboard-focusable with an
 // accessible name. Palette- and font-relative, no fixed point size.

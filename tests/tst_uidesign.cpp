@@ -24,10 +24,13 @@
 
 #include <QApplication>
 #include <QBuffer>
+#include <QCheckBox>
 #include <QDateTime>
 #include <QFontMetrics>
 #include <QGraphicsOpacityEffect>
+#include <QGroupBox>
 #include <QImage>
+#include <QLabel>
 #include <QLineEdit>
 #include <QPalette>
 #include <QPointer>
@@ -35,6 +38,7 @@
 #include <QPushButton>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QVBoxLayout>
 #include <QVector>
 #include <QWidget>
 #include <QtConcurrent>
@@ -108,6 +112,9 @@ private slots:
     void emptyStateActionFiresOnClick();
     void ocrMetaSuffixCoversAvailability();
     void groupsEmptyStateOffersNewGroup();
+    void settingQueryMatchingRequiresAllTokens();
+    void settingTextHarvestFindsControlTexts();
+    void firstSettingMatchRowFindsFirstHit();
     void timelineCollapsesBelowItsWidth();
     void dayHeaderCoversTodayAndYesterday();
     void delegateRespectsRowExtras();
@@ -716,6 +723,67 @@ void TestUiDesign::groupsEmptyStateOffersNewGroup()
     QVERIFY(bookmarks.createGroup(QStringLiteral("Work")) != 0);
     QTest::qWait(100);
     QVERIFY(!action->isVisible());
+}
+
+void TestUiDesign::settingQueryMatchingRequiresAllTokens()
+{
+    // U14 search: order-free, case-insensitive, every token must occur.
+    const QStringList texts{QStringLiteral("Backup folder daily JSON"),
+                            QStringLiteral("Restore from file")};
+    QVERIFY(UiHelpers::settingQueryMatches(texts, QStringLiteral("backup")));
+    QVERIFY(UiHelpers::settingQueryMatches(texts, QStringLiteral("daily backup")));
+    QVERIFY(UiHelpers::settingQueryMatches(texts, QStringLiteral("BACKUP")));
+    QVERIFY(UiHelpers::settingQueryMatches(texts, QStringLiteral("  backup   daily  ")));
+    QVERIFY(!UiHelpers::settingQueryMatches(texts, QStringLiteral("backup missing")));
+    QVERIFY(!UiHelpers::settingQueryMatches(texts, QStringLiteral("tesseract")));
+    QVERIFY(UiHelpers::settingQueryMatches(texts, QString())); // empty shows all
+}
+
+void TestUiDesign::settingTextHarvestFindsControlTexts()
+{
+    // U14 search harvest: labels, buttons, group titles, placeholders and
+    // tooltips — HTML stripped so tags never match.
+    QWidget page;
+    auto *pageLayout = new QVBoxLayout(&page);
+    auto *box = new QGroupBox(QStringLiteral("OCR — image text"), &page);
+    pageLayout->addWidget(box);
+    auto *layout = new QVBoxLayout(box);
+    auto *label = new QLabel(QStringLiteral(R"(Install <code>tesseract</code> first)"), box);
+    layout->addWidget(label);
+    auto *check = new QCheckBox(QStringLiteral("Enable OCR"), box);
+    layout->addWidget(check);
+    auto *button = new QPushButton(QStringLiteral("Check now"), box);
+    button->setToolTip(QStringLiteral("Probe the PATH"));
+    layout->addWidget(button);
+    auto *edit = new QLineEdit(box);
+    edit->setPlaceholderText(QStringLiteral("Language code"));
+    layout->addWidget(edit);
+
+    const QStringList texts = UiHelpers::collectSettingTexts(&page);
+    QVERIFY(texts.contains(QStringLiteral("OCR — image text")));
+    QVERIFY(texts.contains(QStringLiteral("Install tesseract first"))); // tags stripped
+    QVERIFY(!texts.contains(QStringLiteral("Install <code>tesseract</code> first")));
+    QVERIFY(texts.contains(QStringLiteral("Enable OCR")));
+    QVERIFY(texts.contains(QStringLiteral("Check now")));
+    QVERIFY(texts.contains(QStringLiteral("Probe the PATH")));
+    QVERIFY(texts.contains(QStringLiteral("Language code")));
+    QVERIFY(UiHelpers::collectSettingTexts(nullptr).isEmpty());
+}
+
+void TestUiDesign::firstSettingMatchRowFindsFirstHit()
+{
+    // U14 search filtering: first matching page wins; empty/none give -1.
+    const QList<QStringList> pages{
+        QStringList{QStringLiteral("General theme")},
+        QStringList{QStringLiteral("Storage backup folder")},
+        QStringList{QStringLiteral("Diagnostics backup log")},
+    };
+    QCOMPARE(UiHelpers::firstSettingMatchRow(pages, QStringLiteral("backup")), 1);
+    QCOMPARE(UiHelpers::firstSettingMatchRow(pages, QStringLiteral("theme")), 0);
+    QCOMPARE(UiHelpers::firstSettingMatchRow(pages, QStringLiteral("missing")), -1);
+    QCOMPARE(UiHelpers::firstSettingMatchRow(pages, QString()), -1);
+    QCOMPARE(UiHelpers::firstSettingMatchRow(pages, QStringLiteral("   ")), -1);
+    QCOMPARE(UiHelpers::firstSettingMatchRow({}, QStringLiteral("backup")), -1);
 }
 
 void TestUiDesign::timelineCollapsesBelowItsWidth()

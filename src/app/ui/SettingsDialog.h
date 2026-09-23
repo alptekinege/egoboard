@@ -4,6 +4,8 @@
 #include "ExpirePolicy.h"
 
 #include <QDialog>
+#include <QFont>
+#include <QHash>
 #include <QList>
 #include <QPointer>
 class ApplicationContext;
@@ -18,6 +20,7 @@ class QPushButton;
 class QProgressDialog;
 class QRadioButton;
 class QSpinBox;
+class QStackedWidget;
 class QTextBrowser;
 class QVBoxLayout;
 
@@ -60,6 +63,10 @@ private:
     // single worker op), closed by the finished handlers below.
     void showIoProgress(const QString &label);
     void closeIoProgress();
+    // U14 settings search: filter the sidebar to matching pages and bold the
+    // matching knobs on the visible page (fonts restored on every keystroke).
+    void applySettingsSearch();
+    void clearSettingsSearchHighlight();
     // Crash-report toolkit (U20): same schema as the CLI modes.
     void createCrashReport();
     void openCrashReport();
@@ -77,6 +84,16 @@ private:
     // QListWidget emits itemChanged during insertion; without this guard the
     // itemChanged handlers below re-enter populate*() unboundedly (stack overflow).
     bool m_populatingLists = false;
+    // U14 settings search widgets (sidebar/stack move here from ctor locals so
+    // the filter can drive them) plus per-widget original fonts for highlight
+    // restore and the pre-search row to return to on clear.
+    QListWidget *m_sidebar = nullptr;
+    QStackedWidget *m_stack = nullptr;
+    QLineEdit *m_search = nullptr;
+    QLabel *m_searchCount = nullptr;
+    QHash<QWidget *, QFont> m_searchFonts;
+    bool m_searching = false;
+    int m_searchRestoreRow = 0;
 
     // General
     QCheckBox *m_startVisible = nullptr;

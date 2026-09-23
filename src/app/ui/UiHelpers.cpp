@@ -3,6 +3,7 @@
 #include "DesignTokens.h"
 #include "../TextAppearance.h"
 
+#include <QAbstractButton>
 #include <QAbstractItemView>
 #include <QAccessible>
 #include <QApplication>
@@ -10,6 +11,7 @@
 #include <QEvent>
 #include <QFont>
 #include <QFrame>
+#include <QGroupBox>
 #include <QGraphicsDropShadowEffect>
 #include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
@@ -21,6 +23,7 @@
 #include <QParallelAnimationGroup>
 #include <QPropertyAnimation>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -112,6 +115,72 @@ QString UiHelpers::ocrMetaSuffix(bool hasBlob, const QString &ocrText, bool tess
                          "images searchable</i>");
     return QCoreApplication::translate("UiHelpers",
                                        "<br/><i>OCR: processing… or no text found</i>");
+}
+
+namespace {
+// Rich-text labels carry tags; matching runs on the visible words.
+QString strippedVisibleText(const QString &text)
+{
+    static const QRegularExpression tags(QStringLiteral("<[^>]*>"));
+    QString out = text;
+    out.remove(tags);
+    return out;
+}
+} // namespace
+
+QStringList UiHelpers::collectSettingTexts(const QWidget *page)
+{
+    QStringList out;
+    if (!page)
+        return out;
+    const QList<QWidget *> widgets = page->findChildren<QWidget *>();
+    out.reserve(widgets.size() * 2);
+    for (QWidget *widget : widgets) {
+        if (auto *label = qobject_cast<QLabel *>(widget)) {
+            const QString text = strippedVisibleText(label->text());
+            if (!text.isEmpty())
+                out.append(text);
+        } else if (auto *button = qobject_cast<QAbstractButton *>(widget)) {
+            if (!button->text().isEmpty())
+                out.append(strippedVisibleText(button->text()));
+        } else if (auto *box = qobject_cast<QGroupBox *>(widget)) {
+            if (!box->title().isEmpty())
+                out.append(strippedVisibleText(box->title()));
+        } else if (auto *edit = qobject_cast<QLineEdit *>(widget)) {
+            if (!edit->placeholderText().isEmpty())
+                out.append(edit->placeholderText());
+        }
+        if (!widget->toolTip().isEmpty())
+            out.append(widget->toolTip());
+        if (!widget->accessibleName().isEmpty())
+            out.append(widget->accessibleName());
+    }
+    return out;
+}
+
+bool UiHelpers::settingQueryMatches(const QStringList &texts, const QString &query)
+{
+    const QStringList tokens =
+        query.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    if (tokens.isEmpty())
+        return true;
+    const QString joined = texts.join(QLatin1Char('\n'));
+    for (const QString &token : tokens) {
+        if (!joined.contains(token, Qt::CaseInsensitive))
+            return false;
+    }
+    return true;
+}
+
+int UiHelpers::firstSettingMatchRow(const QList<QStringList> &pages, const QString &query)
+{
+    if (query.trimmed().isEmpty())
+        return -1;
+    for (int i = 0; i < pages.size(); ++i) {
+        if (settingQueryMatches(pages.at(i), query))
+            return i;
+    }
+    return -1;
 }
 
 void UiHelpers::styleSearchField(QLineEdit *field)

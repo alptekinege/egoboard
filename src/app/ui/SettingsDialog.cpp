@@ -27,6 +27,7 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QApplication>
+#include <QAbstractButton>
 #include <QIcon>
 #include <QInputDialog>
 #include <QJsonDocument>
@@ -45,6 +46,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QFont>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QLabel>
@@ -175,11 +177,28 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
 
     auto *layout = new QVBoxLayout(this);
 
+    // U14 search box: filters the sidebar pages below; matching knobs on the
+    // visible page are bolded. Same search-field look as the main window.
+    auto *searchRow = new QHBoxLayout();
+    searchRow->setContentsMargins(0, 0, 0, 0);
+    m_search = new QLineEdit(this);
+    m_search->setPlaceholderText(tr("Search settings…"));
+    m_search->setClearButtonEnabled(true);
+    m_search->setAccessibleName(tr("Search settings"));
+    m_search->setAccessibleDescription(
+        tr("Filters the settings pages; matching options are shown in bold."));
+    UiHelpers::styleSearchField(m_search);
+    searchRow->addWidget(m_search, 1);
+    m_searchCount = UiHelpers::makeHint(QString(), this, /*richText=*/false);
+    searchRow->addWidget(m_searchCount);
+    layout->addLayout(searchRow);
+    connect(m_search, &QLineEdit::textChanged, this, &SettingsDialog::applySettingsSearch);
+
     // Sidebar + page stack: icon-on-top, label-below items stacked vertically
     // (settings sidebar style) instead of a rotated west tab column.
     auto *content = new QHBoxLayout();
     content->setContentsMargins(0, 0, 0, 0);
-    auto *sidebar = new QListWidget(this);
+    auto *sidebar = m_sidebar = new QListWidget(this);
     sidebar->setViewMode(QListView::IconMode);
     sidebar->setFlow(QListView::TopToBottom);
     sidebar->setMovement(QListView::Static);
@@ -194,11 +213,11 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
     sidebar->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     UiHelpers::styleItemList(sidebar);
 
-    auto *stack = new QStackedWidget(this);
-    const auto addPage = [&sidebar, &stack](const QString &iconName, const QString &label,
-                                            QWidget *page) {
-        new QListWidgetItem(QIcon::fromTheme(iconName), label, sidebar);
-        stack->addWidget(page);
+    auto *stack = m_stack = new QStackedWidget(this);
+    const auto addPage = [this](const QString &iconName, const QString &label,
+                                QWidget *page) {
+        new QListWidgetItem(QIcon::fromTheme(iconName), label, m_sidebar);
+        m_stack->addWidget(page);
     };
     addPage(QStringLiteral("configure"), tr("General"), buildGeneralPage());
     addPage(QStringLiteral("edit-copy"), tr("Capture"), buildCapturePage());
@@ -243,6 +262,9 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
         populateTransformList();
         populateSnippetList();
         populateScriptList();
+        // Late-arriving list rows are searchable too: re-run an active filter.
+        if (m_search && !m_search->text().trimmed().isEmpty())
+            applySettingsSearch();
     });
     // App suggestions — deferred so open stays instant, but synchronous on the
     // GUI thread: StorageManager's connection is owned by the GUI thread and
@@ -1471,6 +1493,92 @@ void SettingsDialog::closeIoProgress()
         m_ioProgress->close();
         m_ioProgress->deleteLater();
         m_ioProgress = nullptr;
+    }
+}
+
+void SettingsDialog::clearSettingsSearchHighlight()
+{
+    for (auto it = m_searchFonts.constBegin(); it != m_searchFonts.constEnd(); ++it) {
+        if (QWidget *widget = it.key())
+            widget->setFont(it.value());
+    }
+    m_searchFonts.clear();
+}
+
+void SettingsDialog::applySettingsSearch()
+{
+    if (!m_sidebar || !m_stack || !m_search)
+        return;
+    const QString query = m_search->text();
+    clearSettingsSearchHighlight();
+    if (query.trimmed().isEmpty()) {
+        m_searching = false;
+        for (int i = 0; i < m_sidebar->count(); ++i)
+            m_sidebar->setRowHidden(i, false);
+        m_sidebar->setCurrentRow(qBound(0, m_searchRestoreRow, m_sidebar->count() - 1));
+        if (m_searchCount)
+            m_searchCount->clear();
+        return;
+    }
+    if (!m_searching) {
+        m_searchRestoreRow = m_sidebar->currentRow();
+        m_searching = true;
+    }
+    // Per-page texts: the translated sidebar label plus every harvested knob
+    // text, so filtering follows translations with no keyword table.
+    QList<QStringList> pages;
+    pages.reserve(m_stack->count());
+    for (int i = 0; i < m_stack->count(); ++i) {
+        QStringList texts;
+        if (QListWidgetItem *item = m_sidebar->item(i))
+            texts.append(item->text());
+        texts += UiHelpers::collectSettingTexts(m_stack->widget(i));
+        pages.append(texts);
+    }
+    int visible = 0;
+    int first = -1;
+    for (int i = 0; i < pages.size(); ++i) {
+        const bool match = UiHelpers::settingQueryMatches(pages.at(i), query);
+        m_sidebar->setRowHidden(i, !match);
+        if (match) {
+            ++visible;
+            if (first < 0)
+                first = i;
+        }
+    }
+    if (first >= 0 && m_sidebar->isRowHidden(m_sidebar->currentRow()))
+        m_sidebar->setCurrentRow(first);
+    // Bold the matching knobs on the now-visible page. Bold changes no color,
+    // so every scheme keeps its contrast floors by construction.
+    if (QWidget *page = m_stack->currentWidget()) {
+        const QList<QWidget *> widgets = page->findChildren<QWidget *>();
+        for (QWidget *widget : widgets) {
+            const bool labelLike = qobject_cast<QLabel *>(widget) != nullptr
+                || qobject_cast<QAbstractButton *>(widget) != nullptr
+                || qobject_cast<QGroupBox *>(widget) != nullptr;
+            if (!labelLike)
+                continue;
+            QStringList own;
+            if (auto *label = qobject_cast<QLabel *>(widget))
+                own.append(label->text());
+            else if (auto *button = qobject_cast<QAbstractButton *>(widget))
+                own << button->text() << button->toolTip();
+            else if (auto *box = qobject_cast<QGroupBox *>(widget))
+                own << box->title() << box->toolTip();
+            if (!UiHelpers::settingQueryMatches(own, query))
+                continue;
+            if (!m_searchFonts.contains(widget))
+                m_searchFonts.insert(widget, widget->font());
+            QFont bold = widget->font();
+            bold.setWeight(QFont::DemiBold);
+            widget->setFont(bold);
+        }
+    }
+    if (m_searchCount) {
+        if (visible == 0)
+            m_searchCount->setText(tr("No matching settings"));
+        else
+            m_searchCount->setText(tr("%1 of %2 pages").arg(visible).arg(pages.size()));
     }
 }
 
