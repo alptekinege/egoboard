@@ -521,6 +521,20 @@ QWidget *SettingsDialog::buildGeneralPage()
     pastingLayout->addWidget(makeHint(tr("Plain-text paste affects rich text (HTML) entries — images and file copies are unchanged. The stored entry keeps its original formatting either way."), pastingBox));
     layout->addWidget(pastingBox);
 
+    auto *generalResetRow = new QHBoxLayout();
+    auto *generalResetBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-undo")),
+                                            tr("Reset this page to defaults"), page);
+    generalResetBtn->setToolTip(tr("Restores startup, tray, appearance and pasting options to their defaults. History data is kept."));
+    generalResetBtn->setAccessibleName(tr("Reset General page to defaults"));
+    generalResetBtn->setAccessibleDescription(
+        tr("Restores startup, tray, appearance and pasting options to their defaults."));
+    connect(generalResetBtn, &QPushButton::clicked, this, [this] {
+        resetPageToDefaults(SettingsManager::SettingsPage::General);
+    });
+    generalResetRow->addWidget(generalResetBtn);
+    generalResetRow->addStretch(1);
+    layout->addLayout(generalResetRow);
+
     layout->addStretch(1);
     return makeScrollable(page);
 }
@@ -654,6 +668,21 @@ QWidget *SettingsDialog::buildCapturePage()
     });
 
     layout->addWidget(appsBox);
+
+    auto *captureResetRow = new QHBoxLayout();
+    auto *captureResetBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-undo")),
+                                            tr("Reset this page to defaults"), page);
+    captureResetBtn->setToolTip(tr("Restores capture types, limits and ignored apps to their defaults. Existing history is kept."));
+    captureResetBtn->setAccessibleName(tr("Reset Capture page to defaults"));
+    captureResetBtn->setAccessibleDescription(
+        tr("Restores capture types, limits and ignored apps to their defaults."));
+    connect(captureResetBtn, &QPushButton::clicked, this, [this] {
+        resetPageToDefaults(SettingsManager::SettingsPage::Capture);
+    });
+    captureResetRow->addWidget(captureResetBtn);
+    captureResetRow->addStretch(1);
+    layout->addLayout(captureResetRow);
+
     layout->addStretch(1);
     return makeScrollable(page);
 }
@@ -787,6 +816,20 @@ QWidget *SettingsDialog::buildPrivacyPage()
     });
     historyLayout->addWidget(encryptBox);
 
+    auto *privacyResetRow = new QHBoxLayout();
+    auto *privacyResetBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-undo")),
+                                            tr("Reset this page to defaults"), historyPage);
+    privacyResetBtn->setToolTip(tr("Restores sensitive-data handling to its defaults. The encryption checkbox is left untouched."));
+    privacyResetBtn->setAccessibleName(tr("Reset Privacy page to defaults"));
+    privacyResetBtn->setAccessibleDescription(
+        tr("Restores sensitive-data handling to its defaults without changing encryption."));
+    connect(privacyResetBtn, &QPushButton::clicked, this, [this] {
+        resetPageToDefaults(SettingsManager::SettingsPage::Privacy);
+    });
+    privacyResetRow->addWidget(privacyResetBtn);
+    privacyResetRow->addStretch(1);
+    historyLayout->addLayout(privacyResetRow);
+
     historyLayout->addStretch(1);
     return makeScrollable(historyPage);
 }
@@ -874,6 +917,20 @@ QWidget *SettingsDialog::buildHistoryPage()
         }
     });
     historyLayout->addWidget(expireBox);
+
+    auto *historyResetRow = new QHBoxLayout();
+    auto *historyResetBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-undo")),
+                                            tr("Reset this page to defaults"), historyPage);
+    historyResetBtn->setToolTip(tr("Restores retention limits and clears auto-expire rules. History entries are kept."));
+    historyResetBtn->setAccessibleName(tr("Reset History page to defaults"));
+    historyResetBtn->setAccessibleDescription(
+        tr("Restores retention limits and clears auto-expire rules."));
+    connect(historyResetBtn, &QPushButton::clicked, this, [this] {
+        resetPageToDefaults(SettingsManager::SettingsPage::History);
+    });
+    historyResetRow->addWidget(historyResetBtn);
+    historyResetRow->addStretch(1);
+    historyLayout->addLayout(historyResetRow);
 
     historyLayout->addStretch(1);
     return makeScrollable(historyPage);
@@ -1037,6 +1094,20 @@ QWidget *SettingsDialog::buildSearchPreviewPage()
         });
     });
     layout->addWidget(ocrBox);
+
+    auto *previewResetRow = new QHBoxLayout();
+    auto *previewResetBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-undo")),
+                                            tr("Reset this page to defaults"), page);
+    previewResetBtn->setToolTip(tr("Restores preview enrichments, timeline and OCR options to their defaults."));
+    previewResetBtn->setAccessibleName(tr("Reset Search and Preview page to defaults"));
+    previewResetBtn->setAccessibleDescription(
+        tr("Restores preview enrichments, timeline and OCR options to their defaults."));
+    connect(previewResetBtn, &QPushButton::clicked, this, [this] {
+        resetPageToDefaults(SettingsManager::SettingsPage::SearchPreview);
+    });
+    previewResetRow->addWidget(previewResetBtn);
+    previewResetRow->addStretch(1);
+    layout->addLayout(previewResetRow);
 
     layout->addStretch(1);
     return makeScrollable(page);
@@ -1436,6 +1507,21 @@ QWidget *SettingsDialog::buildStoragePage()
         refreshDiagnostics();
     });
     layout->addWidget(maintenanceBox);
+
+    auto *storageResetRow = new QHBoxLayout();
+    auto *storageResetBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-undo")),
+                                            tr("Reset this page to defaults"), page);
+    storageResetBtn->setToolTip(tr("Restores automatic-backup options to their defaults. History entries and backup files are kept."));
+    storageResetBtn->setAccessibleName(tr("Reset Storage page to defaults"));
+    storageResetBtn->setAccessibleDescription(
+        tr("Restores automatic-backup options to their defaults."));
+    connect(storageResetBtn, &QPushButton::clicked, this, [this] {
+        resetPageToDefaults(SettingsManager::SettingsPage::Storage);
+    });
+    storageResetRow->addWidget(storageResetBtn);
+    storageResetRow->addStretch(1);
+    layout->addLayout(storageResetRow);
+
     layout->addStretch(1);
     return makeScrollable(page);
 }
@@ -1747,6 +1833,21 @@ QWidget *SettingsDialog::buildAutomationPage()
     scriptLayout->addWidget(makeHint(tr("D-Bus: <code>org.egoboard.Egoboard</code> at <code>/org/egoboard/Egoboard</code> — <code>Search(query, limit)</code> for future KRunner plugin. Try: <code>qdbus org.egoboard.Egoboard /org/egoboard/Egoboard org.egoboard.Egoboard.Search hello 5</code>. Local session bus only, no network."), scriptBox));
 
     layout->addWidget(scriptBox);
+
+    auto *automationResetRow = new QHBoxLayout();
+    auto *automationResetBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-undo")),
+                                               tr("Reset this page to defaults"), page);
+    automationResetBtn->setToolTip(tr("Shows all transforms and re-enables all script actions. Snippets and script files are kept."));
+    automationResetBtn->setAccessibleName(tr("Reset Automation page to defaults"));
+    automationResetBtn->setAccessibleDescription(
+        tr("Shows all transforms and re-enables all script actions."));
+    connect(automationResetBtn, &QPushButton::clicked, this, [this] {
+        resetPageToDefaults(SettingsManager::SettingsPage::Automation);
+    });
+    automationResetRow->addWidget(automationResetBtn);
+    automationResetRow->addStretch(1);
+    layout->addLayout(automationResetRow);
+
     layout->addStretch(1);
     auto *scroll = new QScrollArea(this);
     scroll->setWidgetResizable(true);
@@ -2553,6 +2654,25 @@ void SettingsDialog::save()
         m_ctx.settings()->setPrivacyBlur(m_privacyBlur->isChecked());
     // transform/script hidden/disabled are saved immediately on toggle, but also save here
     refreshDiagnostics();
+}
+
+void SettingsDialog::resetPageToDefaults(SettingsManager::SettingsPage page)
+{
+    // The reset persists immediately (same as Import settings): Cancel cannot
+    // undo it, but history data and the encryption flag are never touched.
+    clearSettingsSearchHighlight();
+    m_ctx.settings()->resetPageToDefaults(page);
+    load();
+    if (page == SettingsManager::SettingsPage::General)
+        previewThemes(); // combos reloaded: re-apply the stored pair live
+    if (page == SettingsManager::SettingsPage::Automation) {
+        populateTransformList();
+        populateSnippetList();
+        populateScriptList();
+    }
+    refreshDiagnostics();
+    if (m_search && !m_search->text().trimmed().isEmpty())
+        applySettingsSearch();
 }
 
 void SettingsDialog::applyEncryptionSetting()

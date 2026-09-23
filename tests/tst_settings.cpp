@@ -2,6 +2,7 @@
 
 #include "ColorSchemeIndex.h"
 #include "IconThemeIndex.h"
+#include "SensitiveDataDetector.h"
 #include "SettingsManager.h"
 #include "SystemThemeWatcher.h"
 
@@ -68,6 +69,10 @@ private slots:
     void settingsJsonExcludesBackupSchedule();
     void settingsJsonPositionsRoundTrip();
     void settingsJsonImportEmitsSingleChanged();
+    void resetGeneralRestoresDefaults();
+    void resetCaptureRestoresDefaults();
+    void resetPrivacyHistorySearchAutomationStorage();
+    void resetPageEmitsSingleChangedAndPreservesSessionState();
 
 private:
     QTemporaryDir m_tempDir;
@@ -1127,6 +1132,207 @@ void TestSettings::settingsJsonImportEmitsSingleChanged()
     QVERIFY(!settings.captureText());
     QCOMPARE(settings.quickPasteCount(), 3);
     QCOMPARE(settings.trayMode(), QStringLiteral("hidden"));
+}
+
+void TestSettings::resetGeneralRestoresDefaults()
+{
+    // U14 per-page reset: General returns to defaults, other pages untouched.
+    QFile::remove(m_tempDir.path() + QStringLiteral("/egoboardrc"));
+    SettingsManager settings;
+    settings.setStartVisible(true);
+    settings.setHideOnFocusOut(true);
+    settings.setAutostartEnabled(true);
+    settings.setTrayMode(QStringLiteral("hidden"));
+    settings.setTrayPrimaryClick(SettingsManager::TrayClick::Nothing);
+    settings.setNotificationsEnabled(false);
+    settings.setCaptureSoundEnabled(false);
+    settings.setTheme(QStringLiteral("light"));
+    settings.setFontPointDelta(4);
+    settings.setTextColor(QStringLiteral("#123456"));
+    settings.setListDensity(QStringLiteral("compact"));
+    settings.setTimestampStyle(QStringLiteral("absolute"));
+    settings.setClock24h(false);
+    settings.setToolbarIconOnly(true);
+    settings.setReduceMotion(true);
+    settings.setGroupByDay(true);
+    settings.setShowEntryIndex(true);
+    settings.setShowUseCountBadge(true);
+    settings.setPrivacyBlur(true);
+    settings.setCloseAfterPaste(false);
+    settings.setBumpOnPaste(false);
+    settings.setPasteAsPlainText(true);
+    // A Capture knob to prove the reset is page-scoped.
+    settings.setCaptureText(false);
+
+    QSignalSpy spy(&settings, &SettingsManager::changed);
+    settings.resetPageToDefaults(SettingsManager::SettingsPage::General);
+    QCOMPARE(spy.count(), 1);
+
+    QVERIFY(!settings.startVisible());
+    QVERIFY(!settings.hideOnFocusOut());
+    QVERIFY(!settings.autostartEnabled());
+    QCOMPARE(settings.autostartCommand(), QString());
+    QVERIFY(settings.rememberWindowGeometry());
+    QVERIFY(!settings.restoreLastFilter());
+    QCOMPARE(settings.trayMode(), QStringLiteral("auto"));
+    QCOMPARE(settings.trayPrimaryClick(), SettingsManager::TrayClick::ShowWindow);
+    QCOMPARE(settings.traySecondaryClick(), SettingsManager::TrayClick::QuickPaste);
+    QVERIFY(settings.trayWheelCycles());
+    QVERIFY(settings.notificationsEnabled());
+    QVERIFY(settings.captureSoundEnabled());
+    QVERIFY(settings.captureNotificationEnabled());
+    QCOMPARE(settings.theme(), QStringLiteral("system"));
+    QCOMPARE(settings.iconTheme(), QStringLiteral("system"));
+    QCOMPARE(settings.fontPointDelta(), 0);
+    QCOMPARE(settings.textColor(), QString());
+    QCOMPARE(settings.dimTextColor(), QString());
+    QCOMPARE(settings.listDensity(), QStringLiteral("comfortable"));
+    QCOMPARE(settings.timestampStyle(), QStringLiteral("relative"));
+    QVERIFY(settings.clock24h());
+    QVERIFY(!settings.toolbarIconOnly());
+    QVERIFY(!settings.reduceMotion());
+    QVERIFY(!settings.groupByDay());
+    QVERIFY(!settings.showEntryIndex());
+    QVERIFY(!settings.showUseCountBadge());
+    QVERIFY(!settings.privacyBlur());
+    QVERIFY(settings.closeAfterPaste());
+    QVERIFY(settings.bumpOnPaste());
+    QVERIFY(!settings.pasteAsPlainText());
+    // Other pages are untouched.
+    QVERIFY(!settings.captureText());
+    settings.setAutostartEnabled(false);
+}
+
+void TestSettings::resetCaptureRestoresDefaults()
+{
+    // U14 per-page reset: Capture returns to defaults, General untouched.
+    QFile::remove(m_tempDir.path() + QStringLiteral("/egoboardrc"));
+    SettingsManager settings;
+    settings.setMonitorPrimarySelection(true);
+    settings.setCaptureText(false);
+    settings.setCaptureRichText(false);
+    settings.setCaptureImages(false);
+    settings.setCaptureFiles(false);
+    settings.setPauseOnLock(false);
+    settings.setDebounceMs(1000);
+    settings.setMaxItemBytes(1024);
+    settings.setMaxImageBytes(2048);
+    settings.setQuickPasteCount(3);
+    settings.setQuickPasteTwoLine(true);
+    settings.setIgnoredSourceApps(QStringList{QStringLiteral("game")});
+    settings.setStartVisible(true); // General knob: must survive
+
+    QSignalSpy spy(&settings, &SettingsManager::changed);
+    settings.resetPageToDefaults(SettingsManager::SettingsPage::Capture);
+    QCOMPARE(spy.count(), 1);
+
+    QVERIFY(!settings.monitorPrimarySelection());
+    QVERIFY(settings.captureText());
+    QVERIFY(settings.captureRichText());
+    QVERIFY(settings.captureImages());
+    QVERIFY(settings.captureFiles());
+    QVERIFY(settings.pauseOnLock());
+    QCOMPARE(settings.debounceMs(), 250);
+    QCOMPARE(settings.maxItemBytes(), qint64(5 * 1024 * 1024));
+    QCOMPARE(settings.maxImageBytes(), qint64(8 * 1024 * 1024));
+    QCOMPARE(settings.quickPasteCount(), 9);
+    QVERIFY(!settings.quickPasteTwoLine());
+    QVERIFY(settings.ignoredSourceApps().isEmpty());
+    QVERIFY(settings.startVisible());
+}
+
+void TestSettings::resetPrivacyHistorySearchAutomationStorage()
+{
+    // U14 per-page reset: the remaining pages restore defaults independently.
+    // Encryption is security-sensitive (needs the confirm + rekey flow), so a
+    // Privacy reset leaves it alone.
+    QFile::remove(m_tempDir.path() + QStringLiteral("/egoboardrc"));
+    SettingsManager settings;
+    settings.setSensitiveMode(SettingsManager::SensitiveMode::Off);
+    settings.setRedactKinds(QStringList{QStringLiteral("creditcard")});
+    settings.setCustomSensitivePatterns(QStringList{QStringLiteral("secret-.*")});
+    settings.setEncryptionEnabled(true);
+    settings.setMaxEntries(100);
+    settings.setDiskCapBytes(1 << 20);
+    ExpireRule rule;
+    rule.contentType = -1;
+    rule.sourceAppWildcard = QStringLiteral("firefox*");
+    rule.ageSeconds = 86400;
+    rule.keepPinned = true;
+    settings.setExpireRules(QList<ExpireRule>{rule});
+    settings.setPreviewCodeHighlight(false);
+    settings.setPreviewLinkify(false);
+    settings.setPreviewColorSwatches(false);
+    settings.setTimelineEnabled(false);
+    settings.setOcrEnabled(false);
+    settings.setOcrLanguage(QStringLiteral("deu"));
+    settings.setOcrMaxChars(1024);
+    settings.setDisabledScripts(QStringList{QStringLiteral("x")});
+    settings.setHiddenTransforms(QStringList{QStringLiteral("uppercase")});
+    settings.setBackupsEnabled(true);
+    settings.setBackupFolder(QStringLiteral("/tmp/egoback"));
+    settings.setBackupKeep(3);
+
+    settings.resetPageToDefaults(SettingsManager::SettingsPage::Privacy);
+    QCOMPARE(settings.sensitiveMode(), SettingsManager::SensitiveMode::Exclude);
+    QCOMPARE(settings.redactKinds(), SensitiveDataDetector::allKinds());
+    QVERIFY(settings.customSensitivePatterns().isEmpty());
+    QVERIFY(settings.encryptionEnabled()); // untouched
+    // Other pages still hold their non-defaults.
+    QCOMPARE(settings.maxEntries(), 100);
+    QVERIFY(!settings.previewCodeHighlight());
+
+    settings.resetPageToDefaults(SettingsManager::SettingsPage::History);
+    QCOMPARE(settings.maxEntries(), 0);
+    QCOMPARE(settings.diskCapBytes(), qint64(0));
+    QVERIFY(settings.expireRules().isEmpty());
+
+    settings.resetPageToDefaults(SettingsManager::SettingsPage::SearchPreview);
+    QVERIFY(settings.previewCodeHighlight());
+    QVERIFY(settings.previewLinkify());
+    QVERIFY(settings.previewColorSwatches());
+    QVERIFY(settings.timelineEnabled());
+    QVERIFY(settings.ocrEnabled());
+    QCOMPARE(settings.ocrLanguage(), QStringLiteral("eng"));
+    QCOMPARE(settings.ocrMaxChars(), 8192);
+
+    settings.resetPageToDefaults(SettingsManager::SettingsPage::Automation);
+    QVERIFY(settings.disabledScripts().isEmpty());
+    QVERIFY(settings.hiddenTransforms().isEmpty());
+
+    settings.resetPageToDefaults(SettingsManager::SettingsPage::Storage);
+    QVERIFY(!settings.backupsEnabled());
+    QCOMPARE(settings.backupFolder(), QString());
+    QCOMPARE(settings.backupKeep(), 7);
+    settings.setEncryptionEnabled(false);
+}
+
+void TestSettings::resetPageEmitsSingleChangedAndPreservesSessionState()
+{
+    // Session/placement/geometry state is not knobs: a page reset batches its
+    // own setters into one changed() and leaves that state alone.
+    QFile::remove(m_tempDir.path() + QStringLiteral("/egoboardrc"));
+    SettingsManager settings;
+    settings.setCaptureText(false);
+    settings.setQuickPastePos(QStringLiteral("HDMI-1"), QPoint(120, 340));
+    settings.setWindowGeometry(QByteArray("geom-bytes"));
+    settings.setSplitterState(QByteArray("split-bytes"));
+    settings.setLastFilter(QStringLiteral("{\"x\":1}"));
+    settings.addRecentSearch(QStringLiteral("foo"));
+    settings.setLastBackupMs(123456);
+    settings.setSortMode(2);
+
+    QSignalSpy spy(&settings, &SettingsManager::changed);
+    settings.resetPageToDefaults(SettingsManager::SettingsPage::Capture);
+    QCOMPARE(spy.count(), 1);
+    QVERIFY(settings.captureText());
+    QCOMPARE(settings.quickPastePos(QStringLiteral("HDMI-1")), QPoint(120, 340));
+    QCOMPARE(settings.windowGeometry(), QByteArray("geom-bytes"));
+    QCOMPARE(settings.splitterState(), QByteArray("split-bytes"));
+    QCOMPARE(settings.lastFilter(), QStringLiteral("{\"x\":1}"));
+    QCOMPARE(settings.recentSearches(), QStringList({QStringLiteral("foo")}));
+    QCOMPARE(settings.lastBackupMs(), qint64(123456));
+    QCOMPARE(settings.sortMode(), 2);
 }
 
 QTEST_GUILESS_MAIN(TestSettings)

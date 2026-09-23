@@ -1207,6 +1207,93 @@ void SettingsManager::setEncryptionEnabled(bool enabled)
     save();
 }
 
+void SettingsManager::resetPageToDefaults(SettingsPage page)
+{
+    m_suppressChanged = true;
+    switch (page) {
+    case SettingsPage::General:
+        setStartVisible(false);
+        setHideOnFocusOut(false);
+        setAutostartEnabled(false);
+        setAutostartCommand(QString());
+        setRememberWindowGeometry(true);
+        setRestoreLastFilter(false);
+        setTrayMode(QStringLiteral("auto"));
+        setTrayPrimaryClick(TrayClick::ShowWindow);
+        setTraySecondaryClick(TrayClick::QuickPaste);
+        setTrayWheelCycles(true);
+        setNotificationsEnabled(true);
+        setCaptureSoundEnabled(true);
+        setCaptureNotificationEnabled(true);
+        setTheme(QStringLiteral("system"));
+        setIconTheme(QStringLiteral("system"));
+        setFontPointDelta(0);
+        setTextColor(QString());
+        setDimTextColor(QString());
+        setListDensity(QStringLiteral("comfortable"));
+        setTimestampStyle(QStringLiteral("relative"));
+        setClock24h(true);
+        setToolbarIconOnly(false);
+        setReduceMotion(false);
+        setGroupByDay(false);
+        setShowEntryIndex(false);
+        setShowUseCountBadge(false);
+        setPrivacyBlur(false);
+        setCloseAfterPaste(true);
+        setBumpOnPaste(true);
+        setPasteAsPlainText(false);
+        break;
+    case SettingsPage::Capture:
+        setMonitorPrimarySelection(false);
+        setCaptureText(true);
+        setCaptureRichText(true);
+        setCaptureImages(true);
+        setCaptureFiles(true);
+        setPauseOnLock(true);
+        setDebounceMs(kDefaultDebounceMs);
+        setMaxItemBytes(kDefaultMaxItemBytes);
+        setMaxImageBytes(kDefaultMaxImageBytes);
+        setQuickPasteCount(kDefaultQuickPasteCount);
+        setQuickPasteTwoLine(false);
+        setIgnoredSourceApps(QStringList());
+        break;
+    case SettingsPage::Privacy:
+        // Encryption stays untouched: flipping it needs the confirm + rekey
+        // flow in SettingsDialog::applyEncryptionSetting().
+        setSensitiveMode(kDefaultSensitiveMode);
+        setRedactKinds(QStringList());
+        setCustomSensitivePatterns(QStringList());
+        break;
+    case SettingsPage::History:
+        setMaxEntries(0);
+        setDiskCapBytes(kDefaultDiskCapBytes);
+        setExpireRules(QList<ExpireRule>());
+        break;
+    case SettingsPage::SearchPreview:
+        setPreviewCodeHighlight(true);
+        setPreviewLinkify(true);
+        setPreviewColorSwatches(true);
+        setTimelineEnabled(true);
+        setOcrEnabled(true);
+        setOcrLanguage(QStringLiteral("eng"));
+        setOcrMaxChars(kDefaultOcrMaxChars);
+        break;
+    case SettingsPage::Automation:
+        // Snippet/script contents are user data: only the visibility toggles
+        // (hidden transforms, disabled scripts) reset.
+        setDisabledScripts(QStringList());
+        setHiddenTransforms(QStringList());
+        break;
+    case SettingsPage::Storage:
+        setBackupsEnabled(false);
+        setBackupFolder(QString());
+        setBackupKeep(kDefaultBackupKeep);
+        break;
+    }
+    m_suppressChanged = false;
+    save(); // sync + the single changed() for the whole page
+}
+
 void SettingsManager::save()
 {
     m_config->sync();

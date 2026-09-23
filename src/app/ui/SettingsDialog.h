@@ -2,6 +2,7 @@
 
 #include "CrashReport.h"
 #include "ExpirePolicy.h"
+#include "../SettingsManager.h"
 
 #include <QDialog>
 #include <QFont>
@@ -77,6 +78,10 @@ private:
     void clearSettingsSearchHighlight();
     // U14 responsive narrow layout (G6): re-evaluates the sidebar mode.
     void applyResponsiveLayout();
+    // U14 per-page reset: restores one page through SettingsManager, then
+    // reloads the widgets (Cancel cannot undo a reset; history data and the
+    // encryption flag are never touched).
+    void resetPageToDefaults(SettingsManager::SettingsPage page);
     // Crash-report toolkit (U20): same schema as the CLI modes.
     void createCrashReport();
     void openCrashReport();

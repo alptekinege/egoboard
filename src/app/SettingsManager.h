@@ -298,6 +298,22 @@ public:
     QJsonObject exportToJson() const;
     bool importFromJson(const QJsonObject &root, QString *error = nullptr);
 
+    // U14 per-page reset: restores one settings page to its defaults through
+    // the validating setters (single changed()). Session/placement/geometry
+    // state (quick-paste positions, window/splitter geometry, last filter,
+    // recents, lastBackupMs) and the encryption flag are never touched: the
+    // former is not shown as knobs, the latter needs its confirm + rekey flow.
+    enum class SettingsPage {
+        General,
+        Capture,
+        Privacy,
+        History,
+        SearchPreview,
+        Automation,
+        Storage,
+    };
+    void resetPageToDefaults(SettingsPage page);
+
     static QString defaultDatabasePath();
     static QString autostartDesktopFilePath();
 
