@@ -15,6 +15,7 @@
 #include "ColorSchemeIndex.h"
 #include "DesignTokens.h"
 #include "EntryDelegate.h"
+#include "GroupsDock.h"
 #include "TextAppearance.h"
 #include "UiHelpers.h"
 
@@ -104,6 +105,9 @@ private slots:
     void motionChipFadesAndScales();
     void motionToastSlidesUp();
     void motionDrawerSlidesSide();
+    void emptyStateActionFiresOnClick();
+    void ocrMetaSuffixCoversAvailability();
+    void groupsEmptyStateOffersNewGroup();
     void timelineCollapsesBelowItsWidth();
     void dayHeaderCoversTodayAndYesterday();
     void delegateRespectsRowExtras();
@@ -642,6 +646,76 @@ void TestUiDesign::motionDrawerSlidesSide()
     QTest::qWait(300);
     QCOMPARE(dock.pos(), end);
     QCOMPARE(effect->opacity(), 1.0);
+}
+
+void TestUiDesign::emptyStateActionFiresOnClick()
+{
+    // U13: every empty/error state is icon + title + one action — and the
+    // action stays clickable under the click-through overlay attribute the
+    // list, dock and snippet views use on the state widget.
+    QWidget window;
+    window.resize(360, 200);
+    bool fired = false;
+    QWidget *state = UiHelpers::makeEmptyState(
+        QStringLiteral("edit-paste"), QStringLiteral("No entries yet"),
+        QStringLiteral("Copy something first."), &window, QStringLiteral("Clear filters"),
+        [&fired] { fired = true; });
+    QVERIFY(state);
+    state->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    state->setGeometry(window.rect());
+    window.show();
+    QTest::qWait(20);
+    const QList<QPushButton *> buttons = state->findChildren<QPushButton *>();
+    QCOMPARE(buttons.size(), 1);
+    QVERIFY(buttons.first()->isVisible());
+    QTest::mouseClick(buttons.first(), Qt::LeftButton);
+    QVERIFY(fired);
+}
+
+void TestUiDesign::ocrMetaSuffixCoversAvailability()
+{
+    // U13 OCR-missing: stored text always shows; otherwise the footer names
+    // the state — a processing note when tesseract exists, an install hint
+    // when it does not. Pure helper, so no PATH dependency in tests.
+    const QString withText =
+        UiHelpers::ocrMetaSuffix(true, QStringLiteral("hello"), true);
+    QVERIFY(withText.contains(QStringLiteral("hello")));
+    // Stored text wins even without a blob or tesseract.
+    QVERIFY(UiHelpers::ocrMetaSuffix(false, QStringLiteral("hello"), false)
+                .contains(QStringLiteral("hello")));
+    // Nothing stored and no blob: no footer line at all.
+    QVERIFY(UiHelpers::ocrMetaSuffix(false, {}, true).isEmpty());
+    // Blob awaiting OCR: processing note when tesseract exists...
+    const QString pending = UiHelpers::ocrMetaSuffix(true, {}, true);
+    QVERIFY(pending.contains(QStringLiteral("processing")));
+    // ...install hint when it does not.
+    const QString missing = UiHelpers::ocrMetaSuffix(true, {}, false);
+    QVERIFY(missing.contains(QStringLiteral("tesseract")));
+    QVERIFY(missing != pending);
+}
+
+void TestUiDesign::groupsEmptyStateOffersNewGroup()
+{
+    // U13 group-empty: the overlay carries a New-group action and hides once
+    // a group exists (model signals drive the same updateEmptyState path).
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    StorageManager storage(dir.filePath(QStringLiteral("groups-empty.db")));
+    BookmarkManager bookmarks(storage.database());
+    GroupsDock dock(&bookmarks);
+    dock.resize(280, 400);
+    dock.show();
+    QTest::qWait(100);
+    QPushButton *action = nullptr;
+    for (QPushButton *button : dock.findChildren<QPushButton *>()) {
+        if (button->text() == QStringLiteral("New group"))
+            action = button;
+    }
+    QVERIFY2(action != nullptr, "group-empty state has no New group action");
+    QVERIFY(action->isVisible());
+    QVERIFY(bookmarks.createGroup(QStringLiteral("Work")) != 0);
+    QTest::qWait(100);
+    QVERIFY(!action->isVisible());
 }
 
 void TestUiDesign::timelineCollapsesBelowItsWidth()

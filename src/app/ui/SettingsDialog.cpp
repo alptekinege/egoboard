@@ -1124,6 +1124,7 @@ QWidget *SettingsDialog::buildStoragePage()
 
     auto *maintenanceBox = new QGroupBox(tr("Maintenance"), page);
     auto *maintenanceLayout = new QVBoxLayout(maintenanceBox);
+    m_maintenanceLayout = maintenanceLayout;
     auto *row = new QHBoxLayout();
     auto *vacuumButton = new QPushButton(QIcon::fromTheme(QStringLiteral("view-refresh")), tr("Compact database now (VACUUM)"), maintenanceBox);
     connect(vacuumButton, &QPushButton::clicked, this, [this, vacuumButton] {
@@ -1175,32 +1176,20 @@ QWidget *SettingsDialog::buildStoragePage()
             return m_ctx.storage()->quickCheck(&error);
         });
         if (ok) {
+            hideIntegrityError();
             QMessageBox::information(this, tr("Integrity check"),
                                      tr("PRAGMA quick_check reports no problems."));
         } else {
-            QMessageBox::warning(
-                this, tr("Integrity check"),
-                tr("The database reported a problem:\n\n%1\n\nRebuilding the search index fixes a "
-                   "damaged index; for a damaged file, import the newest backup into a fresh "
-                   "database.").arg(error));
+            // U13 DB-error state: persistent, actionable, non-modal — the panel
+            // stays until a later check passes or the index is rebuilt.
+            showIntegrityError(error);
         }
     });
     integrityRow->addWidget(integrityBtn);
     auto *reindexBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("view-refresh")),
                                        tr("Rebuild search index"), maintenanceBox);
     reindexBtn->setToolTip(tr("Recreates the FTS5 index from the history. Safe: no entry data is touched."));
-    connect(reindexBtn, &QPushButton::clicked, this, [this] {
-        const bool ok = runWithProgress(this, tr("Rebuilding search index…"), [this] {
-            return m_ctx.storage()->rebuildSearchIndex();
-        });
-        if (ok)
-            QMessageBox::information(this, tr("Search index"),
-                                     tr("The full-text index was rebuilt."));
-        else
-            QMessageBox::warning(this, tr("Search index"),
-                                 tr("The full-text index could not be rebuilt."));
-        refreshDiagnostics();
-    });
+    connect(reindexBtn, &QPushButton::clicked, this, &SettingsDialog::rebuildSearchIndex);
     integrityRow->addWidget(reindexBtn);
     integrityRow->addStretch(1);
     maintenanceLayout->addLayout(integrityRow);
@@ -1295,6 +1284,47 @@ QWidget *SettingsDialog::buildStoragePage()
     layout->addWidget(maintenanceBox);
     layout->addStretch(1);
     return makeScrollable(page);
+}
+
+void SettingsDialog::rebuildSearchIndex()
+{
+    const bool ok = runWithProgress(this, tr("Rebuilding search index…"), [this] {
+        return m_ctx.storage()->rebuildSearchIndex();
+    });
+    if (ok) {
+        hideIntegrityError();
+        QMessageBox::information(this, tr("Search index"), tr("The full-text index was rebuilt."));
+    } else {
+        QMessageBox::warning(this, tr("Search index"),
+                             tr("The full-text index could not be rebuilt."));
+    }
+    refreshDiagnostics();
+}
+
+void SettingsDialog::showIntegrityError(const QString &error)
+{
+    hideIntegrityError();
+    if (!m_maintenanceLayout)
+        return;
+    // U13 DB-error state: icon + title + the reported problem + one action.
+    // Rebuilt per failure (same pattern as the main-window empty state) so the
+    // message always matches the last check. Plain text: the message comes
+    // from SQLite, never from history content.
+    m_integrityError = UiHelpers::makeEmptyState(
+        QStringLiteral("dialog-warning"), tr("Database problem"),
+        tr("quick_check reported: %1. Rebuilding fixes a damaged index; for a damaged file, "
+           "import the newest backup into a fresh database.")
+            .arg(error.isEmpty() ? tr("unknown error") : error),
+        this, tr("Rebuild search index"), [this] { rebuildSearchIndex(); });
+    m_maintenanceLayout->addWidget(m_integrityError);
+}
+
+void SettingsDialog::hideIntegrityError()
+{
+    if (m_integrityError) {
+        m_integrityError->deleteLater();
+        m_integrityError = nullptr;
+    }
 }
 
 QWidget *SettingsDialog::buildAutomationPage()

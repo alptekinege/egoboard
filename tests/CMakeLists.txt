@@ -172,8 +172,10 @@ add_test(NAME tst_paletteui COMMAND tst_paletteui)
 add_executable(tst_uidesign tst_uidesign.cpp
     ../src/app/ui/EntryDelegate.cpp
     ../src/app/ui/UiHelpers.cpp
+    ../src/app/ui/GroupsDock.cpp
     ../src/app/ui/ExportImportDialogs.cpp
     ../src/app/ui/CodePreviewHighlighter.cpp
+    ../src/core/GroupTreeModel.cpp
     ../src/app/SettingsManager.cpp
     ../src/app/TextAppearance.cpp
     ../src/app/ColorSchemeIndex.cpp

@@ -208,10 +208,10 @@ GroupsDock::GroupsDock(BookmarkManager *bookmarks, QWidget *parent)
     connect(m_model, &QAbstractItemModel::modelReset, this, [this] { updateEmptyState(); });
     layout->addWidget(m_tree, 1);
 
-    // U13 empty state overlay for the group tree.
+    // U13 empty state overlay for the group tree, with a New-group action.
     m_emptyState = UiHelpers::makeEmptyState(
         QStringLiteral("folder"), tr("No groups yet"), tr("Create a group to organize your entries."),
-        m_tree->viewport());
+        m_tree->viewport(), tr("New group"), [this] { newGroup(); });
     m_emptyState->setAttribute(Qt::WA_TransparentForMouseEvents, true);
     m_emptyState->hide();
     m_tree->viewport()->installEventFilter(this);
@@ -221,6 +221,8 @@ GroupsDock::GroupsDock(BookmarkManager *bookmarks, QWidget *parent)
     layout->addWidget(showAll);
 
     setWidget(container);
+    updateEmptyState(); // fresh installs start with no groups: show the state now,
+                        // not only after the first model signal fires
 }
 
 void GroupsDock::newGroup()

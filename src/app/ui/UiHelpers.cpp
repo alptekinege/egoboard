@@ -98,6 +98,22 @@ QString UiHelpers::humanSize(qint64 bytes)
         .arg(bytes / (1024.0 * 1024.0), 0, 'f', 1);
 }
 
+QString UiHelpers::ocrMetaSuffix(bool hasBlob, const QString &ocrText, bool tesseractAvailable)
+{
+    if (!ocrText.isEmpty())
+        return QStringLiteral("<br/>🔍 OCR: ")
+            + ocrText.left(500).toHtmlEscaped().replace(QStringLiteral("\n"),
+                                                        QStringLiteral("<br/>"));
+    if (!hasBlob)
+        return {};
+    if (!tesseractAvailable)
+        return QCoreApplication::translate(
+            "UiHelpers", "<br/><i>OCR unavailable — install <code>tesseract</code> to make "
+                         "images searchable</i>");
+    return QCoreApplication::translate("UiHelpers",
+                                       "<br/><i>OCR: processing… or no text found</i>");
+}
+
 void UiHelpers::styleSearchField(QLineEdit *field)
 {
     if (!field)

@@ -17,6 +17,7 @@ class QPushButton;
 class QRadioButton;
 class QSpinBox;
 class QTextBrowser;
+class QVBoxLayout;
 
 // Detailed settings dialog — 9 pages in a vertical icon+label sidebar: General /
 // Capture / Privacy / History / Search & Preview / Automation / Shortcuts /
@@ -38,8 +39,7 @@ private:
     QWidget *buildPlatformDiagnosticsPage();
 
     void load();
-    void save();
-    // Applies a changed encryption checkbox: rekeys the open database to
+    void save();    // Applies a changed encryption checkbox: rekeys the open database to
     // encrypt it (generating a KWallet key when needed) or decrypt it in place.
     // On failure the checkbox is reverted and the setting is left unchanged.
     void applyEncryptionSetting();
@@ -50,6 +50,10 @@ private:
     void populateSnippetList();
     void populateTransformList();
     void populateScriptList();
+    // U13 DB-error state (Storage ▸ Maintenance): persistent integrity panel.
+    void rebuildSearchIndex();
+    void showIntegrityError(const QString &error);
+    void hideIntegrityError();
     // Crash-report toolkit (U20): same schema as the CLI modes.
     void createCrashReport();
     void openCrashReport();
@@ -137,6 +141,9 @@ private:
     QSpinBox *m_backupKeep = nullptr;
     QPushButton *m_backupNowBtn = nullptr;
     QLabel *m_backupStatus = nullptr;
+    // U13 DB-error state: persistent integrity panel inside Maintenance.
+    QVBoxLayout *m_maintenanceLayout = nullptr;
+    QWidget *m_integrityError = nullptr;
 
     // History (retention)
     QSpinBox *m_maxEntries = nullptr;

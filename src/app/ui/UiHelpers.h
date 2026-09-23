@@ -31,6 +31,11 @@ QLabel *makeStatusPanel(const QString &text, QWidget *parent);
 // One human-readable byte size ("512 B", "1.5 kB", "2.0 MB"). Empty for 0.
 QString humanSize(qint64 bytes);
 
+// U13: the preview image footer line for OCR state. Pure (tesseract
+// availability is passed in) so the unavailable/missing cases stay testable
+// offscreen without depending on the machine's PATH.
+QString ocrMetaSuffix(bool hasBlob, const QString &ocrText, bool tesseractAvailable);
+
 // Trailing room and a common height, so the main window's search box and the
 // palette's input read as the same control.
 void styleSearchField(QLineEdit *field);

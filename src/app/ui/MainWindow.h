@@ -83,6 +83,9 @@ private:
     void clearPinnedFilter();
     void clearSensitiveFilter();
     void clearSearchFilter();
+    // U13: the no-match empty state's action — resets every filter control at
+    // once (combos, group, toggles, search) instead of only the search box.
+    void clearAllFilters();
     void updateBulkBar();
     void bulkPin(bool pinned);
     void bulkTag();

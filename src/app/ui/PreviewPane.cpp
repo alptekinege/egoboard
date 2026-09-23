@@ -3,6 +3,7 @@
 #include "CodePreviewHighlighter.h"
 #include "DesignTokens.h"
 #include "UiHelpers.h"
+#include "../OcrWorker.h"
 #include "../ScriptActionManager.h"
 #include "../SettingsManager.h"
 #include "TransformChainDialog.h"
@@ -821,11 +822,10 @@ void PreviewPane::showRecord(const ClipboardRecord &record)
             m_zoomFitBtn->setText(tr("Fit"));
         }
         updateImageView();
-        if (!record.ocrText.isEmpty()) {
-            extraMeta += QStringLiteral("<br/>🔍 OCR: ") + record.ocrText.left(500).toHtmlEscaped().replace(QStringLiteral("\n"), QStringLiteral("<br/>"));
-        } else if (record.hasBlob) {
-            extraMeta += QStringLiteral("<br/><i>OCR: processing… or no text found</i>");
-        }
+        // U13: OCR footer via the pure helper — stored text wins, otherwise the
+        // line names the state (processing vs. tesseract missing with install hint).
+        extraMeta += UiHelpers::ocrMetaSuffix(record.hasBlob, record.ocrText,
+                                              OcrWorker::isAvailable());
         m_stack->setCurrentWidget(m_imagePage);
         break;
     }

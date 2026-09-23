@@ -919,10 +919,12 @@ void MainWindow::updateEmptyState()
     m_emptyHint = UiHelpers::makeEmptyState(
         trivial ? QStringLiteral("edit-paste") : QStringLiteral("view-filter"),
         trivial ? tr("No entries yet") : tr("Nothing matches this filter"),
-        trivial ? tr("Copy something and it will show up here.") : tr("Try clearing some filters."),
+        trivial ? tr("Copy something and it will show up here. Shortcuts: Meta+V quick paste, "
+                     "Ctrl+K commands.")
+                : tr("Try clearing some filters."),
         m_list->viewport(),
         trivial ? QString() : tr("Clear filters"),
-        trivial ? std::function<void()>() : [this] { m_search->clear(); applyCurrentFilter(); }
+        trivial ? std::function<void()>() : [this] { clearAllFilters(); }
     );
     m_emptyHint->setAttribute(Qt::WA_TransparentForMouseEvents, true);
     m_emptyHint->setGeometry(m_list->viewport()->rect());
@@ -2085,6 +2087,38 @@ void MainWindow::clearSearchFilter()
         m_search->clear();
         applyCurrentFilter();
     }
+}
+
+void MainWindow::clearAllFilters()
+{
+    // One refresh for the whole reset: block the per-control signals (each
+    // combo/toggle otherwise re-runs the filter on its own), then apply once.
+    // Sort is not a filter and is left alone.
+    const QSignalBlocker typeBlocker(m_typeCombo);
+    const QSignalBlocker dateBlocker(m_dateCombo);
+    const QSignalBlocker appBlocker(m_appCombo);
+    const QSignalBlocker tagBlocker(m_tagCombo);
+    const QSignalBlocker pinnedBlocker(m_pinnedOnlyAction);
+    const QSignalBlocker sensitiveBlocker(m_sensitiveAction);
+    const QSignalBlocker timelineBlocker(m_timeline);
+    if (m_typeCombo)
+        m_typeCombo->setCurrentIndex(0);
+    if (m_dateCombo)
+        m_dateCombo->setCurrentIndex(0);
+    if (m_appCombo)
+        m_appCombo->setCurrentIndex(0);
+    if (m_tagCombo)
+        m_tagCombo->setCurrentIndex(0);
+    m_groupFilter = 0;
+    if (m_pinnedOnlyAction)
+        m_pinnedOnlyAction->setChecked(false);
+    if (m_sensitiveAction)
+        m_sensitiveAction->setChecked(false);
+    if (m_timeline)
+        m_timeline->clearSelection();
+    if (m_search)
+        m_search->clear();
+    applyCurrentFilter();
 }
 
 int MainWindow::activeFilterCount() const
