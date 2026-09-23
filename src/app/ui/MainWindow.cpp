@@ -1715,13 +1715,27 @@ void MainWindow::exportHistoryToFormat(const QString &format)
         break;
     }
     QString error;
-    QProgressDialog progressDialog(tr("Exporting…"), QString(), 0, 0, this);
+    // Chunked synchronous run on the GUI thread (same thread as the storage
+    // connection): the progress callback pumps the event loop between batches
+    // so Cancel takes effect promptly without any worker-thread SQL.
+    std::atomic<bool> cancel{false};
+    QProgressDialog progressDialog(tr("Exporting…"), tr("Cancel"), 0, 0, this);
     progressDialog.setWindowModality(Qt::WindowModal);
     progressDialog.setMinimumDuration(0);
-    progressDialog.setCancelButton(nullptr);
+    progressDialog.setLabelText(tr("Exporting…"));
+    connect(&progressDialog, &QProgressDialog::canceled, this, [&cancel] {
+        cancel.store(true, std::memory_order_relaxed);
+    });
     progressDialog.show();
-    QApplication::processEvents();
-    const bool exported = m_ctx.io()->exportToFile(request, &error);
+    const bool exported = m_ctx.io()->exportToFile(
+        request, &error, &cancel, [&](int done, int total) {
+            if (total > 0) {
+                progressDialog.setMaximum(total);
+                progressDialog.setValue(done);
+            }
+            progressDialog.setLabelText(tr("Exporting… %1 of %2 entries").arg(done).arg(total));
+            QApplication::processEvents();
+        });
     progressDialog.close();
     if (!exported)
         QMessageBox::warning(this, tr("Export failed"), error);

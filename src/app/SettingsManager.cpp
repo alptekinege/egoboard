@@ -10,6 +10,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
 #include <QRegularExpression>
 #include <QStandardPaths>
 namespace {
@@ -1209,7 +1210,8 @@ void SettingsManager::setEncryptionEnabled(bool enabled)
 void SettingsManager::save()
 {
     m_config->sync();
-    emit changed();
+    if (!m_suppressChanged)
+        emit changed();
 }
 
 QString SettingsManager::defaultDatabasePath()

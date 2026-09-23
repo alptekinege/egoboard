@@ -124,6 +124,11 @@ public:
     using ImageExportProgress = std::function<void(int exportedSoFar, int skippedSoFar,
                                                    qint64 bytesSoFar)>;
 
+    // Per-batch progress (done/total entries so far); called on the caller's
+    // thread. GUI callers pump the event loop here so a progress dialog stays
+    // responsive and Cancel takes effect promptly (U17 image-export pattern).
+    using IoProgress = std::function<void(int doneSoFar, int totalEntries)>;
+
     // Converts one stored PNG blob into the requested file payload. Sets
     // *extension (without dot, e.g. "jpg") and returns the bytes; an empty
     // return with *error set aborts the run with that message (no manifest).
@@ -136,8 +141,15 @@ public:
     explicit ExportImportManager(StorageManager *storage, BookmarkManager *bookmarks,
                                  SnippetManager *snippets = nullptr, QObject *parent = nullptr);
 
-    bool exportToFile(const ExportRequest &request, QString *error = nullptr);
-    ImportResult importFromFile(const QString &path, ImportMode mode);
+    // U11 (G9) cooperative cancellation: `cancel` is polled at bounded-page
+    // granularity and `progress` reports (done, total). Cancel before the
+    // first byte means no file is written; cancel during import rolls the
+    // bulk transaction back so nothing was imported. All defaulted, so
+    // existing callers are unchanged.
+    bool exportToFile(const ExportRequest &request, QString *error = nullptr,
+                      std::atomic<bool> *cancel = nullptr, IoProgress progress = {});
+    ImportResult importFromFile(const QString &path, ImportMode mode,
+                                std::atomic<bool> *cancel = nullptr, IoProgress progress = {});
 
     // Writes the stored PNG blobs of the requested scope into `request.dir`
     // (created when missing) with collision-safe deterministic filenames plus
@@ -158,7 +170,10 @@ public:
     // current Klipper format). Starred items become pinned and Klipper's copy
     // times are preserved; duplicates merge through the normal content hash.
     // The file is opened read-only, so a running Klipper is not disturbed.
-    ImportResult importKlipperHistory(const QString &databasePath);
+    // Same cooperative cancel/progress contract as importFromFile.
+    ImportResult importKlipperHistory(const QString &databasePath,
+                                      std::atomic<bool> *cancel = nullptr,
+                                      IoProgress progress = {});
 
     // Where Klipper keeps its history on this system (may not exist).
     static QString defaultKlipperPath();
@@ -174,7 +189,10 @@ public:
     // Writes a full JSON backup into `folder` as
     // egoboard-backup-YYYYMMDD-HHmmss.json and keeps only the newest `keep`
     // backups (0 = keep everything). The folder is created when missing.
-    BackupResult writeBackup(const QString &folder, int keep);
+    // Cooperative cancel/progress forwarded to the export; a canceled backup
+    // writes no file.
+    BackupResult writeBackup(const QString &folder, int keep, std::atomic<bool> *cancel = nullptr,
+                             IoProgress progress = {});
 
     // Backup files in `folder`, newest first (name order: timestamps sort).
     static QStringList listBackups(const QString &folder);
@@ -187,13 +205,22 @@ public:
     static int exportFormatVersion() { return 2; }
 
 private:
-    // Entry-only writers for the reading formats (tags are looked up per entry).
+    // Bounded full-payload batch behind the paged gathers (exportImages and
+    // the JSON gather share it): one parameterized IN query, results in input
+    // id order. Never fetchAllFull, so memory stays flat.
+    bool fetchPayloadBatch(const QList<qint64> &ids, QVector<ClipboardRecord> *out,
+                           QString *error);
+    // Entry-only writers for the reading formats (tags are looked up per
+    // entry). Cooperative cancel/progress like the rest of U11/G9.
     bool writeCsvExport(const ExportRequest &request, const QVector<ClipboardRecord> &entries,
-                        QString *error) const;
+                        QString *error, std::atomic<bool> *cancel = nullptr,
+                        IoProgress progress = {}, int progressBase = 0, int progressTotal = 0) const;
     bool writeMarkdownExport(const ExportRequest &request, const QVector<ClipboardRecord> &entries,
-                             QString *error) const;
+                             QString *error, std::atomic<bool> *cancel = nullptr,
+                             IoProgress progress = {}, int progressBase = 0, int progressTotal = 0) const;
     bool writeHtmlExport(const ExportRequest &request, const QVector<ClipboardRecord> &entries,
-                         QString *error) const;
+                         QString *error, std::atomic<bool> *cancel = nullptr,
+                         IoProgress progress = {}, int progressBase = 0, int progressTotal = 0) const;
 
     StorageManager *m_storage = nullptr;
     BookmarkManager *m_bookmarks = nullptr;

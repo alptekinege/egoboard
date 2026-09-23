@@ -217,50 +217,134 @@ QString ExportImportManager::formatId(ExportFormat format)
     return QStringLiteral("json");
 }
 
-bool ExportImportManager::exportToFile(const ExportRequest &request, QString *error)
+bool ExportImportManager::exportToFile(const ExportRequest &request, QString *error,
+                                       std::atomic<bool> *cancel, IoProgress progress)
 {
+    const auto isCanceled = [&] { return cancel && cancel->load(std::memory_order_relaxed); };
+    if (isCanceled()) {
+        if (error)
+            *error = tr("Export canceled before it started.");
+        return false;
+    }
     const QVector<BookmarkGroup> allGroups = m_bookmarks->groups();
     QSet<qint64> exportedGroupIds;
     for (const BookmarkGroup &group : allGroups)
         exportedGroupIds.insert(group.id);
 
-    // --- gather entries -----------------------------------------------------
+    // --- gather entries, paged + cancelable ----------------------------------
+    // Everything/PinnedOnly stream bounded keyset pages (never fetchAllFull);
+    // GroupSubtree batches its id list through the same IN-query helper.
     FilterSpec filter;
-    QSet<qint64> entryIdSet; // used for group scopes
     QVector<ClipboardRecord> entries;
-    if (request.scope == Scope::Everything) {
-        entries = m_storage->fetchAllFull(filter);
-    } else if (request.scope == Scope::PinnedOnly) {
-        filter.pinnedOnly = true;
-        entries = m_storage->fetchAllFull(filter);
+    int estimatedTotal = 0;
+    if (request.scope == Scope::Everything || request.scope == Scope::PinnedOnly) {
+        if (request.scope == Scope::PinnedOnly)
+            filter.pinnedOnly = true;
+        estimatedTotal = int(request.scope == Scope::PinnedOnly
+                                 ? m_storage->stats().pinnedCount
+                                 : m_storage->stats().entryCount);
+        PageCursor cursor;
+        while (true) {
+            if (isCanceled()) {
+                if (error)
+                    *error = tr("Export canceled after %1 of %2 entries — no file was written.")
+                                 .arg(entries.size())
+                                 .arg(qMax(estimatedTotal, entries.size()));
+                return false;
+            }
+            bool hasMore = false;
+            const QVector<ClipboardRecord> page =
+                m_storage->fetchPage(filter, cursor, kImageExportPageSize, &hasMore);
+            if (page.isEmpty())
+                break;
+            QList<qint64> ids;
+            ids.reserve(page.size());
+            for (const ClipboardRecord &summary : page)
+                ids.append(summary.id);
+            QVector<ClipboardRecord> payloads;
+            QString batchError;
+            if (!fetchPayloadBatch(ids, &payloads, &batchError)) {
+                if (error)
+                    *error = batchError.isEmpty() ? tr("Database read failed.") : batchError;
+                return false;
+            }
+            entries.append(payloads);
+            if (progress)
+                progress(entries.size(), qMax(estimatedTotal, entries.size()));
+            if (!hasMore)
+                break;
+            // Same cursor discipline as fetchAllFull: every key the active
+            // sort compares must travel, or paging silently truncates.
+            cursor = PageCursor{true, page.last().timestamp, page.last().id,
+                                page.last().useCount};
+        }
     } else {
         exportedGroupIds =
             descendantGroupIds(allGroups, request.groupId);
+        QList<qint64> listedIds;
+        QSet<qint64> seen;
         for (const qint64 gid : exportedGroupIds) {
             const QList<qint64> ids = m_bookmarks->entryIdsForGroup(gid);
             for (const qint64 id : ids) {
-                if (entryIdSet.contains(id))
-                    continue;
-                entryIdSet.insert(id);
-                ClipboardRecord record;
-                if (m_storage->fetchFull(id, &record))
-                    entries.append(record);
+                if (id != 0 && !seen.contains(id)) {
+                    seen.insert(id);
+                    listedIds.append(id);
+                }
             }
         }
+        estimatedTotal = listedIds.size();
+        for (int offset = 0; offset < listedIds.size();) {
+            if (isCanceled()) {
+                if (error)
+                    *error = tr("Export canceled after %1 of %2 entries — no file was written.")
+                                 .arg(entries.size())
+                                 .arg(qMax(estimatedTotal, entries.size()));
+                return false;
+            }
+            const int chunk = qMin(kImageExportPageSize, listedIds.size() - offset);
+            QVector<ClipboardRecord> payloads;
+            QString batchError;
+            if (!fetchPayloadBatch(listedIds.mid(offset, chunk), &payloads, &batchError)) {
+                if (error)
+                    *error = batchError.isEmpty() ? tr("Database read failed.") : batchError;
+                return false;
+            }
+            offset += chunk;
+            entries.append(payloads);
+            if (progress)
+                progress(entries.size(), qMax(estimatedTotal, entries.size()));
+        }
     }
+    // Serialize phase counts on top of the gather phase so progress stays
+    // monotonic even when the history changed mid-run.
+    const int serializeBase = qMax(estimatedTotal, entries.size());
+    const int grandTotal = serializeBase + entries.size();
+    int serialized = 0;
+    const auto reportSerialize = [&] {
+        if (progress)
+            progress(serializeBase + serialized, grandTotal);
+    };
 
     // --- reading formats stop here (entries only, no re-import) ---------------
     if (request.format == ExportFormat::Csv)
-        return writeCsvExport(request, entries, error);
+        return writeCsvExport(request, entries, error, cancel, progress, serializeBase, grandTotal);
     if (request.format == ExportFormat::Markdown)
-        return writeMarkdownExport(request, entries, error);
+        return writeMarkdownExport(request, entries, error, cancel, progress, serializeBase,
+                                   grandTotal);
     if (request.format == ExportFormat::Html)
-        return writeHtmlExport(request, entries, error);
+        return writeHtmlExport(request, entries, error, cancel, progress, serializeBase, grandTotal);
 
     // --- memberships --------------------------------------------------------
     QJsonArray memberships;
     if (request.scope != Scope::PinnedOnly) {
         for (const ClipboardRecord &record : entries) {
+            if (isCanceled()) {
+                if (error)
+                    *error = tr("Export canceled after %1 of %2 entries — no file was written.")
+                                 .arg(serializeBase + serialized)
+                                 .arg(grandTotal);
+                return false;
+            }
             const QList<qint64> groupIds = m_bookmarks->groupIdsForEntry(record.id);
             for (const qint64 gid : groupIds) {
                 if (!exportedGroupIds.contains(gid))
@@ -273,6 +357,13 @@ bool ExportImportManager::exportToFile(const ExportRequest &request, QString *er
         }
     } else {
         for (const ClipboardRecord &record : entries) {
+            if (isCanceled()) {
+                if (error)
+                    *error = tr("Export canceled after %1 of %2 entries — no file was written.")
+                                 .arg(serializeBase + serialized)
+                                 .arg(grandTotal);
+                return false;
+            }
             for (const qint64 gid : m_bookmarks->groupIdsForEntry(record.id)) {
                 QJsonObject membership;
                 membership.insert(QStringLiteral("entryHash"), QString::fromLatin1(record.hash));
@@ -285,6 +376,13 @@ bool ExportImportManager::exportToFile(const ExportRequest &request, QString *er
     // --- entries ------------------------------------------------------------
     QJsonArray entryArray;
     for (const ClipboardRecord &record : entries) {
+        if (isCanceled()) {
+            if (error)
+                *error = tr("Export canceled after %1 of %2 entries — no file was written.")
+                             .arg(serializeBase + serialized)
+                             .arg(grandTotal);
+            return false;
+        }
         QJsonObject object;
         object.insert(QStringLiteral("hash"), QString::fromLatin1(record.hash));
         object.insert(QStringLiteral("timestamp"), double(record.timestamp));
@@ -310,7 +408,10 @@ bool ExportImportManager::exportToFile(const ExportRequest &request, QString *er
             object.insert(QStringLiteral("tags"), tagArray);
         }
         entryArray.append(object);
+        if (++serialized % 64 == 0)
+            reportSerialize();
     }
+    reportSerialize();
 
     // --- groups -------------------------------------------------------------
     QJsonArray groupArray;
@@ -373,6 +474,57 @@ bool ExportImportManager::exportToFile(const ExportRequest &request, QString *er
         if (error)
             *error = QObject::tr("Write to %1 failed: %2").arg(request.path, file.errorString());
         return false;
+    }
+    return true;
+}
+
+bool ExportImportManager::fetchPayloadBatch(const QList<qint64> &ids, QVector<ClipboardRecord> *out,
+                                            QString *error)
+{
+    if (ids.isEmpty())
+        return true;
+    QStringList placeholders;
+    placeholders.reserve(ids.size());
+    for (int i = 0; i < ids.size(); ++i)
+        placeholders << QStringLiteral("?");
+    QSqlQuery query(m_storage->database());
+    query.prepare(QStringLiteral(
+        "SELECT id, timestamp_ms, content_type, content_hash, text_data, blob_data, preview,"
+        " size_bytes, pinned, sensitive, use_count, source_app, source_window, ocr_text"
+        " FROM entries WHERE id IN (%1)").arg(placeholders.join(QLatin1Char(','))));
+    for (int i = 0; i < ids.size(); ++i)
+        query.bindValue(i, ids.at(i));
+    if (!query.exec()) {
+        if (error)
+            *error = tr("Database read failed: %1").arg(query.lastError().text());
+        return false;
+    }
+    QHash<qint64, ClipboardRecord> byId;
+    byId.reserve(ids.size());
+    while (query.next()) {
+        ClipboardRecord record;
+        record.id = query.value(0).toLongLong();
+        record.timestamp = query.value(1).toLongLong();
+        record.type = static_cast<ContentType>(query.value(2).toInt());
+        record.hash = query.value(3).toByteArray();
+        record.textData = query.value(4).toString();
+        record.blobData = query.value(5).toByteArray();
+        record.hasBlob = !record.blobData.isEmpty();
+        record.preview = query.value(6).toString();
+        record.sizeBytes = query.value(7).toLongLong();
+        record.pinned = query.value(8).toInt() != 0;
+        record.sensitive = query.value(9).toInt() != 0;
+        record.useCount = query.value(10).toInt();
+        record.sourceApp = query.value(11).toString();
+        record.sourceWindow = query.value(12).toString();
+        record.ocrText = query.value(13).toString();
+        byId.insert(record.id, record);
+    }
+    out->reserve(out->size() + ids.size());
+    for (const qint64 id : ids) {
+        const auto it = byId.constFind(id);
+        if (it != byId.constEnd())
+            out->append(*it);
     }
     return true;
 }
@@ -444,60 +596,6 @@ ExportImportManager::exportImages(const ImageExportRequest &request,
     const bool streamed = request.scope == ImageExportRequest::Scope::Everything
         || request.scope == ImageExportRequest::Scope::CurrentFilter
         || request.scope == ImageExportRequest::Scope::PinnedOnly;
-
-    // One payload batch for <= kImageExportPageSize ids: a single
-    // parameterized IN query (no per-row N+1, no unbounded fetchAllFull).
-    // Column order mirrors StorageManager::fetchAllFull; hasBlob is derived
-    // from the payload exactly like recordFromFull does.
-    const auto fetchPayloads = [&](const QVector<qint64> &ids, QVector<ClipboardRecord> *out,
-                                   QString *error) {
-        if (ids.isEmpty())
-            return true;
-        QStringList placeholders;
-        placeholders.reserve(ids.size());
-        for (int i = 0; i < ids.size(); ++i)
-            placeholders << QStringLiteral("?");
-        QSqlQuery query(m_storage->database());
-        query.prepare(QStringLiteral(
-            "SELECT id, timestamp_ms, content_type, content_hash, text_data, blob_data, preview,"
-            " size_bytes, pinned, sensitive, use_count, source_app, source_window, ocr_text"
-            " FROM entries WHERE id IN (%1)").arg(placeholders.join(QLatin1Char(','))));
-        for (int i = 0; i < ids.size(); ++i)
-            query.bindValue(i, ids.at(i));
-        if (!query.exec()) {
-            if (error)
-                *error = tr("Database read failed: %1").arg(query.lastError().text());
-            return false;
-        }
-        QHash<qint64, ClipboardRecord> byId;
-        byId.reserve(ids.size());
-        while (query.next()) {
-            ClipboardRecord record;
-            record.id = query.value(0).toLongLong();
-            record.timestamp = query.value(1).toLongLong();
-            record.type = static_cast<ContentType>(query.value(2).toInt());
-            record.hash = query.value(3).toByteArray();
-            record.textData = query.value(4).toString();
-            record.blobData = query.value(5).toByteArray();
-            record.hasBlob = !record.blobData.isEmpty();
-            record.preview = query.value(6).toString();
-            record.sizeBytes = query.value(7).toLongLong();
-            record.pinned = query.value(8).toInt() != 0;
-            record.sensitive = query.value(9).toInt() != 0;
-            record.useCount = query.value(10).toInt();
-            record.sourceApp = query.value(11).toString();
-            record.sourceWindow = query.value(12).toString();
-            record.ocrText = query.value(13).toString();
-            byId.insert(record.id, record);
-        }
-        out->reserve(out->size() + ids.size());
-        for (const qint64 id : ids) {
-            const auto it = byId.constFind(id);
-            if (it != byId.constEnd())
-                out->append(*it);
-        }
-        return true;
-    };
 
     QJsonArray manifestFiles;
     QString batchError;
@@ -609,7 +707,7 @@ ExportImportManager::exportImages(const ImageExportRequest &request,
             for (const ClipboardRecord &summary : page)
                 ids.append(summary.id);
             QVector<ClipboardRecord> payloads;
-            if (!fetchPayloads(ids, &payloads, &batchError)) {
+            if (!fetchPayloadBatch(ids, &payloads, &batchError)) {
                 readFailed = true;
                 break;
             }
@@ -641,7 +739,7 @@ ExportImportManager::exportImages(const ImageExportRequest &request,
                 ids.append(listedIds.at(offset + i));
             offset += chunk;
             QVector<ClipboardRecord> payloads;
-            if (!fetchPayloads(ids, &payloads, &batchError)) {
+            if (!fetchPayloadBatch(ids, &payloads, &batchError)) {
                 readFailed = true;
                 break;
             }
@@ -732,9 +830,11 @@ ExportImportManager::exportImages(const ImageExportRequest &request,
 }
 
 ExportImportManager::ImportResult
-ExportImportManager::importFromFile(const QString &path, ImportMode mode)
+ExportImportManager::importFromFile(const QString &path, ImportMode mode,
+                                    std::atomic<bool> *cancel, IoProgress progress)
 {
     ImportResult result;
+    const auto isCanceled = [&] { return cancel && cancel->load(std::memory_order_relaxed); };
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         result.error = tr("Cannot read %1: %2").arg(path, file.errorString());
@@ -761,6 +861,10 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode)
     QSqlDatabase db = m_storage->database();
     if (!db.isOpen()) {
         result.error = tr("Database connection is not open");
+        return result;
+    }
+    if (isCanceled()) {
+        result.error = tr("Import canceled before it started — nothing was imported.");
         return result;
     }
 
@@ -856,7 +960,22 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode)
 
     const QJsonArray entryArray = root.value(QStringLiteral("entries")).toArray();
     QHash<QByteArray, qint64> entryIdByHash; // imported hash -> local id
+    const int entryTotal = entryArray.size();
+    int entryDone = 0;
+    const auto abortImport = [&](const QString &error) {
+        if (bulk)
+            m_storage->endBulk(false); // roll back: a canceled import imports nothing
+        result.error = error;
+        return result;
+    };
     for (const auto &value : entryArray) {
+        if (isCanceled())
+            return abortImport(tr("Import canceled after %1 of %2 entries — nothing was imported.")
+                                   .arg(entryDone)
+                                   .arg(entryTotal));
+        ++entryDone;
+        if (entryDone % 64 == 0 && progress)
+            progress(entryDone, entryTotal);
         const QJsonObject object = value.toObject();
         ClipboardRecord record;
         record.hash = object.value(QStringLiteral("hash")).toString().toLatin1();
@@ -935,6 +1054,8 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode)
             applyImportedTags(insertedId, tagNames);
         }
     }
+    if (progress)
+        progress(entryDone, entryTotal);
 
     // --- memberships ----------------------------------------------------------
     const QJsonArray membershipArray = root.value(QStringLiteral("memberships")).toArray();
@@ -1013,13 +1134,24 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode)
 }
 
 bool ExportImportManager::writeCsvExport(const ExportRequest &request,
-                                         const QVector<ClipboardRecord> &entries, QString *error) const
+                                         const QVector<ClipboardRecord> &entries, QString *error,
+                                         std::atomic<bool> *cancel, IoProgress progress,
+                                         int progressBase, int progressTotal) const
 {
+    const auto isCanceled = [&] { return cancel && cancel->load(std::memory_order_relaxed); };
     QString out;
     out.reserve(entries.size() * 160);
     out += QStringLiteral(
         "timestamp,type,source_app,source_window,pinned,sensitive,use_count,tags,text\n");
+    int done = 0;
     for (const ClipboardRecord &record : entries) {
+        if (isCanceled()) {
+            if (error)
+                *error = tr("Export canceled after %1 of %2 entries — no file was written.")
+                             .arg(progressBase + done)
+                             .arg(progressTotal);
+            return false;
+        }
         const QString text = record.textData.isEmpty() ? record.preview : record.textData;
         const QString tags = m_storage->tagsForEntry(record.id).join(QStringLiteral("; "));
         out += csvField(QDateTime::fromMSecsSinceEpoch(record.timestamp).toString(Qt::ISODateWithMs));
@@ -1040,20 +1172,35 @@ bool ExportImportManager::writeCsvExport(const ExportRequest &request,
         out += QLatin1Char(',');
         out += csvField(text);
         out += QLatin1Char('\n');
+        if (++done % 64 == 0 && progress)
+            progress(progressBase + done, progressTotal);
     }
+    if (progress)
+        progress(progressBase + done, progressTotal);
     return writeTextFile(request.path, out, error);
 }
 
 bool ExportImportManager::writeMarkdownExport(const ExportRequest &request,
                                               const QVector<ClipboardRecord> &entries,
-                                              QString *error) const
+                                              QString *error, std::atomic<bool> *cancel,
+                                              IoProgress progress, int progressBase,
+                                              int progressTotal) const
 {
+    const auto isCanceled = [&] { return cancel && cancel->load(std::memory_order_relaxed); };
     QString out;
     out += QStringLiteral("# Egoboard history\n\n");
     out += tr("Exported %1 — %n entry/entries.", nullptr, entries.size())
                .arg(QDateTime::currentDateTime().toString(Qt::ISODate));
     out += QStringLiteral("\n");
+    int done = 0;
     for (const ClipboardRecord &record : entries) {
+        if (isCanceled()) {
+            if (error)
+                *error = tr("Export canceled after %1 of %2 entries — no file was written.")
+                             .arg(progressBase + done)
+                             .arg(progressTotal);
+            return false;
+        }
         out += QStringLiteral("\n## %1 · %2")
                    .arg(QDateTime::fromMSecsSinceEpoch(record.timestamp)
                             .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")),
@@ -1074,13 +1221,20 @@ bool ExportImportManager::writeMarkdownExport(const ExportRequest &request,
         const QString fence = markdownFence(text);
         out += QStringLiteral("\n") + fence + QStringLiteral("\n") + text + QStringLiteral("\n")
                + fence + QStringLiteral("\n");
+        if (++done % 64 == 0 && progress)
+            progress(progressBase + done, progressTotal);
     }
+    if (progress)
+        progress(progressBase + done, progressTotal);
     return writeTextFile(request.path, out, error);
 }
 
 bool ExportImportManager::writeHtmlExport(const ExportRequest &request,
-                                          const QVector<ClipboardRecord> &entries, QString *error) const
+                                          const QVector<ClipboardRecord> &entries, QString *error,
+                                          std::atomic<bool> *cancel, IoProgress progress,
+                                          int progressBase, int progressTotal) const
 {
+    const auto isCanceled = [&] { return cancel && cancel->load(std::memory_order_relaxed); };
     QString out;
     out += QStringLiteral(
         "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">\n"
@@ -1098,7 +1252,15 @@ bool ExportImportManager::writeHtmlExport(const ExportRequest &request,
     for (const QString &header : headers)
         out += QStringLiteral("<th>") + htmlEscaped(header) + QStringLiteral("</th>");
     out += QStringLiteral("</tr></thead>\n<tbody>\n");
+    int done = 0;
     for (const ClipboardRecord &record : entries) {
+        if (isCanceled()) {
+            if (error)
+                *error = tr("Export canceled after %1 of %2 entries — no file was written.")
+                             .arg(progressBase + done)
+                             .arg(progressTotal);
+            return false;
+        }
         const QString text = record.textData.isEmpty() ? record.preview : record.textData;
         QString source = record.sourceApp;
         if (!record.sourceWindow.isEmpty()) {
@@ -1122,7 +1284,11 @@ bool ExportImportManager::writeHtmlExport(const ExportRequest &request,
                + htmlEscaped(m_storage->tagsForEntry(record.id).join(QStringLiteral(", ")))
                + QStringLiteral("</td><td class=\"text\">") + htmlEscaped(text)
                + QStringLiteral("</td></tr>\n");
+        if (++done % 64 == 0 && progress)
+            progress(progressBase + done, progressTotal);
     }
+    if (progress)
+        progress(progressBase + done, progressTotal);
     out += QStringLiteral("</tbody></table>\n</body></html>\n");
     return writeTextFile(request.path, out, error);
 }
@@ -1133,9 +1299,12 @@ QString ExportImportManager::defaultKlipperPath()
         + QStringLiteral("/klipper/history3.sqlite");
 }
 
-ExportImportManager::ImportResult ExportImportManager::importKlipperHistory(const QString &databasePath)
+ExportImportManager::ImportResult
+ExportImportManager::importKlipperHistory(const QString &databasePath, std::atomic<bool> *cancel,
+                                          IoProgress progress)
 {
     ImportResult result;
+    const auto isCanceled = [&] { return cancel && cancel->load(std::memory_order_relaxed); };
     if (!QFile::exists(databasePath)) {
         result.error = tr("Klipper history not found: %1").arg(databasePath);
         return result;
@@ -1161,7 +1330,10 @@ ExportImportManager::ImportResult ExportImportManager::importKlipperHistory(cons
                 result.error = tr("%1 is not a Klipper history database (%2)")
                                    .arg(databasePath, query.lastError().text());
             } else {
+                int readRows = 0;
                 while (query.next()) {
+                    if (++readRows % 256 == 0 && isCanceled())
+                        break; // the isCanceled() check below aborts before any import
                     const QString text = query.value(0).toString();
                     if (text.trimmed().isEmpty()) {
                         ++result.entriesSkipped; // image items carry no text
@@ -1195,10 +1367,27 @@ ExportImportManager::ImportResult ExportImportManager::importKlipperHistory(cons
     QSqlDatabase::removeDatabase(connectionName);
     if (!result.error.isEmpty())
         return result;
+    if (isCanceled()) {
+        result.error = tr("Import canceled before it started — nothing was imported.");
+        return result;
+    }
 
     // One transaction and one refresh for the whole import.
     const bool bulk = m_storage->beginBulk();
+    const int klipperTotal = records.size();
+    int klipperDone = 0;
     for (const ClipboardRecord &record : records) {
+        if (isCanceled()) {
+            if (bulk)
+                m_storage->endBulk(false); // roll back: a canceled import imports nothing
+            result.error = tr("Import canceled after %1 of %2 entries — nothing was imported.")
+                               .arg(klipperDone)
+                               .arg(klipperTotal);
+            return result;
+        }
+        ++klipperDone;
+        if (klipperDone % 64 == 0 && progress)
+            progress(klipperDone, klipperTotal);
         bool updatedExisting = false;
         if (m_storage->insertOrUpdate(record, &updatedExisting) == 0) {
             ++result.entriesSkipped;
@@ -1209,6 +1398,8 @@ ExportImportManager::ImportResult ExportImportManager::importKlipperHistory(cons
         else
             ++result.entriesImported;
     }
+    if (progress)
+        progress(klipperDone, klipperTotal);
     if (bulk)
         m_storage->endBulk(true);
 
@@ -1239,7 +1430,9 @@ int ExportImportManager::pruneBackups(const QString &folder, int keep)
     return removed;
 }
 
-ExportImportManager::BackupResult ExportImportManager::writeBackup(const QString &folder, int keep)
+ExportImportManager::BackupResult ExportImportManager::writeBackup(const QString &folder, int keep,
+                                                                   std::atomic<bool> *cancel,
+                                                                   IoProgress progress)
 {
     BackupResult result;
     if (folder.trimmed().isEmpty()) {
@@ -1268,7 +1461,7 @@ ExportImportManager::BackupResult ExportImportManager::writeBackup(const QString
     request.scope = Scope::Everything;
     request.path = path;
     QString error;
-    if (!exportToFile(request, &error)) {
+    if (!exportToFile(request, &error, cancel, progress)) {
         result.error = error;
         return result;
     }

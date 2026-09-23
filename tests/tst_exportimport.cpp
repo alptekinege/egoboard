@@ -54,6 +54,14 @@ private slots:
     void exportsImagesAsJpegThroughEncoderHook();
     void reportsEncoderFailuresWithoutManifest();
     void requiresEncoderForJpegFormat();
+    void exportJsonReportsProgressToTotal();
+    void exportJsonCancelBeforeStartWritesNothing();
+    void exportJsonCancelMidRunWritesNothing();
+    void importCancelBeforeStartImportsNothing();
+    void importCancelMidRunRollsBack();
+    void importReportsProgressToTotal();
+    void klipperCancelBeforeStartImportsNothing();
+    void backupCancelBeforeStartWritesNothing();
 
 private:
     void seed(StorageManager *storage, BookmarkManager *bookmarks);
@@ -1120,6 +1128,199 @@ void TestExportImport::requiresEncoderForJpegFormat()
     QVERIFY(!result.error.isEmpty());
     QCOMPARE(result.exported, 0);
     QVERIFY(result.manifestPath.isEmpty());
+}
+
+void TestExportImport::exportJsonReportsProgressToTotal()
+{
+    // U11 (G9): progress is monotonic and ends at (total, total).
+    seed(m_storage, m_bookmarks);
+    QVector<QPair<int, int>> calls;
+    ExportImportManager::ExportRequest request;
+    request.scope = ExportImportManager::Scope::Everything;
+    request.path = m_dir.filePath(QStringLiteral("progress.json"));
+    QString error;
+    QVERIFY2(m_io->exportToFile(request, &error, nullptr,
+                                [&](int done, int total) { calls.append({done, total}); }),
+             qPrintable(error));
+    QVERIFY(!calls.isEmpty());
+    for (int i = 1; i < calls.size(); ++i) {
+        QVERIFY(calls.at(i).first >= calls.at(i - 1).first); // done never goes back
+        QVERIFY(calls.at(i).second >= calls.at(i - 1).second); // nor does total
+    }
+    QCOMPARE(calls.last().first, calls.last().second);
+    QVERIFY(calls.last().second >= 3);
+}
+
+void TestExportImport::exportJsonCancelBeforeStartWritesNothing()
+{
+    seed(m_storage, m_bookmarks);
+    ExportImportManager::ExportRequest request;
+    request.scope = ExportImportManager::Scope::Everything;
+    request.path = m_dir.filePath(QStringLiteral("canceled-before.json"));
+    std::atomic<bool> cancel{true}; // canceled before the first byte
+    QString error;
+    QVERIFY(!m_io->exportToFile(request, &error, &cancel, {}));
+    QVERIFY(error.contains(QStringLiteral("canceled")));
+    QVERIFY(!QFile::exists(request.path));
+}
+
+void TestExportImport::exportJsonCancelMidRunWritesNothing()
+{
+    // 300 entries span two 200-row gather pages; canceling in the first
+    // page's callback aborts before any file is opened.
+    for (int i = 0; i < 300; ++i) {
+        ClipboardRecord record;
+        record.hash = QByteArrayLiteral("cancel-bulk-") + QByteArray::number(i);
+        record.type = ContentType::Text;
+        record.textData = QStringLiteral("payload %1").arg(i);
+        record.preview = record.textData;
+        record.timestamp = 1000 + i;
+        record.sizeBytes = record.textData.size();
+        record.sourceApp = QStringLiteral("seeder");
+        QVERIFY(m_storage->insertOrUpdate(record) > 0);
+    }
+    ExportImportManager::ExportRequest request;
+    request.scope = ExportImportManager::Scope::Everything;
+    request.path = m_dir.filePath(QStringLiteral("canceled-mid.json"));
+    std::atomic<bool> cancel{false};
+    QString error;
+    QVERIFY(!m_io->exportToFile(request, &error, &cancel,
+                                [&](int done, int) {
+                                    if (done >= 64)
+                                        cancel.store(true, std::memory_order_relaxed);
+                                }));
+    QVERIFY(error.contains(QStringLiteral("canceled")));
+    QVERIFY(!QFile::exists(request.path)); // gather/serialize abort: no file
+}
+
+void TestExportImport::importCancelBeforeStartImportsNothing()
+{
+    seed(m_storage, m_bookmarks);
+    const QString path = m_dir.filePath(QStringLiteral("cancel-import.json"));
+    ExportImportManager::ExportRequest request;
+    request.scope = ExportImportManager::Scope::Everything;
+    request.path = path;
+    QString error;
+    QVERIFY2(m_io->exportToFile(request, &error), qPrintable(error));
+
+    init(); // fresh database
+    QSignalSpy resetSpy(m_storage, &StorageManager::storageReset);
+    std::atomic<bool> cancel{true};
+    const auto result = m_io->importFromFile(path, ExportImportManager::ImportMode::Merge,
+                                             &cancel, {});
+    QVERIFY(!result.ok);
+    QVERIFY(result.error.contains(QStringLiteral("canceled")));
+    QCOMPARE(m_storage->stats().entryCount, qint64(0));
+    QCOMPARE(resetSpy.count(), 0); // no reset: nothing changed
+}
+
+void TestExportImport::importCancelMidRunRollsBack()
+{
+    // Overwrite wipes first inside the bulk transaction: canceling mid-run
+    // must roll everything back, including the wipe.
+    for (int i = 0; i < 300; ++i) {
+        ClipboardRecord record;
+        record.hash = QByteArrayLiteral("rollback-") + QByteArray::number(i);
+        record.type = ContentType::Text;
+        record.textData = QStringLiteral("payload %1").arg(i);
+        record.preview = record.textData;
+        record.timestamp = 1000 + i;
+        record.sizeBytes = record.textData.size();
+        record.sourceApp = QStringLiteral("seeder");
+        QVERIFY(m_storage->insertOrUpdate(record) > 0);
+    }
+    const QString path = m_dir.filePath(QStringLiteral("rollback.json"));
+    ExportImportManager::ExportRequest request;
+    request.scope = ExportImportManager::Scope::Everything;
+    request.path = path;
+    QString error;
+    QVERIFY2(m_io->exportToFile(request, &error), qPrintable(error));
+
+    init(); // fresh database with two survivors of its own
+    for (const char *name : {"survivor-1", "survivor-2"}) {
+        ClipboardRecord record;
+        record.hash = QByteArray(name);
+        record.type = ContentType::Text;
+        record.textData = QString::fromLatin1(name);
+        record.preview = record.textData;
+        record.timestamp = 5000;
+        record.sizeBytes = record.textData.size();
+        record.sourceApp = QStringLiteral("seeder");
+        QVERIFY(m_storage->insertOrUpdate(record) > 0);
+    }
+    QSignalSpy resetSpy(m_storage, &StorageManager::storageReset);
+    std::atomic<bool> cancel{false};
+    const auto result = m_io->importFromFile(
+        path, ExportImportManager::ImportMode::Overwrite, &cancel, [&](int done, int) {
+            if (done >= 64)
+                cancel.store(true, std::memory_order_relaxed);
+        });
+    QVERIFY(!result.ok);
+    QVERIFY(result.error.contains(QStringLiteral("canceled")));
+    QCOMPARE(m_storage->stats().entryCount, qint64(2)); // wipe rolled back
+    QCOMPARE(resetSpy.count(), 0);
+}
+
+void TestExportImport::importReportsProgressToTotal()
+{
+    seed(m_storage, m_bookmarks);
+    const QString path = m_dir.filePath(QStringLiteral("import-progress.json"));
+    ExportImportManager::ExportRequest request;
+    request.scope = ExportImportManager::Scope::Everything;
+    request.path = path;
+    QString error;
+    QVERIFY2(m_io->exportToFile(request, &error), qPrintable(error));
+
+    init();
+    QVector<QPair<int, int>> calls;
+    const auto result = m_io->importFromFile(
+        path, ExportImportManager::ImportMode::Merge, nullptr,
+        [&](int done, int total) { calls.append({done, total}); });
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QVERIFY(!calls.isEmpty());
+    for (int i = 1; i < calls.size(); ++i)
+        QVERIFY(calls.at(i).first >= calls.at(i - 1).first);
+    QCOMPARE(calls.last().first, calls.last().second);
+    QCOMPARE(calls.last().second, 3);
+}
+
+void TestExportImport::klipperCancelBeforeStartImportsNothing()
+{
+    const QString klipperPath = m_dir.filePath(QStringLiteral("cancel-history3.sqlite"));
+    const QString connectionName = QStringLiteral("klipper-cancel-fixture");
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+        db.setDatabaseName(klipperPath);
+        QVERIFY(db.open());
+        QSqlQuery query(db);
+        QVERIFY(query.exec(QStringLiteral(
+            "CREATE TABLE main (uuid char(40) PRIMARY KEY, added_time REAL NOT NULL,"
+            " last_used_time REAL, mimetypes TEXT NOT NULL, text NTEXT, starred BOOLEAN)")));
+        QVERIFY(query.exec(QStringLiteral(
+            "INSERT INTO main (uuid, added_time, last_used_time, mimetypes, text, starred)"
+            " VALUES ('k', 1500000000.5, 1500000100.0, 'text/plain', 'klipper canceled', 0)")));
+        db.close();
+        db = QSqlDatabase();
+        QSqlDatabase::removeDatabase(connectionName);
+    }
+    QSignalSpy resetSpy(m_storage, &StorageManager::storageReset);
+    std::atomic<bool> cancel{true};
+    const auto result = m_io->importKlipperHistory(klipperPath, &cancel, {});
+    QVERIFY(!result.ok);
+    QVERIFY(result.error.contains(QStringLiteral("canceled")));
+    QCOMPARE(m_storage->stats().entryCount, qint64(0));
+    QCOMPARE(resetSpy.count(), 0);
+}
+
+void TestExportImport::backupCancelBeforeStartWritesNothing()
+{
+    seed(m_storage, m_bookmarks);
+    const QString folder = m_dir.filePath(QStringLiteral("backups-canceled"));
+    std::atomic<bool> cancel{true};
+    const auto result = m_io->writeBackup(folder, 3, &cancel, {});
+    QVERIFY(!result.ok);
+    QVERIFY(result.error.contains(QStringLiteral("canceled")));
+    QVERIFY(ExportImportManager::listBackups(folder).isEmpty());
 }
 
 QTEST_GUILESS_MAIN(TestExportImport)

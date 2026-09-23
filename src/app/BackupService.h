@@ -4,6 +4,7 @@
 
 #include <QObject>
 
+#include <atomic>
 #include <functional>
 #include <memory>
 
@@ -29,11 +30,17 @@ public:
     // Schedules a restore of a backup file; safe to call from the GUI.
     void requestRestore(const QString &path, ExportImportManager::ImportMode mode,
                         const QString &encryptionKey);
+    // U11 (G9): cooperative cancel for the in-flight run; safe from any
+    // thread (the worker polls the flag at bounded-page granularity).
+    void requestCancel();
 
 signals:
     void finished(bool ok, const QString &path, const QString &error);
     void restoreFinished(bool ok, const QString &path, const QString &error, int imported,
                          int merged, int skipped);
+    // (done, total) entries so far, emitted from the worker thread.
+    void backupProgress(int done, int total);
+    void restoreProgress(int done, int total);
 
 private:
     void run(const QString &folder, int keep, const QString &encryptionKey);
@@ -48,6 +55,7 @@ private:
     std::unique_ptr<BookmarkManager> m_bookmarks;
     std::unique_ptr<SnippetManager> m_snippets;
     std::unique_ptr<ExportImportManager> m_io;
+    std::atomic<bool> m_cancel{false};
 };
 
 // Automatic backups: runs daily (and once at startup when overdue), writes
@@ -65,6 +73,9 @@ public:
     bool runNow();
     // Restores a backup file (on the worker thread); false when busy.
     bool restoreNow(const QString &path, ExportImportManager::ImportMode mode);
+    // U11 (G9): cancels the in-flight backup/restore; the run reports back
+    // through finished/restoreFinished with a canceled error.
+    void cancel();
     bool isRunning() const { return m_running; }
     // Effective folder (configured value, else the default under Documents).
     QString folder() const;
@@ -76,6 +87,9 @@ signals:
     // Emitted after a restore; the caller refreshes storage/models.
     void restoreFinished(bool ok, const QString &path, const QString &error, int imported,
                          int merged, int skipped);
+    // (done, total) progress forwarded from the worker thread.
+    void backupProgress(int done, int total);
+    void restoreProgress(int done, int total);
 
 private:
     void schedule();

@@ -25,6 +25,7 @@ BackupWorker::~BackupWorker() = default;
 
 void BackupWorker::requestRun(const QString &folder, int keep, const QString &encryptionKey)
 {
+    m_cancel.store(false, std::memory_order_relaxed);
     if (QThread::currentThread() == thread()) {
         run(folder, keep, encryptionKey);
         return;
@@ -37,6 +38,7 @@ void BackupWorker::requestRun(const QString &folder, int keep, const QString &en
 void BackupWorker::requestRestore(const QString &path, ExportImportManager::ImportMode mode,
                                   const QString &encryptionKey)
 {
+    m_cancel.store(false, std::memory_order_relaxed);
     if (QThread::currentThread() == thread()) {
         restore(path, mode, encryptionKey);
         return;
@@ -44,6 +46,11 @@ void BackupWorker::requestRestore(const QString &path, ExportImportManager::Impo
     QMetaObject::invokeMethod(
         this, [this, path, mode, encryptionKey] { restore(path, mode, encryptionKey); },
         Qt::QueuedConnection);
+}
+
+void BackupWorker::requestCancel()
+{
+    m_cancel.store(true, std::memory_order_relaxed);
 }
 
 bool BackupWorker::ensureStorage(const QString &encryptionKey)
@@ -78,7 +85,9 @@ void BackupWorker::run(const QString &folder, int keep, const QString &encryptio
         return;
     }
 
-    const ExportImportManager::BackupResult result = m_io->writeBackup(folder, keep);
+    const ExportImportManager::BackupResult result =
+        m_io->writeBackup(folder, keep, &m_cancel,
+                          [this](int done, int total) { emit backupProgress(done, total); });
     emit finished(result.ok, result.path, result.error);
 }
 
@@ -94,7 +103,8 @@ void BackupWorker::restore(const QString &path, ExportImportManager::ImportMode 
         return;
     }
 
-    const ExportImportManager::ImportResult result = m_io->importFromFile(path, mode);
+    const ExportImportManager::ImportResult result = m_io->importFromFile(
+        path, mode, &m_cancel, [this](int done, int total) { emit restoreProgress(done, total); });
     emit restoreFinished(result.ok, path, result.error, result.entriesImported,
                          result.entriesMerged, result.entriesSkipped);
 }
@@ -173,6 +183,12 @@ bool BackupService::restoreNow(const QString &path, ExportImportManager::ImportM
     m_running = true;
     m_worker->requestRestore(path.trimmed(), mode, walletKey());
     return true;
+}
+
+void BackupService::cancel()
+{
+    if (m_worker)
+        m_worker->requestCancel(); // atomic: safe to call from the GUI thread
 }
 
 QString BackupService::walletKey() const

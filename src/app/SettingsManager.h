@@ -5,6 +5,7 @@
 #include "TextAppearance.h"
 
 #include <memory>
+#include <QJsonObject>
 #include <QList>
 #include <QObject>
 #include <QPoint>
@@ -284,6 +285,19 @@ public:
     bool encryptionEnabled() const;
     void setEncryptionEnabled(bool enabled);
 
+    // U14 settings portability: full snapshot of the preferences above as one
+    // JSON object (`format`/`version` envelope + one key per setting), so a
+    // setup moves between machines with Export/Import next to the history
+    // backup. Round-trips through the setters, so range/enum/theme validation
+    // re-runs on import. Deliberately excluded: lastBackupMs (backup-schedule
+    // state that must not suppress the first backup on the new machine).
+    // Unknown keys are ignored (forward compatible); a wrong format tag or a
+    // newer version rejects the file. Emits a single changed().
+    static QString settingsFormatTag();
+    static int settingsFormatVersion();
+    QJsonObject exportToJson() const;
+    bool importFromJson(const QJsonObject &root, QString *error = nullptr);
+
     static QString defaultDatabasePath();
     static QString autostartDesktopFilePath();
 
@@ -295,4 +309,5 @@ private:
     void migrateConfig(); // forward-only, runs once when the file is loaded
 
     KConfig *m_config = nullptr; // KConfig is not a QObject; owned manually
+    bool m_suppressChanged = false; // import batches many setters into one changed()
 };

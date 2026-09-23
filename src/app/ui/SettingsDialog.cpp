@@ -69,6 +69,7 @@
 #include <QVBoxLayout>
 #include <QtConcurrent>
 
+#include <atomic>
 #include <limits>
 
 namespace {
@@ -130,6 +131,36 @@ auto runWithProgress(QWidget *parent, const QString &label, Fn &&fn)
     
     dialog.exec();
     return future.result();
+}
+
+// U11 (G9): chunked synchronous run on the GUI thread for cooperative
+// cancel/progress ops (export/import/Klipper): fn takes
+// (std::atomic<bool> *, IoProgress). Same thread as the storage connection,
+// so — unlike runWithProgress — no worker-thread SQL; the progress callback
+// pumps the event loop between batches so Cancel takes effect promptly.
+template<typename Fn>
+auto runIoWithProgress(QWidget *parent, const QString &label, Fn &&fn)
+    -> decltype(fn(nullptr, ExportImportManager::IoProgress{}))
+{
+    std::atomic<bool> cancel{false};
+    QProgressDialog dialog(label, QObject::tr("Cancel"), 0, 0, parent);
+    dialog.setWindowModality(Qt::WindowModal);
+    dialog.setMinimumDuration(0);
+    QObject::connect(&dialog, &QProgressDialog::canceled, &dialog, [&cancel] {
+        cancel.store(true, std::memory_order_relaxed);
+    });
+    dialog.show();
+    auto result = fn(&cancel, [&](int done, int total) {
+        if (total > 0) {
+            dialog.setMaximum(total);
+            dialog.setValue(done);
+        }
+        dialog.setLabelText(
+            QObject::tr("%1 %2 of %3 entries").arg(label).arg(done).arg(total));
+        QApplication::processEvents();
+    });
+    dialog.close();
+    return result;
 }
 } // namespace
 
@@ -1076,6 +1107,7 @@ QWidget *SettingsDialog::buildStoragePage()
             return;
         }
         m_backupStatus->setText(tr("Restoring %1…").arg(QFileInfo(path).fileName()));
+        showIoProgress(tr("Restoring %1…").arg(QFileInfo(path).fileName()));
     });
     keepRow->addWidget(restoreBackupBtn);
     backupLayout->addLayout(keepRow);
@@ -1093,11 +1125,14 @@ QWidget *SettingsDialog::buildStoragePage()
         if (!service->runNow()) {
             m_backupNowBtn->setEnabled(true);
             m_backupStatus->setText(tr("A backup is already running."));
+        } else {
+            showIoProgress(tr("Backup running…"));
         }
     });
     if (BackupService *service = m_ctx.backupService()) {
         connect(service, &BackupService::finished, this,
                 [this](bool ok, const QString &path, const QString &error) {
+                    closeIoProgress();
                     m_backupNowBtn->setEnabled(true);
                     if (ok)
                         m_backupStatus->setText(tr("Last backup: %1").arg(path));
@@ -1107,6 +1142,7 @@ QWidget *SettingsDialog::buildStoragePage()
         connect(service, &BackupService::restoreFinished, this,
                 [this](bool ok, const QString &path, const QString &error, int imported,
                        int merged, int skipped) {
+                    closeIoProgress();
                     m_backupNowBtn->setEnabled(true);
                     if (ok) {
                         m_backupStatus->setText(
@@ -1117,6 +1153,28 @@ QWidget *SettingsDialog::buildStoragePage()
                                 .arg(skipped));
                     } else {
                         m_backupStatus->setText(tr("Restore failed: %1").arg(error));
+                    }
+                });
+        connect(service, &BackupService::backupProgress, this,
+                [this](int done, int total) {
+                    if (m_ioProgress) {
+                        if (total > 0) {
+                            m_ioProgress->setMaximum(total);
+                            m_ioProgress->setValue(done);
+                        }
+                        m_ioProgress->setLabelText(
+                            tr("Backup… %1 of %2 entries").arg(done).arg(total));
+                    }
+                });
+        connect(service, &BackupService::restoreProgress, this,
+                [this](int done, int total) {
+                    if (m_ioProgress) {
+                        if (total > 0) {
+                            m_ioProgress->setMaximum(total);
+                            m_ioProgress->setValue(done);
+                        }
+                        m_ioProgress->setLabelText(
+                            tr("Restoring… %1 of %2 entries").arg(done).arg(total));
                     }
                 });
     }
@@ -1214,9 +1272,11 @@ QWidget *SettingsDialog::buildStoragePage()
             tr("Klipper history (history3.sqlite *.sqlite);;All files (*)"));
         if (path.isEmpty())
             return;
-        const auto result = runWithProgress(this, tr("Importing Klipper history…"), [this, path] {
-            return m_ctx.io()->importKlipperHistory(path);
-        });
+        const auto result = runIoWithProgress(
+            this, tr("Importing Klipper history…"),
+            [&](std::atomic<bool> *cancel, ExportImportManager::IoProgress progress) {
+                return m_ctx.io()->importKlipperHistory(path, cancel, progress);
+            });
         if (!result.ok) {
             QMessageBox::warning(this, tr("Klipper import"), result.error);
             return;
@@ -1251,9 +1311,11 @@ QWidget *SettingsDialog::buildStoragePage()
             break;
         }
         QString error;
-        const bool exported = runWithProgress(this, tr("Exporting…"), [this, request, &error] {
-            return m_ctx.io()->exportToFile(request, &error);
-        });
+        const bool exported = runIoWithProgress(
+            this, tr("Exporting…"),
+            [&](std::atomic<bool> *cancel, ExportImportManager::IoProgress progress) {
+                return m_ctx.io()->exportToFile(request, &error, cancel, progress);
+            });
         if (!exported)
             QMessageBox::warning(this, tr("Export failed"), error);
         else
@@ -1265,9 +1327,12 @@ QWidget *SettingsDialog::buildStoragePage()
         ExportImportDialogs::ImportDialog dialog(this);
         if (dialog.exec() != QDialog::Accepted)
             return;
-        const auto result = runWithProgress(this, tr("Importing…"), [this, path = dialog.filePath(), mode = dialog.mode()] {
-            return m_ctx.io()->importFromFile(path, mode);
-        });
+        const auto result = runIoWithProgress(
+            this, tr("Importing…"),
+            [this, path = dialog.filePath(), mode = dialog.mode()](
+                std::atomic<bool> *cancel, ExportImportManager::IoProgress progress) {
+                return m_ctx.io()->importFromFile(path, mode, cancel, progress);
+            });
         if (!result.ok) {
             QMessageBox::warning(this, tr("Import failed"), result.error);
             return;
@@ -1324,6 +1389,29 @@ void SettingsDialog::hideIntegrityError()
     if (m_integrityError) {
         m_integrityError->deleteLater();
         m_integrityError = nullptr;
+    }
+}
+
+void SettingsDialog::showIoProgress(const QString &label)
+{
+    closeIoProgress();
+    auto *dialog = new QProgressDialog(label, tr("Cancel"), 0, 0, this);
+    dialog->setWindowModality(Qt::WindowModal);
+    dialog->setMinimumDuration(0);
+    connect(dialog, &QProgressDialog::canceled, this, [this] {
+        if (BackupService *service = m_ctx.backupService())
+            service->cancel();
+    });
+    dialog->show();
+    m_ioProgress = dialog;
+}
+
+void SettingsDialog::closeIoProgress()
+{
+    if (m_ioProgress) {
+        m_ioProgress->close();
+        m_ioProgress->deleteLater();
+        m_ioProgress = nullptr;
     }
 }
 

@@ -5,6 +5,7 @@
 
 #include <QDialog>
 #include <QList>
+#include <QPointer>
 class ApplicationContext;
 class KColorButton;
 class QCheckBox;
@@ -14,6 +15,7 @@ class QLineEdit;
 class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
+class QProgressDialog;
 class QRadioButton;
 class QSpinBox;
 class QTextBrowser;
@@ -54,6 +56,10 @@ private:
     void rebuildSearchIndex();
     void showIntegrityError(const QString &error);
     void hideIntegrityError();
+    // U11 (G9) backup/restore progress: one at a time (the service runs a
+    // single worker op), closed by the finished handlers below.
+    void showIoProgress(const QString &label);
+    void closeIoProgress();
     // Crash-report toolkit (U20): same schema as the CLI modes.
     void createCrashReport();
     void openCrashReport();
@@ -141,6 +147,9 @@ private:
     QSpinBox *m_backupKeep = nullptr;
     QPushButton *m_backupNowBtn = nullptr;
     QLabel *m_backupStatus = nullptr;
+    // U11 (G9) cancelable backup/restore progress dialog for manual runs
+    // (automatic runs only touch the status label).
+    QPointer<QProgressDialog> m_ioProgress;
     // U13 DB-error state: persistent integrity panel inside Maintenance.
     QVBoxLayout *m_maintenanceLayout = nullptr;
     QWidget *m_integrityError = nullptr;
