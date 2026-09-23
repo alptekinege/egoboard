@@ -1112,6 +1112,65 @@ QWidget *SettingsDialog::buildStoragePage()
     keepRow->addWidget(restoreBackupBtn);
     backupLayout->addLayout(keepRow);
 
+    // U14 settings portability, next to the history backup: the whole setup
+    // as one JSON file. Machine-local state (last backup time) is excluded;
+    // secrets stay in KWallet and never enter the file.
+    auto *settingsRow = new QHBoxLayout();
+    settingsRow->addWidget(new QLabel(tr("Settings:"), backupBox));
+    auto *exportSettingsBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-save")),
+                                              tr("Export settings…"), backupBox);
+    connect(exportSettingsBtn, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getSaveFileName(
+            this, tr("Export settings"), SettingsManager::defaultBackupFolder()
+                + QStringLiteral("/egoboard-settings.json"),
+            tr("Egoboard settings (*.json)"));
+        if (path.isEmpty())
+            return;
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            QMessageBox::warning(this, tr("Export settings"),
+                                 tr("Cannot write %1: %2").arg(path, file.errorString()));
+            return;
+        }
+        file.write(QJsonDocument(m_ctx.settings()->exportToJson()).toJson(QJsonDocument::Indented));
+        QMessageBox::information(this, tr("Export settings"),
+                                 tr("Settings exported to %1.").arg(path));
+    });
+    settingsRow->addWidget(exportSettingsBtn);
+    auto *importSettingsBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-open")),
+                                              tr("Import settings…"), backupBox);
+    connect(importSettingsBtn, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getOpenFileName(
+            this, tr("Import settings"), SettingsManager::defaultBackupFolder(),
+            tr("Egoboard settings (*.json);;All files (*)"));
+        if (path.isEmpty())
+            return;
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) {
+            QMessageBox::warning(this, tr("Import settings"),
+                                 tr("Cannot read %1: %2").arg(path, file.errorString()));
+            return;
+        }
+        QJsonParseError parseError{};
+        const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+            QMessageBox::warning(this, tr("Import settings"),
+                                 tr("%1 is not a valid Egoboard settings file.").arg(path));
+            return;
+        }
+        QString error;
+        if (!m_ctx.settings()->importFromJson(document.object(), &error)) {
+            QMessageBox::warning(this, tr("Import settings"), error);
+            return;
+        }
+        load(); // re-read every page from the imported values
+        refreshDiagnostics();
+        QMessageBox::information(this, tr("Import settings"), tr("Settings imported."));
+    });
+    settingsRow->addWidget(importSettingsBtn);
+    settingsRow->addStretch(1);
+    backupLayout->addLayout(settingsRow);
+
     m_backupStatus = makeStatusPanel(QString(), backupBox);
     backupLayout->addWidget(m_backupStatus);
     backupLayout->addWidget(makeHint(tr("Backups are plain JSON files — restore one with Import JSON… below. The export runs on a worker thread, so the window stays responsive."), backupBox));

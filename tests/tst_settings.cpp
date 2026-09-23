@@ -10,10 +10,25 @@
 
 #include <QDir>
 #include <QFile>
+#include <QJsonObject>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QVector>
+
+namespace {
+// Restores XDG_CONFIG_HOME when a slot switches homes mid-test (QVERIFY
+// aborts the slot on failure, so plain cleanup at the end would not run).
+struct XdgConfigHomeRestore {
+    explicit XdgConfigHomeRestore(const QString &home)
+        : previous(qgetenv("XDG_CONFIG_HOME"))
+    {
+        qputenv("XDG_CONFIG_HOME", home.toUtf8());
+    }
+    ~XdgConfigHomeRestore() { qputenv("XDG_CONFIG_HOME", previous); }
+    QByteArray previous;
+};
+} // namespace
 
 class TestSettings : public QObject
 {
@@ -47,6 +62,12 @@ private slots:
     void listDisplayOptionsPersist();
     void quickPasteOptionsPersist();
     void configMigrationsAreForwardOnly();
+    void settingsJsonRoundTrip();
+    void settingsJsonIgnoresUnknownAndKeepsMissing();
+    void settingsJsonRejectsBadFiles();
+    void settingsJsonExcludesBackupSchedule();
+    void settingsJsonPositionsRoundTrip();
+    void settingsJsonImportEmitsSingleChanged();
 
 private:
     QTemporaryDir m_tempDir;
@@ -851,6 +872,261 @@ void TestSettings::configMigrationsAreForwardOnly()
     SettingsManager future;
     QCOMPARE(future.configVersion(), 999);
     QCOMPARE(future.maxItemBytes(), qint64(-5)); // untouched
+}
+
+void TestSettings::settingsJsonRoundTrip()
+{
+    // U14 portability: every preference survives export → fresh home → import.
+    SettingsManager settings;
+    settings.setTrayPrimaryClick(SettingsManager::TrayClick::TogglePause);
+    settings.setTraySecondaryClick(SettingsManager::TrayClick::Nothing);
+    settings.setTrayWheelCycles(false);
+    settings.setTrayMode(QStringLiteral("always"));
+    settings.setNotificationsEnabled(false);
+    settings.setCaptureSoundEnabled(false);
+    settings.setCaptureNotificationEnabled(false);
+    settings.setStartVisible(true);
+    settings.setHideOnFocusOut(true);
+    settings.setMonitorPrimarySelection(true);
+    settings.setQuickPasteCount(5);
+    settings.setQuickPasteTwoLine(true);
+    settings.setQuickPastePos(QStringLiteral("HDMI-1"), QPoint(120, 340));
+    settings.setAutostartEnabled(true);
+    settings.setAutostartCommand(QStringLiteral("/tmp/egoboard-test"));
+    settings.setCaptureText(false);
+    settings.setCaptureImages(false);
+    settings.setDebounceMs(500);
+    settings.setSensitiveMode(SettingsManager::SensitiveMode::Redact);
+    settings.setRedactKinds(QStringList{QStringLiteral("creditcard")});
+    ExpireRule rule;
+    rule.contentType = -1;
+    rule.sourceAppWildcard = QStringLiteral("firefox*");
+    rule.ageSeconds = 86400;
+    rule.keepPinned = true;
+    settings.setExpireRules(QList<ExpireRule>{rule});
+    settings.setMaxItemBytes(1024);
+    settings.setMaxImageBytes(2048);
+    settings.setDiskCapBytes(1 << 20);
+    settings.setMaxEntries(100);
+    settings.setIgnoredSourceApps(QStringList{QStringLiteral("game")});
+    settings.setCustomSensitivePatterns(QStringList{QStringLiteral("secret-.*")});
+    settings.setEncryptionEnabled(true);
+    settings.setOcrEnabled(false);
+    settings.setOcrLanguage(QStringLiteral("deu"));
+    settings.setOcrMaxChars(1024);
+    settings.setPreviewCodeHighlight(false);
+    settings.setPreviewLinkify(false);
+    settings.setPreviewColorSwatches(false);
+    settings.setDisabledScripts(QStringList{QStringLiteral("x")});
+    settings.setHiddenTransforms(QStringList{QStringLiteral("uppercase")});
+    settings.setFontPointDelta(2);
+    settings.setTextColor(QStringLiteral("#ff0000"));
+    settings.setDimTextColor(QStringLiteral("#00ff00"));
+    settings.setToolbarIconOnly(true);
+    settings.setReduceMotion(true);
+    settings.setTimelineEnabled(false);
+    settings.setGroupByDay(true);
+    settings.setShowEntryIndex(true);
+    settings.setShowUseCountBadge(true);
+    settings.setPrivacyBlur(true);
+    settings.setCloseAfterPaste(false);
+    settings.setBumpOnPaste(false);
+    settings.setPasteAsPlainText(true);
+    settings.setListDensity(QStringLiteral("spacious"));
+    settings.setSortMode(2);
+    settings.setSearchScope(3);
+    settings.addRecentSearch(QStringLiteral("foo"));
+    settings.addRecentSearch(QStringLiteral("bar"));
+    settings.addRecentPaletteCommand(QStringLiteral("pin"));
+    settings.setTimestampStyle(QStringLiteral("absolute"));
+    settings.setClock24h(false);
+    settings.setRememberWindowGeometry(false);
+    settings.setRestoreLastFilter(true);
+    settings.setWindowGeometry(QByteArray("geom-bytes"));
+    settings.setSplitterState(QByteArray("split-bytes"));
+    settings.setSplitterStateForMode(1, QByteArray("mode1-bytes"));
+    settings.setLastFilter(QStringLiteral("{\"x\":1}"));
+    settings.setBackupsEnabled(true);
+    settings.setBackupFolder(QStringLiteral("/tmp/egoback"));
+    settings.setBackupKeep(3);
+    const QJsonObject snapshot = settings.exportToJson();
+    QCOMPARE(snapshot.value(QStringLiteral("format")).toString(),
+             SettingsManager::settingsFormatTag());
+    QCOMPARE(snapshot.value(QStringLiteral("version")).toInt(),
+             SettingsManager::settingsFormatVersion());
+
+    QTemporaryDir other;
+    QVERIFY(other.isValid());
+    XdgConfigHomeRestore homeGuard(other.path());
+    SettingsManager imported;
+    QString error;
+    QVERIFY2(imported.importFromJson(snapshot, &error), qPrintable(error));
+    QCOMPARE(imported.trayPrimaryClick(), SettingsManager::TrayClick::TogglePause);
+    QCOMPARE(imported.traySecondaryClick(), SettingsManager::TrayClick::Nothing);
+    QVERIFY(!imported.trayWheelCycles());
+    QCOMPARE(imported.trayMode(), QStringLiteral("always"));
+    QVERIFY(!imported.notificationsEnabled());
+    QVERIFY(!imported.captureSoundEnabled());
+    QVERIFY(!imported.captureNotificationEnabled());
+    QVERIFY(imported.startVisible());
+    QVERIFY(imported.hideOnFocusOut());
+    QVERIFY(imported.monitorPrimarySelection());
+    QCOMPARE(imported.quickPasteCount(), 5);
+    QVERIFY(imported.quickPasteTwoLine());
+    QCOMPARE(imported.quickPastePos(QStringLiteral("HDMI-1")), QPoint(120, 340));
+    QVERIFY(imported.autostartEnabled());
+    QCOMPARE(imported.autostartCommand(), settings.autostartCommand());
+    QVERIFY(!imported.captureText());
+    QVERIFY(!imported.captureImages());
+    QCOMPARE(imported.debounceMs(), 500);
+    QCOMPARE(imported.sensitiveMode(), SettingsManager::SensitiveMode::Redact);
+    QCOMPARE(imported.redactKinds(), QStringList({QStringLiteral("creditcard")}));
+    const QList<ExpireRule> rules = imported.expireRules();
+    QCOMPARE(rules.size(), 1);
+    QCOMPARE(rules.first().sourceAppWildcard, QStringLiteral("firefox*"));
+    QCOMPARE(rules.first().ageSeconds, qint64(86400));
+    QCOMPARE(imported.maxItemBytes(), qint64(1024));
+    QCOMPARE(imported.maxImageBytes(), qint64(2048));
+    QCOMPARE(imported.diskCapBytes(), qint64(1 << 20));
+    QCOMPARE(imported.maxEntries(), 100);
+    QCOMPARE(imported.ignoredSourceApps(), QStringList({QStringLiteral("game")}));
+    QCOMPARE(imported.customSensitivePatterns(), QStringList({QStringLiteral("secret-.*")}));
+    QVERIFY(imported.encryptionEnabled());
+    QVERIFY(!imported.ocrEnabled());
+    QCOMPARE(imported.ocrLanguage(), QStringLiteral("deu"));
+    QCOMPARE(imported.ocrMaxChars(), 1024);
+    QVERIFY(!imported.previewCodeHighlight());
+    QVERIFY(!imported.previewLinkify());
+    QVERIFY(!imported.previewColorSwatches());
+    QCOMPARE(imported.disabledScripts(), QStringList({QStringLiteral("x")}));
+    QCOMPARE(imported.hiddenTransforms(), QStringList({QStringLiteral("uppercase")}));
+    QCOMPARE(imported.fontPointDelta(), 2);
+    QCOMPARE(imported.textColor(), QStringLiteral("#ff0000"));
+    QCOMPARE(imported.dimTextColor(), QStringLiteral("#00ff00"));
+    QVERIFY(imported.toolbarIconOnly());
+    QVERIFY(imported.reduceMotion());
+    QVERIFY(!imported.timelineEnabled());
+    QVERIFY(imported.groupByDay());
+    QVERIFY(imported.showEntryIndex());
+    QVERIFY(imported.showUseCountBadge());
+    QVERIFY(imported.privacyBlur());
+    QVERIFY(!imported.closeAfterPaste());
+    QVERIFY(!imported.bumpOnPaste());
+    QVERIFY(imported.pasteAsPlainText());
+    QCOMPARE(imported.listDensity(), QStringLiteral("spacious"));
+    QCOMPARE(imported.sortMode(), 2);
+    QCOMPARE(imported.searchScope(), 3);
+    QCOMPARE(imported.recentSearches(),
+             QStringList({QStringLiteral("bar"), QStringLiteral("foo")}));
+    QCOMPARE(imported.recentPaletteCommands(), QStringList({QStringLiteral("pin")}));
+    QCOMPARE(imported.timestampStyle(), QStringLiteral("absolute"));
+    QVERIFY(!imported.clock24h());
+    QVERIFY(!imported.rememberWindowGeometry());
+    QVERIFY(imported.restoreLastFilter());
+    QCOMPARE(imported.windowGeometry(), QByteArray("geom-bytes"));
+    QCOMPARE(imported.splitterState(), QByteArray("split-bytes"));
+    QCOMPARE(imported.splitterStateForMode(1), QByteArray("mode1-bytes"));
+    QCOMPARE(imported.lastFilter(), QStringLiteral("{\"x\":1}"));
+    QVERIFY(imported.backupsEnabled());
+    QCOMPARE(imported.backupFolder(), QStringLiteral("/tmp/egoback"));
+    QCOMPARE(imported.backupKeep(), 3);
+}
+
+void TestSettings::settingsJsonIgnoresUnknownAndKeepsMissing()
+{
+    // Forward compatible: unknown keys are ignored, absent keys keep current.
+    // Starts from a blank file: earlier slots leave non-defaults behind.
+    QFile::remove(m_tempDir.path() + QStringLiteral("/egoboardrc"));
+    SettingsManager settings;
+    settings.setTrayMode(QStringLiteral("always"));
+    QJsonObject root;
+    root.insert(QStringLiteral("format"), SettingsManager::settingsFormatTag());
+    root.insert(QStringLiteral("version"), SettingsManager::settingsFormatVersion());
+    root.insert(QStringLiteral("futureKnob"), 42);
+    root.insert(QStringLiteral("captureText"), false);
+    QString error;
+    QVERIFY2(settings.importFromJson(root, &error), qPrintable(error));
+    QVERIFY(error.isEmpty());
+    QVERIFY(!settings.captureText());
+    QCOMPARE(settings.trayMode(), QStringLiteral("always")); // untouched
+    QVERIFY(settings.captureImages()); // untouched default
+}
+
+void TestSettings::settingsJsonRejectsBadFiles()
+{
+    SettingsManager settings;
+    QString error;
+    QVERIFY(!settings.importFromJson(QJsonObject(), &error));
+    QVERIFY(!error.isEmpty());
+    QJsonObject wrongTag;
+    wrongTag.insert(QStringLiteral("format"), QStringLiteral("egoboard-export"));
+    wrongTag.insert(QStringLiteral("version"), 1);
+    QVERIFY(!settings.importFromJson(wrongTag, &error));
+    QJsonObject newer;
+    newer.insert(QStringLiteral("format"), SettingsManager::settingsFormatTag());
+    newer.insert(QStringLiteral("version"), SettingsManager::settingsFormatVersion() + 1);
+    QVERIFY(!settings.importFromJson(newer, &error));
+    QVERIFY(error.contains(QStringLiteral("newer")));
+}
+
+void TestSettings::settingsJsonExcludesBackupSchedule()
+{
+    // lastBackupMs is machine-local schedule state: it must neither travel
+    // in the file nor be clobbered by an import.
+    SettingsManager settings;
+    settings.setLastBackupMs(123456);
+    const QJsonObject snapshot = settings.exportToJson();
+    QVERIFY(!snapshot.contains(QStringLiteral("lastBackupMs")));
+
+    QTemporaryDir other;
+    QVERIFY(other.isValid());
+    XdgConfigHomeRestore homeGuard(other.path());
+    SettingsManager imported;
+    QCOMPARE(imported.lastBackupMs(), qint64(0));
+    QString error;
+    QVERIFY2(imported.importFromJson(snapshot, &error), qPrintable(error));
+    QCOMPARE(imported.lastBackupMs(), qint64(0));
+}
+
+void TestSettings::settingsJsonPositionsRoundTrip()
+{
+    SettingsManager settings;
+    settings.setQuickPastePos(QStringLiteral("HDMI-1"), QPoint(120, 340));
+    settings.setQuickPastePos(QStringLiteral("eDP-1"), QPoint(10, 20));
+    const QJsonObject snapshot = settings.exportToJson();
+    const QJsonValue positions = snapshot.value(QStringLiteral("quickPastePositions"));
+    QVERIFY(positions.isObject());
+    QCOMPARE(positions.toObject().size(), 2);
+
+    QTemporaryDir other;
+    QVERIFY(other.isValid());
+    XdgConfigHomeRestore homeGuard(other.path());
+    SettingsManager imported;
+    imported.setQuickPastePos(QStringLiteral("Old-Screen"), QPoint(1, 1)); // stale: replaced
+    QString error;
+    QVERIFY2(imported.importFromJson(snapshot, &error), qPrintable(error));
+    QCOMPARE(imported.quickPastePos(QStringLiteral("HDMI-1")), QPoint(120, 340));
+    QCOMPARE(imported.quickPastePos(QStringLiteral("eDP-1")), QPoint(10, 20));
+    QVERIFY(imported.quickPastePos(QStringLiteral("Old-Screen")).isNull());
+}
+
+void TestSettings::settingsJsonImportEmitsSingleChanged()
+{
+    // One import batches dozens of setters into a single changed().
+    SettingsManager settings;
+    QJsonObject root;
+    root.insert(QStringLiteral("format"), SettingsManager::settingsFormatTag());
+    root.insert(QStringLiteral("version"), SettingsManager::settingsFormatVersion());
+    root.insert(QStringLiteral("captureText"), false);
+    root.insert(QStringLiteral("quickPasteCount"), 3);
+    root.insert(QStringLiteral("trayMode"), QStringLiteral("hidden"));
+    QSignalSpy spy(&settings, &SettingsManager::changed);
+    QString error;
+    QVERIFY2(settings.importFromJson(root, &error), qPrintable(error));
+    QCOMPARE(spy.count(), 1);
+    QVERIFY(!settings.captureText());
+    QCOMPARE(settings.quickPasteCount(), 3);
+    QCOMPARE(settings.trayMode(), QStringLiteral("hidden"));
 }
 
 QTEST_GUILESS_MAIN(TestSettings)
