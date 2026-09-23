@@ -96,6 +96,12 @@ inline constexpr int BreakpointWide = 1100;
 inline constexpr int TimelineCollapseWidth = 560;
 inline constexpr int SettingsSidebarCollapseWidth = 640;
 
+// Settings dialog (U14): under this width the icon sidebar becomes a top
+// strip, mirroring shellModeForWidth above.
+inline bool settingsNarrowLayoutForWidth(int width)
+{
+    return width < SettingsSidebarCollapseWidth;
+}
 enum class ShellMode { Narrow, Medium, Wide };
 
 inline ShellMode shellModeForWidth(int width)

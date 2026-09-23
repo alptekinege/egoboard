@@ -10,6 +10,7 @@
 #include <QPointer>
 class ApplicationContext;
 class KColorButton;
+class QBoxLayout;
 class QCheckBox;
 class QComboBox;
 class QLabel;
@@ -19,6 +20,7 @@ class QPlainTextEdit;
 class QPushButton;
 class QProgressDialog;
 class QRadioButton;
+class QResizeEvent;
 class QSpinBox;
 class QStackedWidget;
 class QTextBrowser;
@@ -32,6 +34,12 @@ class SettingsDialog : public QDialog {
     Q_OBJECT
 public:
     explicit SettingsDialog(ApplicationContext &context, QWidget *parent = nullptr);
+
+protected:
+    // U14 responsive narrow layout: sidebar becomes a top strip under the
+    // collapse token (driven by resize, no timers).
+    void resizeEvent(QResizeEvent *event) override;
+
 private:
     QWidget *buildGeneralPage();
     QWidget *buildCapturePage();
@@ -67,6 +75,8 @@ private:
     // matching knobs on the visible page (fonts restored on every keystroke).
     void applySettingsSearch();
     void clearSettingsSearchHighlight();
+    // U14 responsive narrow layout (G6): re-evaluates the sidebar mode.
+    void applyResponsiveLayout();
     // Crash-report toolkit (U20): same schema as the CLI modes.
     void createCrashReport();
     void openCrashReport();
@@ -89,6 +99,8 @@ private:
     // restore and the pre-search row to return to on clear.
     QListWidget *m_sidebar = nullptr;
     QStackedWidget *m_stack = nullptr;
+    QBoxLayout *m_content = nullptr; // sidebar + pages: row in Wide, column in Narrow
+    bool m_narrowLayout = false; // true while the top-strip mode is applied
     QLineEdit *m_search = nullptr;
     QLabel *m_searchCount = nullptr;
     QHash<QWidget *, QFont> m_searchFonts;

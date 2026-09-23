@@ -29,13 +29,16 @@
 #include <QFontMetrics>
 #include <QGraphicsOpacityEffect>
 #include <QGroupBox>
+#include <QHBoxLayout>
 #include <QImage>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QPalette>
 #include <QPointer>
 #include <QPropertyAnimation>
 #include <QPushButton>
+#include <QStackedWidget>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QVBoxLayout>
@@ -115,6 +118,8 @@ private slots:
     void settingQueryMatchingRequiresAllTokens();
     void settingTextHarvestFindsControlTexts();
     void firstSettingMatchRowFindsFirstHit();
+    void settingsNarrowLayoutFollowsToken();
+    void sidebarModeSwitchesDirectionAndFlow();
     void timelineCollapsesBelowItsWidth();
     void dayHeaderCoversTodayAndYesterday();
     void delegateRespectsRowExtras();
@@ -784,6 +789,60 @@ void TestUiDesign::firstSettingMatchRowFindsFirstHit()
     QCOMPARE(UiHelpers::firstSettingMatchRow(pages, QString()), -1);
     QCOMPARE(UiHelpers::firstSettingMatchRow(pages, QStringLiteral("   ")), -1);
     QCOMPARE(UiHelpers::firstSettingMatchRow({}, QStringLiteral("backup")), -1);
+}
+
+void TestUiDesign::settingsNarrowLayoutFollowsToken()
+{
+    // U14 responsive narrow: the collapse decision is one token, pinned like
+    // the shell breakpoints above.
+    QVERIFY(DesignTokens::SettingsSidebarCollapseWidth < DesignTokens::BreakpointNarrow);
+    QVERIFY(DesignTokens::settingsNarrowLayoutForWidth(0));
+    QVERIFY(DesignTokens::settingsNarrowLayoutForWidth(
+        DesignTokens::SettingsSidebarCollapseWidth - 1));
+    QVERIFY(!DesignTokens::settingsNarrowLayoutForWidth(
+        DesignTokens::SettingsSidebarCollapseWidth));
+    QVERIFY(!DesignTokens::settingsNarrowLayoutForWidth(4000));
+}
+
+void TestUiDesign::sidebarModeSwitchesDirectionAndFlow()
+{
+    // U14 responsive narrow: the shared helper turns a vertical icon sidebar
+    // into a horizontal top strip and back, releasing the width clamp in
+    // narrow mode and restoring it in wide mode. Idempotent.
+    QWidget window;
+    auto *content = new QHBoxLayout(&window);
+    auto *sidebar = new QListWidget(&window);
+    sidebar->setViewMode(QListView::IconMode);
+    sidebar->setFlow(QListView::TopToBottom);
+    sidebar->setGridSize(QSize(146, 64));
+    sidebar->setFixedWidth(148);
+    sidebar->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    for (int i = 0; i < 3; ++i)
+        new QListWidgetItem(QStringLiteral("Page %1").arg(i), sidebar);
+    auto *stack = new QStackedWidget(&window);
+    content->addWidget(sidebar);
+    content->addWidget(stack, 1);
+
+    UiHelpers::applySidebarMode(sidebar, content, true, 148);
+    QCOMPARE(content->direction(), QBoxLayout::TopToBottom);
+    QCOMPARE(sidebar->flow(), QListView::LeftToRight);
+    QCOMPARE(sidebar->horizontalScrollBarPolicy(), Qt::ScrollBarAsNeeded);
+    QCOMPARE(sidebar->verticalScrollBarPolicy(), Qt::ScrollBarAlwaysOff);
+    QVERIFY(sidebar->maximumWidth() > 600); // 148 px clamp released
+    QVERIFY(sidebar->minimumHeight() > 0); // one strip row tall
+
+    UiHelpers::applySidebarMode(sidebar, content, false, 148);
+    QCOMPARE(content->direction(), QBoxLayout::LeftToRight);
+    QCOMPARE(sidebar->flow(), QListView::TopToBottom);
+    QCOMPARE(sidebar->horizontalScrollBarPolicy(), Qt::ScrollBarAlwaysOff);
+    QCOMPARE(sidebar->minimumWidth(), 148);
+    QCOMPARE(sidebar->maximumWidth(), 148);
+
+    // Re-applying the same mode is a no-op (resize churn is harmless).
+    UiHelpers::applySidebarMode(sidebar, content, false, 148);
+    QCOMPARE(content->direction(), QBoxLayout::LeftToRight);
+    QCOMPARE(sidebar->flow(), QListView::TopToBottom);
+    QCOMPARE(sidebar->maximumWidth(), 148);
 }
 
 void TestUiDesign::timelineCollapsesBelowItsWidth()

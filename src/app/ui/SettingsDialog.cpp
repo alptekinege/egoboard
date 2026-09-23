@@ -12,6 +12,7 @@
 #include "../SettingsManager.h"
 #include "../OcrWorker.h"
 #include "AppearancePreview.h"
+#include "DesignTokens.h"
 #include "SnippetManager.h"
 #include "StorageManager.h"
 #include "TransformEngine.h"
@@ -80,6 +81,10 @@ namespace {
 using UiHelpers::humanSize;
 using UiHelpers::makeHint;
 using UiHelpers::makeStatusPanel;
+
+// Wide-mode icon sidebar width, shared by the constructor clamp and the
+// responsive restore path below.
+constexpr int kSidebarWideWidth = 148;
 
 // Every page scrolls the same way, whatever its content height.
 QWidget *makeScrollable(QWidget *page)
@@ -196,7 +201,9 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
 
     // Sidebar + page stack: icon-on-top, label-below items stacked vertically
     // (settings sidebar style) instead of a rotated west tab column.
-    auto *content = new QHBoxLayout();
+    // m_content flips to a column with a horizontal top strip under the
+    // collapse token (U14 responsive narrow layout).
+    auto *content = m_content = new QHBoxLayout();
     content->setContentsMargins(0, 0, 0, 0);
     auto *sidebar = m_sidebar = new QListWidget(this);
     sidebar->setViewMode(QListView::IconMode);
@@ -208,7 +215,7 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
     sidebar->setIconSize(QSize(28, 28));
     sidebar->setGridSize(QSize(146, 64));
     sidebar->setWordWrap(true);
-    sidebar->setFixedWidth(148);
+    sidebar->setFixedWidth(kSidebarWideWidth);
     sidebar->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     sidebar->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     UiHelpers::styleItemList(sidebar);
@@ -234,6 +241,7 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
     content->addWidget(sidebar);
     content->addWidget(stack, 1);
     layout->addLayout(content, 1);
+    applyResponsiveLayout(); // honor the current width on first show (U14 narrow)
 
     auto *buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Apply | QDialogButtonBox::Cancel, this);
@@ -1496,6 +1504,25 @@ void SettingsDialog::closeIoProgress()
     }
 }
 
+void SettingsDialog::resizeEvent(QResizeEvent *event)
+{
+    QDialog::resizeEvent(event);
+    applyResponsiveLayout();
+}
+
+void SettingsDialog::applyResponsiveLayout()
+{
+    if (!m_sidebar || !m_content)
+        return;
+    // Single source with the tests: under the token the icon sidebar becomes
+    // a horizontal top strip; mode flips only (no per-resize churn).
+    const bool narrow = DesignTokens::settingsNarrowLayoutForWidth(width());
+    if (narrow == m_narrowLayout)
+        return;
+    m_narrowLayout = narrow;
+    UiHelpers::applySidebarMode(m_sidebar, m_content, narrow, kSidebarWideWidth);
+}
+
 void SettingsDialog::clearSettingsSearchHighlight()
 {
     for (auto it = m_searchFonts.constBegin(); it != m_searchFonts.constEnd(); ++it) {
@@ -1865,7 +1892,7 @@ QWidget *SettingsDialog::buildPlatformDiagnosticsPage()
     crashRow->addWidget(openReportBtn);
     crashRow->addStretch(1);
     layout->addLayout(crashRow);
-    return page;
+    return makeScrollable(page); // scrolls like every other page (U14 narrow)
 }
 
 void SettingsDialog::populateTransformList()

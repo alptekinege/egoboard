@@ -12,6 +12,7 @@ class QLineEdit;
 class QLabel;
 class QListView;
 class QListWidget;
+class QBoxLayout;
 class QWidget;
 
 // Small shared building blocks for the widgets: one look for the muted hint
@@ -56,6 +57,13 @@ QGraphicsDropShadowEffect *cardShadow(QObject *parent, bool elevated);
 // rows): transparent rows, rounded selection, same padding as the tokens.
 void styleItemList(QListWidget *list);
 void styleItemList(QListView *list);
+
+// U14 responsive sidebar (Settings dialog): Wide keeps the vertical icon
+// sidebar of sidebarWideWidth px; Narrow turns it into a horizontal top strip
+// (single row, scrolls when the pages overflow) above the page stack.
+// Idempotent: call from resizeEvent, the strip ends stable either way.
+void applySidebarMode(QListWidget *sidebar, QBoxLayout *content, bool narrow,
+                      int sidebarWideWidth);
 
 // U14 settings search: harvest the visible texts of one settings page
 // (labels, buttons, group titles, placeholders, tooltips — HTML stripped) so

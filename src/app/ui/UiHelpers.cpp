@@ -7,6 +7,7 @@
 #include <QAbstractItemView>
 #include <QAccessible>
 #include <QApplication>
+#include <QBoxLayout>
 #include <QCoreApplication>
 #include <QEvent>
 #include <QFont>
@@ -24,6 +25,7 @@
 #include <QPropertyAnimation>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QStyle>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -250,6 +252,36 @@ void UiHelpers::styleItemList(QListView *list)
 {
     if (list)
         list->setStyleSheet(itemListStyle());
+}
+
+void UiHelpers::applySidebarMode(QListWidget *sidebar, QBoxLayout *content, bool narrow,
+                                 int sidebarWideWidth)
+{
+    if (!sidebar || !content)
+        return;
+    if (narrow) {
+        content->setDirection(QBoxLayout::TopToBottom);
+        sidebar->setFlow(QListView::LeftToRight);
+        sidebar->setWrapping(false);
+        // One strip row tall, plus room for the horizontal scrollbar that
+        // appears when the pages overflow the strip width.
+        const int bar = sidebar->style()
+            ? sidebar->style()->pixelMetric(QStyle::PM_ScrollBarExtent)
+            : 0;
+        sidebar->setFixedHeight(sidebar->gridSize().height() + bar);
+        sidebar->setMinimumWidth(0);
+        sidebar->setMaximumWidth(QWIDGETSIZE_MAX); // release the sidebar clamp
+        sidebar->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        sidebar->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    } else {
+        content->setDirection(QBoxLayout::LeftToRight);
+        sidebar->setFlow(QListView::TopToBottom);
+        sidebar->setWrapping(false);
+        sidebar->setMinimumHeight(0);
+        sidebar->setMaximumHeight(QWIDGETSIZE_MAX); // release the strip clamp
+        sidebar->setFixedWidth(sidebarWideWidth);
+        sidebar->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    }
 }
 
 QWidget *UiHelpers::makeChip(const QString &label, const QString &accessibleName, QWidget *parent,
