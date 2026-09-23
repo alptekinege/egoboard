@@ -9,7 +9,7 @@
         "Id": "egoboard",
         "License": "MIT",
         "Name": "Egoboard",
-        "Version": "0.1.0",
+        "Version": "0.2",
         "Website": "https://github.com/alptekinege/egoboard"
     },
     "X-KRunner-TriggerWords": ["eb "]

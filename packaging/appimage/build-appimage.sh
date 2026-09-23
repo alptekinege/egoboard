@@ -14,7 +14,7 @@ APPDIR="${BUILD_DIR}/AppDir"
 OUTPUT_DIR="${ROOT_DIR}/dist"
 TOOLS_DIR="${ROOT_DIR}/packaging/appimage/tools"
 
-VERSION="0.1.0"
+VERSION="0.2"
 ARCH="$(uname -m)"
 OUTPUT_APPIMAGE="${OUTPUT_DIR}/Egoboard-${VERSION}-${ARCH}.AppImage"
 

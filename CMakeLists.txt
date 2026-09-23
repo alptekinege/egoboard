@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(egoboard
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "KDE Plasma clipboard history manager"
     LANGUAGES CXX C)
 
@@ -9,6 +9,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
+
+# Human-facing release label. CMake's project VERSION remains numeric for
+# package tooling; the app and generated artifacts use this full label.
+set(EGOBOARD_VERSION "0.2")
 
 # --- Dependencies -------------------------------------------------------------
 
@@ -162,7 +166,7 @@ target_link_libraries(egoboard PRIVATE
     PkgConfig::WAYLAND_CLIENT)
 
 target_compile_definitions(egoboard PRIVATE
-    EGOBOARD_VERSION="${PROJECT_VERSION}")
+    EGOBOARD_VERSION="${EGOBOARD_VERSION}")
 
 if(EGOBOARD_HAVE_LAYERSHELLQT)
     target_link_libraries(egoboard PRIVATE LayerShellQt::Interface)
