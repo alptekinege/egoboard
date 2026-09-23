@@ -74,6 +74,8 @@ QStringList extractHexColors(const QString &text)
 PreviewPane::PreviewPane(QWidget *parent)
     : QWidget(parent)
 {
+    // U15/§7 focus area: Alt+3 (and Tab) lands here, then moves inside.
+    setFocusPolicy(Qt::StrongFocus);
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);

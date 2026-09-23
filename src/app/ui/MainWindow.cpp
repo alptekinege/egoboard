@@ -18,6 +18,7 @@
 #include "SnippetDialog.h"
 #include "StorageManager.h"
 #include "CommandPalette.h"
+#include "ShortcutCheatsheet.h"
 #include "TimelineStrip.h"
 #include "TransformChainDialog.h"
 #include "UiHelpers.h"
@@ -1557,6 +1558,40 @@ void MainWindow::toggleVisibility()
     }
 }
 
+void MainWindow::openCheatsheet()
+{
+    ShortcutCheatsheet dialog(ShortcutCheatsheet::defaultSections(), this);
+    dialog.exec();
+}
+
+void MainWindow::focusArea(int index)
+{
+    switch (index) {
+    case 0:
+        if (m_search)
+            m_search->setFocus();
+        break;
+    case 1:
+        if (m_list)
+            m_list->setFocus();
+        break;
+    case 2:
+        if (m_preview)
+            m_preview->setFocus();
+        break;
+    case 3:
+        if (m_groupsDock)
+            m_groupsDock->focusTree();
+        break;
+    case 4:
+        if (m_timeline)
+            m_timeline->setFocus();
+        break;
+    default:
+        break;
+    }
+}
+
 void MainWindow::openPalette()
 {
     if (!m_palette) {
@@ -1797,8 +1832,40 @@ void MainWindow::repositionCenteredOnActiveScreen()
 
 void MainWindow::keyPressEvent(QKeyEvent *event)
 {
+    // Printable keys only reach here when no editor took them (line edits and
+    // text views accept them first), so `/` and `?` are safe to grab here.
+    if (event->key() == Qt::Key_Slash && !event->modifiers() && m_search) {
+        m_search->setFocus();
+        m_search->selectAll();
+        event->accept();
+        return;
+    }
+    if (event->key() == Qt::Key_Question
+        && !(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+        openCheatsheet();
+        event->accept();
+        return;
+    }
+    // Alt+1…5: §7 focus areas (search, list, preview, groups, timeline).
+    if (event->modifiers() == Qt::AltModifier && event->key() >= Qt::Key_1
+        && event->key() <= Qt::Key_5) {
+        focusArea(event->key() - Qt::Key_1);
+        event->accept();
+        return;
+    }
     switch (event->key()) {
     case Qt::Key_Escape:
+        // Esc unwinds in reverse: search text, then filter chips, then close.
+        if (m_search && !m_search->text().isEmpty()) {
+            m_search->clear();
+            event->accept();
+            return;
+        }
+        if (activeFilterCount() > 0) {
+            clearAllFilters();
+            event->accept();
+            return;
+        }
         hide();
         event->accept();
         return;

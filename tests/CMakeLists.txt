@@ -173,6 +173,7 @@ add_executable(tst_uidesign tst_uidesign.cpp
     ../src/app/ui/EntryDelegate.cpp
     ../src/app/ui/UiHelpers.cpp
     ../src/app/ui/GroupsDock.cpp
+    ../src/app/ui/TimelineStrip.cpp
     ../src/app/ui/ExportImportDialogs.cpp
     ../src/app/ui/CodePreviewHighlighter.cpp
     ../src/core/GroupTreeModel.cpp
@@ -191,6 +192,13 @@ target_include_directories(tst_traycycle PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../
 target_link_libraries(tst_traycycle PRIVATE Qt6::Core Qt6::Test)
 target_compile_options(tst_traycycle PRIVATE -Wall -Wextra)
 add_test(NAME tst_traycycle COMMAND tst_traycycle)
+
+# Shortcut cheatsheet (? in the main window): static content, offscreen-safe
+add_executable(tst_cheatsheet tst_cheatsheet.cpp ../src/app/ui/ShortcutCheatsheet.cpp)
+target_include_directories(tst_cheatsheet PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/app/ui ${CMAKE_CURRENT_SOURCE_DIR}/../src/core)
+target_link_libraries(tst_cheatsheet PRIVATE Qt6::Widgets Qt6::Test)
+target_compile_options(tst_cheatsheet PRIVATE -Wall -Wextra)
+add_test(NAME tst_cheatsheet COMMAND tst_cheatsheet)
 
 # Crash/support reports: QtCore-only (schema, redaction, gdb/ELF parsing), no
 # GUI or database, so the report path itself never depends on the app running.

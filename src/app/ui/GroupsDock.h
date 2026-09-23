@@ -15,6 +15,9 @@ class GroupsDock : public QDockWidget {
 public:
     explicit GroupsDock(BookmarkManager *bookmarks, QWidget *parent = nullptr);
 
+    // U15/§7 focus area: keyboard lands in the group tree.
+    void focusTree();
+
     signals:
         void groupSelected(qint64 groupId); // 0 = show everything
         void entriesDropped(const QList<qint64> &entryIds, qint64 groupId);

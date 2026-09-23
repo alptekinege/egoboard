@@ -520,7 +520,8 @@ void CommandPalette::refreshResults(const QString &query)
                 m_commandItems.append({row.payload, row.text, row.kind});
             m_model->setCommands(m_commandItems, trimmed);
             m_list->setCurrentIndex(m_model->index(0, 0));
-            m_hint->setText(tr("Recent — ⏎ run/search  •  type to search history  •  > for commands"));
+            m_hint->setText(tr("Recent — ⏎ run/search  •  type to search history  •  > for "
+                                 "commands  •  ? shortcuts"));
             return;
         }
     }

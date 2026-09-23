@@ -117,6 +117,9 @@ private:
     void openPalette();
     void openSnippetDialog();
     void openTransformChain();
+    void openCheatsheet(); // U15 shortcut reference (`?`)
+    // U15/§7 focus areas: 0 = search, 1 = list, 2 = preview, 3 = groups, 4 = timeline.
+    void focusArea(int index);
     void repositionCenteredOnActiveScreen();
 
     ApplicationContext &m_ctx;

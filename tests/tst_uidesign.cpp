@@ -17,12 +17,14 @@
 #include "EntryDelegate.h"
 #include "GroupsDock.h"
 #include "TextAppearance.h"
+#include "TimelineStrip.h"
 #include "UiHelpers.h"
 
 #include <KColorScheme>
 #include <KSharedConfig>
 
 #include <QApplication>
+#include <QAccessible>
 #include <QBuffer>
 #include <QCheckBox>
 #include <QDateTime>
@@ -38,6 +40,7 @@
 #include <QPointer>
 #include <QPropertyAnimation>
 #include <QPushButton>
+#include <QSignalSpy>
 #include <QStackedWidget>
 #include <QTemporaryDir>
 #include <QThread>
@@ -120,6 +123,8 @@ private slots:
     void firstSettingMatchRowFindsFirstHit();
     void settingsNarrowLayoutFollowsToken();
     void sidebarModeSwitchesDirectionAndFlow();
+    void timelineKeyboardMovesAndActivates();
+    void timelineAccessibleNamesBars();
     void timelineCollapsesBelowItsWidth();
     void dayHeaderCoversTodayAndYesterday();
     void delegateRespectsRowExtras();
@@ -843,6 +848,119 @@ void TestUiDesign::sidebarModeSwitchesDirectionAndFlow()
     QCOMPARE(content->direction(), QBoxLayout::LeftToRight);
     QCOMPARE(sidebar->flow(), QListView::TopToBottom);
     QCOMPARE(sidebar->maximumWidth(), 148);
+}
+
+namespace {
+// One history row for the timeline keyboard/AT tests below.
+ClipboardRecord makeTimelineRecord(const QByteArray &hash, qint64 timestamp)
+{
+    ClipboardRecord record;
+    record.type = ContentType::Text;
+    record.hash = hash;
+    record.textData = QString::fromLatin1(hash);
+    record.preview = record.textData;
+    record.sizeBytes = record.textData.size();
+    record.timestamp = timestamp;
+    record.sourceApp = QStringLiteral("tester");
+    return record;
+}
+} // namespace
+
+void TestUiDesign::timelineKeyboardMovesAndActivates()
+{
+    // U10: arrows move the day cursor from today, Enter filters, Esc clears.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    StorageManager storage(dir.filePath(QStringLiteral("timeline-keys.db")));
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QVERIFY(storage.insertOrUpdate(makeTimelineRecord(QByteArrayLiteral("tk-today"),
+                                                      now - 3600000))
+            != 0);
+    QVERIFY(storage.insertOrUpdate(makeTimelineRecord(QByteArrayLiteral("tk-yesterday"),
+                                                      now - 86400000 - 3600000))
+            != 0);
+    TimelineStrip strip(&storage);
+    strip.resize(400, 60);
+    strip.show();
+    QTest::qWait(20);
+    strip.setFocus(Qt::OtherFocusReason);
+    QTest::qWait(20);
+
+    QSignalSpy selected(&strip, &TimelineStrip::daySelected);
+    QTest::keyClick(&strip, Qt::Key_Left); // today (13) -> yesterday (12)
+    QCOMPARE(strip.focusedBar(), 12);
+    QTest::keyClick(&strip, Qt::Key_Right);
+    QCOMPARE(strip.focusedBar(), 13);
+    QTest::keyClick(&strip, Qt::Key_Home);
+    QCOMPARE(strip.focusedBar(), 0);
+    QTest::keyClick(&strip, Qt::Key_End);
+    QCOMPARE(strip.focusedBar(), 13);
+    // Empty bars clear like a click outside does (bar 0 is 13 days back).
+    QTest::keyClick(&strip, Qt::Key_Home);
+    QTest::keyClick(&strip, Qt::Key_Enter);
+    QCOMPARE(strip.selectedBar(), -1);
+    QCOMPARE(selected.count(), 1);
+    QCOMPARE(selected.at(0).at(0).toLongLong(), qint64(0));
+    // Today has an entry: Enter filters by its range.
+    QTest::keyClick(&strip, Qt::Key_End);
+    QTest::keyClick(&strip, Qt::Key_Enter);
+    QCOMPARE(strip.selectedBar(), 13);
+    QCOMPARE(selected.count(), 2);
+    const qint64 from = selected.at(1).at(0).toLongLong();
+    const qint64 to = selected.at(1).at(1).toLongLong();
+    QVERIFY(from <= now && now <= to);
+    QCOMPARE(to - from, qint64(86400000 - 1));
+    QTest::keyClick(&strip, Qt::Key_Escape);
+    QCOMPARE(strip.selectedBar(), -1);
+    QCOMPARE(selected.count(), 3);
+    // The focus ring paints without warnings or crashes.
+    strip.grab();
+}
+
+void TestUiDesign::timelineAccessibleNamesBars()
+{
+    // U10: every bar exposes ListItem role + "N entries, Day" name + press.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    StorageManager storage(dir.filePath(QStringLiteral("timeline-at.db")));
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QVERIFY(storage.insertOrUpdate(makeTimelineRecord(QByteArrayLiteral("ta-today"), now)) != 0);
+    TimelineStrip strip(&storage);
+    strip.resize(400, 60);
+    strip.show();
+    QTest::qWait(20);
+
+    QAccessibleInterface *iface = QAccessible::queryAccessibleInterface(&strip);
+    QVERIFY(iface);
+    QCOMPARE(iface->role(), QAccessible::List);
+    QCOMPARE(iface->childCount(), 14);
+    QVERIFY(iface->child(-1) == nullptr);
+    QVERIFY(iface->child(14) == nullptr);
+    QAccessibleInterface *today = iface->child(13);
+    QVERIFY(today);
+    QCOMPARE(today->role(), QAccessible::ListItem);
+    const QString name = today->text(QAccessible::Name);
+    QVERIFY2(name.contains(QStringLiteral("Today")), qPrintable(name));
+    QVERIFY2(name.contains(QLatin1Char('1')), qPrintable(name)); // one entry
+    QVERIFY(!today->text(QAccessible::Description).isEmpty());
+    QVERIFY(today->childCount() == 0);
+    QCOMPARE(iface->indexOfChild(today), 13);
+    // Press activates the bar exactly like Enter (today has an entry).
+    QSignalSpy selected(&strip, &TimelineStrip::daySelected);
+    auto *actions = static_cast<QAccessibleActionInterface *>(
+        today->interface_cast(QAccessible::ActionInterface));
+    QVERIFY(actions);
+    QVERIFY(actions->actionNames().contains(QAccessibleActionInterface::pressAction()));
+    actions->doAction(QAccessibleActionInterface::pressAction());
+    QCOMPARE(strip.selectedBar(), 13);
+    QCOMPARE(selected.count(), 1);
+    // Keyboard cursor drives the AT focus child.
+    strip.setFocus(Qt::OtherFocusReason);
+    QTest::qWait(20);
+    QTest::keyClick(&strip, Qt::Key_Left);
+    QAccessibleInterface *focused = iface->focusChild();
+    QVERIFY(focused);
+    QCOMPARE(iface->indexOfChild(focused), 12);
 }
 
 void TestUiDesign::timelineCollapsesBelowItsWidth()

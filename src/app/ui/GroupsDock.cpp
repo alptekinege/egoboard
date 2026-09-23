@@ -293,6 +293,12 @@ void GroupsDock::onSelectionChanged()
     emit groupSelected(group.has_value() ? group->id : qint64(0));
 }
 
+void GroupsDock::focusTree()
+{
+    if (m_tree)
+        m_tree->setFocus();
+}
+
 void GroupsDock::updateEmptyState()
 {
     if (!m_emptyState || !m_tree)
