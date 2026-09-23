@@ -1225,3 +1225,361 @@ QString SettingsManager::autostartDesktopFilePath()
     return QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
         + QStringLiteral("/autostart/org.egoboard.Egoboard.desktop");
 }
+
+QString SettingsManager::settingsFormatTag()
+{
+    return QStringLiteral("egoboard-settings");
+}
+
+int SettingsManager::settingsFormatVersion()
+{
+    return 1;
+}
+
+namespace {
+QJsonArray stringListToJson(const QStringList &list)
+{
+    QJsonArray array;
+    for (const QString &item : list)
+        array.append(item);
+    return array;
+}
+
+QStringList stringListFromJson(const QJsonValue &value)
+{
+    QStringList list;
+    if (!value.isArray())
+        return list;
+    for (const QJsonValue &item : value.toArray()) {
+        const QString text = item.toString().trimmed();
+        if (!text.isEmpty())
+            list.append(text);
+    }
+    return list;
+}
+} // namespace
+
+QJsonObject SettingsManager::exportToJson() const
+{
+    QJsonObject root;
+    root.insert(QStringLiteral("format"), settingsFormatTag());
+    root.insert(QStringLiteral("version"), settingsFormatVersion());
+    // Capture
+    root.insert(QStringLiteral("captureText"), captureText());
+    root.insert(QStringLiteral("captureRichText"), captureRichText());
+    root.insert(QStringLiteral("captureImages"), captureImages());
+    root.insert(QStringLiteral("captureFiles"), captureFiles());
+    root.insert(QStringLiteral("pauseOnLock"), pauseOnLock());
+    root.insert(QStringLiteral("trayPrimaryClick"), int(trayPrimaryClick()));
+    root.insert(QStringLiteral("traySecondaryClick"), int(traySecondaryClick()));
+    root.insert(QStringLiteral("trayWheelCycles"), trayWheelCycles());
+    // General
+    root.insert(QStringLiteral("startVisible"), startVisible());
+    root.insert(QStringLiteral("hideOnFocusOut"), hideOnFocusOut());
+    root.insert(QStringLiteral("monitorPrimarySelection"), monitorPrimarySelection());
+    root.insert(QStringLiteral("quickPasteCount"), quickPasteCount());
+    root.insert(QStringLiteral("quickPasteTwoLine"), quickPasteTwoLine());
+    {
+        QJsonObject positions;
+        const KConfigGroup ui = m_config->group(kGroupUi);
+        const QString prefix = QStringLiteral("QuickPastePos_");
+        for (const QString &key : ui.keyList()) {
+            if (!key.startsWith(prefix))
+                continue;
+            const QString screen = key.mid(prefix.size());
+            if (screen.isEmpty())
+                continue;
+            const QPoint pos = quickPastePos(screen);
+            QJsonArray point;
+            point.append(pos.x());
+            point.append(pos.y());
+            positions.insert(screen, point);
+        }
+        root.insert(QStringLiteral("quickPastePositions"), positions);
+    }
+    root.insert(QStringLiteral("autostartEnabled"), autostartEnabled());
+    root.insert(QStringLiteral("autostartCommand"), autostartCommand());
+    // History / privacy
+    root.insert(QStringLiteral("debounceMs"), debounceMs());
+    root.insert(QStringLiteral("sensitiveMode"), int(sensitiveMode()));
+    root.insert(QStringLiteral("redactKinds"), stringListToJson(redactKinds()));
+    root.insert(QStringLiteral("expireRules"), stringListToJson(encodeRules(expireRules())));
+    root.insert(QStringLiteral("maxItemBytes"), double(maxItemBytes()));
+    root.insert(QStringLiteral("maxImageBytes"), double(maxImageBytes()));
+    root.insert(QStringLiteral("diskCapBytes"), double(diskCapBytes()));
+    root.insert(QStringLiteral("maxEntries"), maxEntries());
+    root.insert(QStringLiteral("ignoredSourceApps"), stringListToJson(ignoredSourceApps()));
+    root.insert(QStringLiteral("customSensitivePatterns"),
+                stringListToJson(customSensitivePatterns()));
+    root.insert(QStringLiteral("encryptionEnabled"), encryptionEnabled());
+    // OCR
+    root.insert(QStringLiteral("ocrEnabled"), ocrEnabled());
+    root.insert(QStringLiteral("ocrLanguage"), ocrLanguage());
+    root.insert(QStringLiteral("ocrMaxChars"), ocrMaxChars());
+    // Preview
+    root.insert(QStringLiteral("previewCodeHighlight"), previewCodeHighlight());
+    root.insert(QStringLiteral("previewLinkify"), previewLinkify());
+    root.insert(QStringLiteral("previewColorSwatches"), previewColorSwatches());
+    // Automation
+    root.insert(QStringLiteral("disabledScripts"), stringListToJson(disabledScripts()));
+    root.insert(QStringLiteral("hiddenTransforms"), stringListToJson(hiddenTransforms()));
+    // UI
+    root.insert(QStringLiteral("trayMode"), trayMode());
+    root.insert(QStringLiteral("notificationsEnabled"), notificationsEnabled());
+    root.insert(QStringLiteral("captureSoundEnabled"), captureSoundEnabled());
+    root.insert(QStringLiteral("captureNotificationEnabled"), captureNotificationEnabled());
+    root.insert(QStringLiteral("theme"), theme());
+    root.insert(QStringLiteral("iconTheme"), iconTheme());
+    root.insert(QStringLiteral("fontPointDelta"), fontPointDelta());
+    root.insert(QStringLiteral("textColor"), textColor());
+    root.insert(QStringLiteral("dimTextColor"), dimTextColor());
+    root.insert(QStringLiteral("toolbarIconOnly"), toolbarIconOnly());
+    root.insert(QStringLiteral("reduceMotion"), reduceMotion());
+    root.insert(QStringLiteral("timelineEnabled"), timelineEnabled());
+    root.insert(QStringLiteral("groupByDay"), groupByDay());
+    root.insert(QStringLiteral("showEntryIndex"), showEntryIndex());
+    root.insert(QStringLiteral("showUseCountBadge"), showUseCountBadge());
+    root.insert(QStringLiteral("privacyBlur"), privacyBlur());
+    root.insert(QStringLiteral("closeAfterPaste"), closeAfterPaste());
+    root.insert(QStringLiteral("bumpOnPaste"), bumpOnPaste());
+    root.insert(QStringLiteral("pasteAsPlainText"), pasteAsPlainText());
+    root.insert(QStringLiteral("listDensity"), listDensity());
+    root.insert(QStringLiteral("sortMode"), sortMode());
+    root.insert(QStringLiteral("searchScope"), searchScope());
+    root.insert(QStringLiteral("recentSearches"), stringListToJson(recentSearches()));
+    root.insert(QStringLiteral("recentPaletteCommands"), stringListToJson(recentPaletteCommands()));
+    root.insert(QStringLiteral("timestampStyle"), timestampStyle());
+    root.insert(QStringLiteral("clock24h"), clock24h());
+    root.insert(QStringLiteral("rememberWindowGeometry"), rememberWindowGeometry());
+    root.insert(QStringLiteral("restoreLastFilter"), restoreLastFilter());
+    root.insert(QStringLiteral("windowGeometryB64"),
+                QString::fromLatin1(windowGeometry().toBase64()));
+    root.insert(QStringLiteral("splitterStateB64"),
+                QString::fromLatin1(splitterState().toBase64()));
+    {
+        QJsonObject modes;
+        for (int mode = 0; mode < 3; ++mode)
+            modes.insert(QString::number(mode), QString::fromLatin1(
+                                                    splitterStateForMode(mode).toBase64()));
+        root.insert(QStringLiteral("splitterStateForModeB64"), modes);
+    }
+    root.insert(QStringLiteral("lastFilter"), lastFilter());
+    // Backups (schedule state excluded: lastBackupMs stays local)
+    root.insert(QStringLiteral("backupsEnabled"), backupsEnabled());
+    root.insert(QStringLiteral("backupFolder"), backupFolder());
+    root.insert(QStringLiteral("backupKeep"), backupKeep());
+    return root;
+}
+
+bool SettingsManager::importFromJson(const QJsonObject &root, QString *error)
+{
+    if (root.value(QStringLiteral("format")).toString() != settingsFormatTag()) {
+        if (error)
+            *error = tr("Not an Egoboard settings file.");
+        return false;
+    }
+    if (root.value(QStringLiteral("version")).toInt() > settingsFormatVersion()) {
+        if (error)
+            *error = tr("Settings file version %1 is newer than supported.")
+                         .arg(root.value(QStringLiteral("version")).toInt());
+        return false;
+    }
+    const auto has = [&root](const char *key) {
+        return root.contains(QLatin1String(key));
+    };
+    const auto getBool = [&root](const char *key) {
+        return root.value(QLatin1String(key)).toBool();
+    };
+    const auto getInt = [&root](const char *key) {
+        return root.value(QLatin1String(key)).toInt();
+    };
+    const auto getLong = [&root](const char *key) {
+        return qint64(root.value(QLatin1String(key)).toDouble());
+    };
+    const auto getString = [&root](const char *key) {
+        return root.value(QLatin1String(key)).toString();
+    };
+    m_suppressChanged = true;
+    // Capture
+    if (has("captureText"))
+        setCaptureText(getBool("captureText"));
+    if (has("captureRichText"))
+        setCaptureRichText(getBool("captureRichText"));
+    if (has("captureImages"))
+        setCaptureImages(getBool("captureImages"));
+    if (has("captureFiles"))
+        setCaptureFiles(getBool("captureFiles"));
+    if (has("pauseOnLock"))
+        setPauseOnLock(getBool("pauseOnLock"));
+    if (has("trayPrimaryClick"))
+        setTrayPrimaryClick(static_cast<TrayClick>(getInt("trayPrimaryClick")));
+    if (has("traySecondaryClick"))
+        setTraySecondaryClick(static_cast<TrayClick>(getInt("traySecondaryClick")));
+    if (has("trayWheelCycles"))
+        setTrayWheelCycles(getBool("trayWheelCycles"));
+    // General
+    if (has("startVisible"))
+        setStartVisible(getBool("startVisible"));
+    if (has("hideOnFocusOut"))
+        setHideOnFocusOut(getBool("hideOnFocusOut"));
+    if (has("monitorPrimarySelection"))
+        setMonitorPrimarySelection(getBool("monitorPrimarySelection"));
+    if (has("quickPasteCount"))
+        setQuickPasteCount(getInt("quickPasteCount"));
+    if (has("quickPasteTwoLine"))
+        setQuickPasteTwoLine(getBool("quickPasteTwoLine"));
+    if (root.value(QStringLiteral("quickPastePositions")).isObject()) {
+        KConfigGroup ui = m_config->group(kGroupUi);
+        const QString prefix = QStringLiteral("QuickPastePos_");
+        for (const QString &key : ui.keyList()) {
+            if (key.startsWith(prefix))
+                ui.deleteEntry(key);
+        }
+        const QJsonObject positions = root.value(QStringLiteral("quickPastePositions")).toObject();
+        for (auto it = positions.constBegin(); it != positions.constEnd(); ++it) {
+            const QJsonArray point = it.value().toArray();
+            if (it.key().isEmpty() || point.size() != 2)
+                continue;
+            setQuickPastePos(it.key(), QPoint(point.at(0).toInt(), point.at(1).toInt()));
+        }
+    }
+    if (has("autostartEnabled"))
+        setAutostartEnabled(getBool("autostartEnabled"));
+    if (has("autostartCommand"))
+        setAutostartCommand(getString("autostartCommand"));
+    // History / privacy
+    if (has("debounceMs"))
+        setDebounceMs(getInt("debounceMs"));
+    if (has("sensitiveMode"))
+        setSensitiveMode(static_cast<SensitiveMode>(getInt("sensitiveMode")));
+    if (has("redactKinds"))
+        setRedactKinds(stringListFromJson(root.value(QStringLiteral("redactKinds"))));
+    if (has("expireRules"))
+        setExpireRules(decodeRules(stringListFromJson(root.value(QStringLiteral("expireRules")))));
+    if (has("maxItemBytes"))
+        setMaxItemBytes(getLong("maxItemBytes"));
+    if (has("maxImageBytes"))
+        setMaxImageBytes(getLong("maxImageBytes"));
+    if (has("diskCapBytes"))
+        setDiskCapBytes(getLong("diskCapBytes"));
+    if (has("maxEntries"))
+        setMaxEntries(getInt("maxEntries"));
+    if (has("ignoredSourceApps"))
+        setIgnoredSourceApps(stringListFromJson(root.value(QStringLiteral("ignoredSourceApps"))));
+    if (has("customSensitivePatterns"))
+        setCustomSensitivePatterns(
+            stringListFromJson(root.value(QStringLiteral("customSensitivePatterns"))));
+    if (has("encryptionEnabled"))
+        setEncryptionEnabled(getBool("encryptionEnabled"));
+    // OCR
+    if (has("ocrEnabled"))
+        setOcrEnabled(getBool("ocrEnabled"));
+    if (has("ocrLanguage"))
+        setOcrLanguage(getString("ocrLanguage"));
+    if (has("ocrMaxChars"))
+        setOcrMaxChars(getInt("ocrMaxChars"));
+    // Preview
+    if (has("previewCodeHighlight"))
+        setPreviewCodeHighlight(getBool("previewCodeHighlight"));
+    if (has("previewLinkify"))
+        setPreviewLinkify(getBool("previewLinkify"));
+    if (has("previewColorSwatches"))
+        setPreviewColorSwatches(getBool("previewColorSwatches"));
+    // Automation
+    if (has("disabledScripts"))
+        setDisabledScripts(stringListFromJson(root.value(QStringLiteral("disabledScripts"))));
+    if (has("hiddenTransforms"))
+        setHiddenTransforms(stringListFromJson(root.value(QStringLiteral("hiddenTransforms"))));
+    // UI
+    if (has("trayMode"))
+        setTrayMode(getString("trayMode"));
+    if (has("notificationsEnabled"))
+        setNotificationsEnabled(getBool("notificationsEnabled"));
+    if (has("captureSoundEnabled"))
+        setCaptureSoundEnabled(getBool("captureSoundEnabled"));
+    if (has("captureNotificationEnabled"))
+        setCaptureNotificationEnabled(getBool("captureNotificationEnabled"));
+    if (has("theme"))
+        setTheme(getString("theme"));
+    if (has("iconTheme"))
+        setIconTheme(getString("iconTheme"));
+    if (has("fontPointDelta"))
+        setFontPointDelta(getInt("fontPointDelta"));
+    if (has("textColor"))
+        setTextColor(getString("textColor"));
+    if (has("dimTextColor"))
+        setDimTextColor(getString("dimTextColor"));
+    if (has("toolbarIconOnly"))
+        setToolbarIconOnly(getBool("toolbarIconOnly"));
+    if (has("reduceMotion"))
+        setReduceMotion(getBool("reduceMotion"));
+    if (has("timelineEnabled"))
+        setTimelineEnabled(getBool("timelineEnabled"));
+    if (has("groupByDay"))
+        setGroupByDay(getBool("groupByDay"));
+    if (has("showEntryIndex"))
+        setShowEntryIndex(getBool("showEntryIndex"));
+    if (has("showUseCountBadge"))
+        setShowUseCountBadge(getBool("showUseCountBadge"));
+    if (has("privacyBlur"))
+        setPrivacyBlur(getBool("privacyBlur"));
+    if (has("closeAfterPaste"))
+        setCloseAfterPaste(getBool("closeAfterPaste"));
+    if (has("bumpOnPaste"))
+        setBumpOnPaste(getBool("bumpOnPaste"));
+    if (has("pasteAsPlainText"))
+        setPasteAsPlainText(getBool("pasteAsPlainText"));
+    if (has("listDensity"))
+        setListDensity(getString("listDensity"));
+    if (has("sortMode"))
+        setSortMode(getInt("sortMode"));
+    if (has("searchScope"))
+        setSearchScope(getInt("searchScope"));
+    if (has("recentSearches")) {
+        clearRecentSearches();
+        const QStringList recents = stringListFromJson(root.value(QStringLiteral("recentSearches")));
+        for (int i = recents.size() - 1; i >= 0; --i)
+            addRecentSearch(recents.at(i)); // prepends: reversed to keep file order
+    }
+    if (has("recentPaletteCommands")) {
+        KConfigGroup ui = m_config->group(kGroupUi);
+        QStringList commands = stringListFromJson(
+            root.value(QStringLiteral("recentPaletteCommands")));
+        if (commands.size() > kMaxRecentSearches)
+            commands = commands.mid(0, kMaxRecentSearches);
+        ui.writeEntry("RecentPaletteCommands", commands);
+    }
+    if (has("timestampStyle"))
+        setTimestampStyle(getString("timestampStyle"));
+    if (has("clock24h"))
+        setClock24h(getBool("clock24h"));
+    if (has("rememberWindowGeometry"))
+        setRememberWindowGeometry(getBool("rememberWindowGeometry"));
+    if (has("restoreLastFilter"))
+        setRestoreLastFilter(getBool("restoreLastFilter"));
+    if (has("windowGeometryB64"))
+        setWindowGeometry(QByteArray::fromBase64(getString("windowGeometryB64").toLatin1()));
+    if (has("splitterStateB64"))
+        setSplitterState(QByteArray::fromBase64(getString("splitterStateB64").toLatin1()));
+    if (root.value(QStringLiteral("splitterStateForModeB64")).isObject()) {
+        const QJsonObject modes = root.value(QStringLiteral("splitterStateForModeB64")).toObject();
+        for (int mode = 0; mode < 3; ++mode) {
+            const QString key = QString::number(mode);
+            if (modes.contains(key))
+                setSplitterStateForMode(
+                    mode, QByteArray::fromBase64(modes.value(key).toString().toLatin1()));
+        }
+    }
+    if (has("lastFilter"))
+        setLastFilter(getString("lastFilter"));
+    // Backups (lastBackupMs stays local by design)
+    if (has("backupsEnabled"))
+        setBackupsEnabled(getBool("backupsEnabled"));
+    if (has("backupFolder"))
+        setBackupFolder(getString("backupFolder"));
+    if (has("backupKeep"))
+        setBackupKeep(getInt("backupKeep"));
+    m_suppressChanged = false;
+    save(); // sync + the single changed() for the whole import
+    return true;
+}
