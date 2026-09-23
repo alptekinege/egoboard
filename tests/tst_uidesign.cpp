@@ -25,10 +25,12 @@
 #include <QBuffer>
 #include <QDateTime>
 #include <QFontMetrics>
+#include <QGraphicsOpacityEffect>
 #include <QImage>
 #include <QLineEdit>
 #include <QPalette>
 #include <QPointer>
+#include <QPropertyAnimation>
 #include <QPushButton>
 #include <QTemporaryDir>
 #include <QThread>
@@ -97,6 +99,11 @@ private slots:
     void popupElevationAndShadowAreShared();
     void searchFieldMeetsTheTouchFloor();
     void helpersBuildWithoutFixedPixels();
+    void motionDurationsFollowDesignTokens();
+    void motionReduceSkipsAllKinds();
+    void motionChipFadesAndScales();
+    void motionToastSlidesUp();
+    void motionDrawerSlidesSide();
     void timelineCollapsesBelowItsWidth();
     void dayHeaderCoversTodayAndYesterday();
     void delegateRespectsRowExtras();
@@ -483,6 +490,158 @@ void TestUiDesign::helpersBuildWithoutFixedPixels()
     UiHelpers::animate(&probe, UiHelpers::MotionKind::SlideUp);
     QCOMPARE(probe.windowOpacity(), 1.0);
     UiHelpers::setReduceMotion(false);
+}
+
+void TestUiDesign::motionDurationsFollowDesignTokens()
+{
+    // U12: one animate() entry, durations from the tokens, capped at 120 ms.
+    UiHelpers::setReduceMotion(false);
+    QVERIFY(DesignTokens::MotionDrawerMs <= DesignTokens::MotionDurationMs);
+    QVERIFY(DesignTokens::MotionChipMs <= DesignTokens::MotionDurationMs);
+    QVERIFY(DesignTokens::MotionToastMs <= DesignTokens::MotionDurationMs);
+    struct Case {
+        UiHelpers::MotionKind kind;
+        int expectedMs;
+    };
+    const QVector<Case> cases = {
+        {UiHelpers::MotionKind::Fade, DesignTokens::MotionDurationMs},
+        {UiHelpers::MotionKind::Chip, DesignTokens::MotionChipMs},
+        {UiHelpers::MotionKind::SlideUp, DesignTokens::MotionToastMs},
+        {UiHelpers::MotionKind::SlideSide, DesignTokens::MotionDrawerMs},
+    };
+    for (const Case &c : cases) {
+        QWidget widget;
+        widget.resize(120, 40);
+        widget.move(50, 50);
+        widget.show();
+        QTest::qWait(10);
+        UiHelpers::animate(&widget, c.kind);
+        const QList<QPropertyAnimation *> animations =
+            widget.findChildren<QPropertyAnimation *>();
+        QVERIFY2(!animations.isEmpty(), "animate() started no property animations");
+        for (QPropertyAnimation *animation : animations)
+            QCOMPARE(animation->duration(), c.expectedMs);
+        QTest::qWait(250); // let the 80–120 ms run finish before the next case
+        widget.hide();
+    }
+    UiHelpers::setReduceMotion(false);
+}
+
+void TestUiDesign::motionReduceSkipsAllKinds()
+{
+    // U12: Reduce motion skips every kind — final state, no new animations.
+    UiHelpers::setReduceMotion(true);
+    const QVector<UiHelpers::MotionKind> kinds = {
+        UiHelpers::MotionKind::Fade,
+        UiHelpers::MotionKind::Chip,
+        UiHelpers::MotionKind::SlideUp,
+        UiHelpers::MotionKind::SlideSide,
+    };
+    for (UiHelpers::MotionKind kind : kinds) {
+        QWidget widget;
+        widget.resize(120, 40);
+        widget.move(60, 60);
+        widget.show();
+        QTest::qWait(10);
+        const QPoint posBefore = widget.pos();
+        const QRect geomBefore = widget.geometry();
+        UiHelpers::animate(&widget, kind);
+        QCOMPARE(widget.pos(), posBefore);
+        QCOMPARE(widget.geometry(), geomBefore);
+        QCOMPARE(widget.windowOpacity(), 1.0);
+        QVERIFY(widget.findChildren<QPropertyAnimation *>().isEmpty());
+        widget.hide();
+    }
+    // An existing opacity effect is left opaque, never cleared to reveal a
+    // shadow-less flash (toast/popup shadows are preserved).
+    QWidget parent;
+    parent.resize(300, 200);
+    parent.show();
+    QTest::qWait(10);
+    auto *child = new QWidget(&parent);
+    child->resize(100, 32);
+    child->move(10, 10);
+    child->show();
+    auto *effect = new QGraphicsOpacityEffect(child);
+    effect->setOpacity(0.3);
+    child->setGraphicsEffect(effect);
+    const QPoint childPosBefore = child->pos();
+    UiHelpers::animate(child, UiHelpers::MotionKind::Chip);
+    QCOMPARE(child->pos(), childPosBefore);
+    QCOMPARE(effect->opacity(), 1.0);
+    UiHelpers::setReduceMotion(false);
+}
+
+void TestUiDesign::motionChipFadesAndScales()
+{
+    // U12: chips fade via an opacity effect (windowOpacity is a no-op for them)
+    // plus a layout-safe geometry pulse that ends back on the row geometry.
+    UiHelpers::setReduceMotion(false);
+    QWidget parent;
+    parent.resize(400, 200);
+    parent.show();
+    QTest::qWait(20);
+    QWidget *chip = UiHelpers::makeChip(QStringLiteral("type:text"),
+                                        QStringLiteral("Type filter"), &parent, [] {});
+    QVERIFY(chip);
+    chip->resize(140, 32);
+    chip->move(20, 20);
+    chip->show();
+    QTest::qWait(20);
+    const QRect before = chip->geometry();
+    QVERIFY(before.width() > 0);
+    UiHelpers::animate(chip, UiHelpers::MotionKind::Chip);
+    auto *effect = qobject_cast<QGraphicsOpacityEffect *>(chip->graphicsEffect());
+    QVERIFY(effect);
+    QCOMPARE(effect->opacity(), 0.0);
+    QVERIFY(chip->geometry().width() <= before.width());
+    QVERIFY(chip->geometry().height() <= before.height());
+    QTest::qWait(250);
+    QCOMPARE(effect->opacity(), 1.0);
+    QCOMPARE(chip->geometry(), before);
+}
+
+void TestUiDesign::motionToastSlidesUp()
+{
+    // U12: toast windows rise 16 px while fading over the toast duration.
+    UiHelpers::setReduceMotion(false);
+    QWidget toast(nullptr, Qt::ToolTip);
+    toast.resize(220, 60);
+    toast.move(100, 100);
+    toast.show();
+    QTest::qWait(20);
+    const QPoint end = toast.pos();
+    UiHelpers::animate(&toast, UiHelpers::MotionKind::SlideUp);
+    QCOMPARE(toast.windowOpacity(), 0.0);
+    QCOMPARE(toast.pos(), end + QPoint(0, 2 * DesignTokens::SpaceM));
+    QTest::qWait(300);
+    QCOMPARE(toast.pos(), end);
+    QCOMPARE(toast.windowOpacity(), 1.0);
+}
+
+void TestUiDesign::motionDrawerSlidesSide()
+{
+    // U12: docked drawers slide from the side while fading over 80 ms; the
+    // slide ends back on the layout position so the dock is stable.
+    UiHelpers::setReduceMotion(false);
+    QWidget parent;
+    parent.resize(500, 400);
+    parent.show();
+    QTest::qWait(20);
+    QWidget dock(&parent);
+    dock.resize(300, 80);
+    dock.move(50, 250);
+    dock.show();
+    QTest::qWait(20);
+    const QPoint end = dock.pos();
+    UiHelpers::animate(&dock, UiHelpers::MotionKind::SlideSide);
+    auto *effect = qobject_cast<QGraphicsOpacityEffect *>(dock.graphicsEffect());
+    QVERIFY(effect);
+    QCOMPARE(effect->opacity(), 0.0);
+    QCOMPARE(dock.pos(), end + QPoint(2 * DesignTokens::SpaceL, 0));
+    QTest::qWait(300);
+    QCOMPARE(dock.pos(), end);
+    QCOMPARE(effect->opacity(), 1.0);
 }
 
 void TestUiDesign::timelineCollapsesBelowItsWidth()

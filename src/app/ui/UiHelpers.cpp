@@ -18,6 +18,7 @@
 #include <QListView>
 #include <QListWidget>
 #include <QPalette>
+#include <QParallelAnimationGroup>
 #include <QPropertyAnimation>
 #include <QPushButton>
 #include <QTimer>
@@ -374,8 +375,12 @@ void UiHelpers::animate(QWidget *widget, MotionKind kind)
     if (!widget)
         return;
     if (g_reduceMotion) {
+        // Skip motion entirely: leave the final state, never a mid-fade.
+        // Preserve drop shadows (toast/popup cards) — only clear our own
+        // opacity effect back to opaque.
         widget->setWindowOpacity(1.0);
-        widget->setGraphicsEffect(nullptr);
+        if (auto *opacity = qobject_cast<QGraphicsOpacityEffect *>(widget->graphicsEffect()))
+            opacity->setOpacity(1.0);
         return;
     }
     int duration = DesignTokens::MotionDurationMs;
@@ -385,13 +390,124 @@ void UiHelpers::animate(QWidget *widget, MotionKind kind)
         duration = DesignTokens::MotionChipMs;
     else if (kind == MotionKind::SlideUp)
         duration = DesignTokens::MotionToastMs;
-    // All motion kinds currently use an opacity transition; positional slide
-    // and scale effects remain future work so layout geometry stays stable.
-    widget->setWindowOpacity(0.0);
-    auto *animation = new QPropertyAnimation(widget, "windowOpacity", widget);
-    animation->setDuration(duration);
-    animation->setStartValue(0.0);
-    animation->setEndValue(1.0);
-    animation->setEasingCurve(QEasingCurve::OutCubic);
-    animation->start(QAbstractAnimation::DeleteWhenStopped);
+    const bool isWindow = widget->isWindow();
+
+    if (kind == MotionKind::Fade) {
+        if (isWindow) {
+            // Top-level popups (quick-paste, palette): window opacity keeps the
+            // card shadow intact while the fade runs.
+            widget->setWindowOpacity(0.0);
+            auto *animation = new QPropertyAnimation(widget, "windowOpacity", widget);
+            animation->setDuration(duration);
+            animation->setStartValue(0.0);
+            animation->setEndValue(1.0);
+            animation->setEasingCurve(QEasingCurve::OutCubic);
+            animation->start(QAbstractAnimation::DeleteWhenStopped);
+        } else {
+            // Layout-managed children: windowOpacity is a no-op for them, so
+            // fade the graphics opacity instead. Never replace a shadow.
+            if (widget->graphicsEffect() != nullptr
+                && qobject_cast<QGraphicsOpacityEffect *>(widget->graphicsEffect()) == nullptr)
+                return;
+            auto *effect = qobject_cast<QGraphicsOpacityEffect *>(widget->graphicsEffect());
+            if (!effect) {
+                effect = new QGraphicsOpacityEffect(widget);
+                widget->setGraphicsEffect(effect);
+            }
+            effect->setOpacity(0.0);
+            auto *animation = new QPropertyAnimation(effect, "opacity", widget);
+            animation->setDuration(duration);
+            animation->setStartValue(0.0);
+            animation->setEndValue(1.0);
+            animation->setEasingCurve(QEasingCurve::OutCubic);
+            animation->start(QAbstractAnimation::DeleteWhenStopped);
+        }
+        return;
+    }
+
+    if (kind == MotionKind::Chip) {
+        // Filter chips (U6): 80 ms fade + layout-safe scale. The opacity effect
+        // survives the layout pass, so chips created before layout still fade
+        // in; the geometry pulse only runs when the chip already has a valid
+        // rect and ends back on it, so the row is stable afterwards.
+        QGraphicsOpacityEffect *effect =
+            qobject_cast<QGraphicsOpacityEffect *>(widget->graphicsEffect());
+        if (!effect && widget->graphicsEffect() == nullptr) {
+            effect = new QGraphicsOpacityEffect(widget);
+            widget->setGraphicsEffect(effect);
+        }
+        auto *group = new QParallelAnimationGroup(widget);
+        if (effect) {
+            effect->setOpacity(0.0);
+            auto *fade = new QPropertyAnimation(effect, "opacity", group);
+            fade->setDuration(duration);
+            fade->setStartValue(0.0);
+            fade->setEndValue(1.0);
+            fade->setEasingCurve(QEasingCurve::OutCubic);
+            group->addAnimation(fade);
+        }
+        const QRect endGeom = widget->geometry();
+        if (widget->isVisible() && endGeom.width() > 0 && endGeom.height() > 0) {
+            const int dx = qMax(1, endGeom.width() / 20);
+            const int dy = qMax(1, endGeom.height() / 20);
+            const QRect startGeom = endGeom.adjusted(dx, dy, -dx, -dy);
+            widget->setGeometry(startGeom);
+            auto *scale = new QPropertyAnimation(widget, "geometry", group);
+            scale->setDuration(duration);
+            scale->setStartValue(startGeom);
+            scale->setEndValue(endGeom);
+            scale->setEasingCurve(QEasingCurve::OutCubic);
+            group->addAnimation(scale);
+        }
+        if (group->animationCount() > 0)
+            group->start(QAbstractAnimation::DeleteWhenStopped);
+        else
+            group->deleteLater();
+        return;
+    }
+
+    // SlideUp (toast, 120 ms) and SlideSide (drawer, 80 ms): opacity plus a
+    // short positional slide that ends back on the layout position, so the
+    // geometry is stable afterwards. Offsets reuse the spacing tokens.
+    const QPoint endPos = widget->pos();
+    const QPoint offset = kind == MotionKind::SlideUp
+        ? QPoint(0, 2 * DesignTokens::SpaceM)
+        : QPoint(2 * DesignTokens::SpaceL, 0);
+    const QPoint startPos = endPos + offset;
+
+    auto *group = new QParallelAnimationGroup(widget);
+    if (isWindow) {
+        widget->setWindowOpacity(0.0);
+        auto *fade = new QPropertyAnimation(widget, "windowOpacity", group);
+        fade->setDuration(duration);
+        fade->setStartValue(0.0);
+        fade->setEndValue(1.0);
+        fade->setEasingCurve(QEasingCurve::OutCubic);
+        group->addAnimation(fade);
+    } else {
+        // Docked drawer: fade via an opacity effect when there is no shadow
+        // to preserve; the slide below runs regardless.
+        auto *effect = qobject_cast<QGraphicsOpacityEffect *>(widget->graphicsEffect());
+        if (!effect && widget->graphicsEffect() == nullptr) {
+            effect = new QGraphicsOpacityEffect(widget);
+            widget->setGraphicsEffect(effect);
+        }
+        if (effect) {
+            effect->setOpacity(0.0);
+            auto *fade = new QPropertyAnimation(effect, "opacity", group);
+            fade->setDuration(duration);
+            fade->setStartValue(0.0);
+            fade->setEndValue(1.0);
+            fade->setEasingCurve(QEasingCurve::OutCubic);
+            group->addAnimation(fade);
+        }
+    }
+    widget->move(startPos);
+    auto *slide = new QPropertyAnimation(widget, "pos", group);
+    slide->setDuration(duration);
+    slide->setStartValue(startPos);
+    slide->setEndValue(endPos);
+    slide->setEasingCurve(QEasingCurve::OutCubic);
+    group->addAnimation(slide);
+    group->start(QAbstractAnimation::DeleteWhenStopped);
 }
