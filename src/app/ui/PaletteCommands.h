@@ -19,6 +19,7 @@ enum class Argument {
     Tag,    // completion from the tags that exist
     Group,  // completion from the group tree
     Format, // completion from the export formats
+    Profile, // completion from the saved settings profiles
 };
 
 struct Command {

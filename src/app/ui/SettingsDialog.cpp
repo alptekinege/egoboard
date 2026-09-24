@@ -1272,6 +1272,88 @@ QWidget *SettingsDialog::buildStoragePage()
     settingsRow->addStretch(1);
     backupLayout->addLayout(settingsRow);
 
+    // U14 profiles ("Work"/"Personal"): named setting sets stored as their
+    // own KConfig groups. Save snapshots the current setup, Apply switches
+    // the whole setting set (same validating round-trip as Import settings),
+    // Delete removes it. The palette switches with `>profile <name>`.
+    auto *profileRow = new QHBoxLayout();
+    profileRow->addWidget(new QLabel(tr("Profiles:"), backupBox));
+    m_profileCombo = new QComboBox(backupBox);
+    m_profileCombo->setEditable(true);
+    m_profileCombo->setInsertPolicy(QComboBox::NoInsert);
+    m_profileCombo->setPlaceholderText(tr("Work"));
+    m_profileCombo->setToolTip(tr("Named setting sets — type a name and Save, or pick one and Apply."));
+    m_profileCombo->setAccessibleName(tr("Settings profiles"));
+    m_profileCombo->setAccessibleDescription(
+        tr("Named setting sets. Save snapshots the current setup; Apply switches to it."));
+    profileRow->addWidget(m_profileCombo, 1);
+    auto *saveProfileBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-save")),
+                                           tr("Save"), backupBox);
+    saveProfileBtn->setToolTip(tr("Save the current settings as this profile."));
+    connect(saveProfileBtn, &QPushButton::clicked, this, [this] {
+        if (!m_profileCombo)
+            return;
+        QString error;
+        if (!m_ctx.settings()->saveProfile(m_profileCombo->currentText(), &error)) {
+            QMessageBox::warning(this, tr("Save profile"), error);
+            return;
+        }
+        refreshProfileList();
+        QMessageBox::information(this, tr("Save profile"),
+                                 tr("Profile “%1” saved.")
+                                     .arg(m_ctx.settings()->activeProfile()));
+    });
+    profileRow->addWidget(saveProfileBtn);
+    auto *applyProfileBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-open")),
+                                            tr("Apply"), backupBox);
+    applyProfileBtn->setToolTip(tr("Switch the whole setting set to this profile (palette: >profile <name>)."));
+    connect(applyProfileBtn, &QPushButton::clicked, this, [this] {
+        if (!m_profileCombo)
+            return;
+        QString error;
+        if (!m_ctx.settings()->applyProfile(m_profileCombo->currentText(), &error)) {
+            QMessageBox::warning(this, tr("Apply profile"), error);
+            return;
+        }
+        load(); // re-read every page from the applied values
+        previewThemes(); // the applied set may carry another theme pair
+        populateTransformList();
+        populateSnippetList();
+        populateScriptList();
+        refreshProfileList();
+        refreshDiagnostics();
+        QMessageBox::information(this, tr("Apply profile"),
+                                 tr("Switched to profile “%1”.")
+                                     .arg(m_ctx.settings()->activeProfile()));
+    });
+    profileRow->addWidget(applyProfileBtn);
+    auto *deleteProfileBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-delete")),
+                                             tr("Delete"), backupBox);
+    deleteProfileBtn->setToolTip(tr("Delete this profile (current settings are kept)."));
+    connect(deleteProfileBtn, &QPushButton::clicked, this, [this] {
+        if (!m_profileCombo)
+            return;
+        const QString name = SettingsManager::normalizeProfileName(
+            m_profileCombo->currentText());
+        if (name.isEmpty())
+            return;
+        if (QMessageBox::question(this, tr("Delete profile"),
+                                  tr("Delete profile “%1”? The current settings are kept.")
+                                      .arg(name))
+            != QMessageBox::Yes)
+            return;
+        QString error;
+        if (!m_ctx.settings()->deleteProfile(name, &error)) {
+            QMessageBox::warning(this, tr("Delete profile"), error);
+            return;
+        }
+        refreshProfileList();
+    });
+    profileRow->addWidget(deleteProfileBtn);
+    backupLayout->addLayout(profileRow);
+    backupLayout->addWidget(makeHint(tr("Profiles hold whole setting sets (Work, Personal) — switch here or from the palette with <code>&gt;profile &lt;name&gt;</code>. History entries and KWallet secrets are never stored in a profile."), backupBox));
+    refreshProfileList();
+
     m_backupStatus = makeStatusPanel(QString(), backupBox);
     backupLayout->addWidget(m_backupStatus);
     backupLayout->addWidget(makeHint(tr("Backups are plain JSON files — restore one with Import JSON… below. The export runs on a worker thread, so the window stays responsive."), backupBox));
@@ -2673,6 +2755,28 @@ void SettingsDialog::resetPageToDefaults(SettingsManager::SettingsPage page)
     refreshDiagnostics();
     if (m_search && !m_search->text().trimmed().isEmpty())
         applySettingsSearch();
+}
+
+void SettingsDialog::refreshProfileList()
+{
+    if (!m_profileCombo)
+        return;
+    const QString current = m_profileCombo->currentText();
+    m_profileCombo->blockSignals(true);
+    m_profileCombo->clear();
+    for (const QString &name : m_ctx.settings()->profileNames())
+        m_profileCombo->addItem(name);
+    // Keep the active profile selected; otherwise keep the user's typed text.
+    const QString active = m_ctx.settings()->activeProfile();
+    const int activeRow = m_profileCombo->findText(active, Qt::MatchExactly);
+    if (!active.isEmpty() && activeRow >= 0) {
+        m_profileCombo->setCurrentIndex(activeRow);
+    } else if (!current.trimmed().isEmpty()) {
+        m_profileCombo->setCurrentText(current);
+    } else {
+        m_profileCombo->setCurrentIndex(-1);
+    }
+    m_profileCombo->blockSignals(false);
 }
 
 void SettingsDialog::applyEncryptionSetting()

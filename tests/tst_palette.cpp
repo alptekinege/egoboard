@@ -16,6 +16,7 @@ private slots:
     void suggestsCommandsForPartialWords();
     void completesPrefixBeforeSubstring();
     void offersStaticFormatCandidates();
+    void profileCommandParsesResolvesSuggestsCompletes();
 
 private:
     static QStringList ids(const QVector<PaletteCommands::Command> &commands);
@@ -155,6 +156,41 @@ void TestPalette::offersStaticFormatCandidates()
                                               PaletteCommands::Argument::Format),
                                           QStringLiteral("mar")),
              QStringList{QStringLiteral("markdown")});
+}
+
+void TestPalette::profileCommandParsesResolvesSuggestsCompletes()
+{
+    // U14 profiles: `>profile <name>` switches the whole setting set, with
+    // profile-name completion from the saved profiles.
+    const PaletteCommands::Parsed parsed =
+        PaletteCommands::parse(QStringLiteral(">profile Work"));
+    QVERIFY(parsed.hasPrefix);
+    QCOMPARE(parsed.word, QStringLiteral("profile"));
+    QCOMPARE(parsed.argument, QStringLiteral("Work"));
+    QVERIFY(parsed.command != nullptr);
+    QCOMPARE(parsed.command->id, QStringLiteral("profile"));
+    QCOMPARE(parsed.command->argument, PaletteCommands::Argument::Profile);
+
+    // The short alias and unique prefixes resolve; "pr" stays ambiguous with
+    // settings' "prefs" alias instead of silently picking one.
+    QCOMPARE(PaletteCommands::find(QStringLiteral("prof"))->id, QStringLiteral("profile"));
+    QCOMPARE(PaletteCommands::find(QStringLiteral("pro"))->id, QStringLiteral("profile"));
+    QVERIFY(PaletteCommands::find(QStringLiteral("pr")) == nullptr);
+    const QStringList prIds = ids(PaletteCommands::suggest(QStringLiteral("pr")));
+    QVERIFY(prIds.contains(QStringLiteral("profile")));
+    QVERIFY(prIds.contains(QStringLiteral("settings")));
+
+    // Saved profile names complete like tags/groups (prefix first, then
+    // substring, case-insensitive).
+    const QStringList names = {QStringLiteral("Work"), QStringLiteral("Personal"),
+                               QStringLiteral("network-test")};
+    QCOMPARE(PaletteCommands::completions(PaletteCommands::Argument::Profile, names,
+                                          QStringLiteral("per")),
+             (QStringList{QStringLiteral("Personal")}));
+    QCOMPARE(PaletteCommands::completions(PaletteCommands::Argument::Profile, names,
+                                          QStringLiteral("WORK")),
+             (QStringList{QStringLiteral("Work"), QStringLiteral("network-test")}));
+    QVERIFY(PaletteCommands::staticCandidates(PaletteCommands::Argument::Profile).isEmpty());
 }
 
 QTEST_MAIN(TestPalette)

@@ -477,15 +477,17 @@ void CommandPalette::refreshResults(const QString &query)
         }
 
         if (command->takesArgument()) {
-            // Argument completion: tags and groups come from the window, the
-            // export formats are fixed.
+            // Argument completion: tags, groups and profiles come from the
+            // window, the export formats are fixed.
             m_mode = Mode::Argument;
             m_pending = command;
             const QStringList candidates = command->argument == PaletteCommands::Argument::Tag
                 ? m_tagCandidates
                 : command->argument == PaletteCommands::Argument::Group
                     ? m_groupCandidates
-                    : PaletteCommands::staticCandidates(command->argument);
+                    : command->argument == PaletteCommands::Argument::Profile
+                        ? m_profileCandidates
+                        : PaletteCommands::staticCandidates(command->argument);
             m_argumentItems =
                 PaletteCommands::completions(command->argument, candidates, parsed.argument);
             m_model->setArguments(m_argumentItems, trimmed);
@@ -573,14 +575,24 @@ void CommandPalette::updateHint()
         }
         const QString example = m_pending->argument == PaletteCommands::Argument::Tag
             ? tr("tags")
-            : m_pending->argument == PaletteCommands::Argument::Group ? tr("groups") : tr("formats");
-        if (m_argumentItems.isEmpty())
+            : m_pending->argument == PaletteCommands::Argument::Group
+                ? tr("groups")
+                : m_pending->argument == PaletteCommands::Argument::Profile
+                    ? tr("profiles")
+                    : tr("formats");
+        if (m_argumentItems.isEmpty()) {
+            if (m_pending->argument == PaletteCommands::Argument::Profile) {
+                m_hint->setText(tr("%1: unknown profile — save one in Settings ▸ Storage first")
+                                    .arg(m_pending->usage));
+                return;
+            }
             m_hint->setText(tr("%1: type a name — \"%2\" is new and will be created")
                                 .arg(m_pending->usage, m_input->text().section(QLatin1Char(' '), 1).trimmed()));
-        else
-            m_hint->setText(tr("%1 %2 — Tab or ⏎ completes  •  ⏎ again runs %3")
-                                .arg(QString::number(m_argumentItems.size()), example,
-                                     m_pending->id));
+            return;
+        }
+        m_hint->setText(tr("%1 %2 — Tab or ⏎ completes  •  ⏎ again runs %3")
+                            .arg(QString::number(m_argumentItems.size()), example,
+                                 m_pending->id));
         return;
     }
     if (m_mode == Mode::Transforms) {
@@ -725,6 +737,8 @@ void CommandPalette::runCommand(const PaletteCommands::Command &command, const Q
         emit togglePauseRequested();
     } else if (command.id == QLatin1String("settings")) {
         emit settingsRequested();
+    } else if (command.id == QLatin1String("profile")) {
+        emit profileRequested(argument);
     } else if (command.id == QLatin1String("clean")) {
         emit clearHistoryRequested();
     }

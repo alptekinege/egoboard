@@ -33,6 +33,7 @@ public:
     // Candidates for argument completion, refreshed by the window before opening.
     void setTagCandidates(const QStringList &tags) { m_tagCandidates = tags; }
     void setGroupCandidates(const QStringList &groups) { m_groupCandidates = groups; }
+    void setProfileCandidates(const QStringList &profiles) { m_profileCandidates = profiles; }
     // Ids of the commands used before, most recent first.
     void setRecentCommands(const QStringList &ids) { m_recentCommands = ids; }
 
@@ -52,6 +53,7 @@ signals:
     void togglePauseRequested();
     void settingsRequested();
     void clearHistoryRequested();
+    void profileRequested(const QString &profileName);
     // Emitted for every executed command so the window can remember it.
     void commandExecuted(const QString &commandId);
 
@@ -102,6 +104,7 @@ private:
     QStringList m_argumentItems;
     QStringList m_tagCandidates;
     QStringList m_groupCandidates;
+    QStringList m_profileCandidates;
     QStringList m_recentCommands;
     QStringList m_recentSearches; // window feeds settings recents for empty input
     QString m_currentQuery;

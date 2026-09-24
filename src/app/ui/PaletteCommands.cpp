@@ -43,6 +43,9 @@ const QVector<Command> &table()
          QStringLiteral(">settings"), QStringLiteral("Open the settings dialog")},
         {QStringLiteral("clean"), {QStringLiteral("clean"), QStringLiteral("clear")},
          QStringLiteral(">clean"), QStringLiteral("Delete the clipboard history (asks first)")},
+        {QStringLiteral("profile"), {QStringLiteral("profile"), QStringLiteral("prof")},
+         QStringLiteral(">profile <name>"),
+         QStringLiteral("Switch settings profile (saved setting sets)"), Argument::Profile},
     };
     return commands;
 }
@@ -149,6 +152,7 @@ QStringList staticCandidates(Argument kind)
     case Argument::None:
     case Argument::Tag:
     case Argument::Group:
+    case Argument::Profile:
         break;
     }
     return {};

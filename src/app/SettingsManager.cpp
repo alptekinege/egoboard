@@ -8,9 +8,11 @@
 #include <KConfigGroup>
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QRegularExpression>
 #include <QStandardPaths>
 namespace {
@@ -1292,6 +1294,138 @@ void SettingsManager::resetPageToDefaults(SettingsPage page)
     }
     m_suppressChanged = false;
     save(); // sync + the single changed() for the whole page
+}
+
+QString SettingsManager::profileGroupPrefix()
+{
+    return QStringLiteral("Profile ");
+}
+
+QString SettingsManager::normalizeProfileName(const QString &name)
+{
+    return name.trimmed();
+}
+
+bool SettingsManager::isValidProfileName(const QString &name)
+{
+    const QString normalized = normalizeProfileName(name);
+    if (normalized.isEmpty() || normalized.size() > 40)
+        return false;
+    for (const QChar character : normalized) {
+        if (character == QLatin1Char('/') || character == QLatin1Char('\\')
+            || character == QLatin1Char('[') || character == QLatin1Char(']'))
+            return false;
+        if (!character.isPrint())
+            return false;
+    }
+    return true;
+}
+
+QStringList SettingsManager::profileNames() const
+{
+    QStringList names;
+    const QString prefix = profileGroupPrefix();
+    for (const QString &group : m_config->groupList()) {
+        if (group.startsWith(prefix))
+            names.append(group.mid(prefix.size()));
+    }
+    std::sort(names.begin(), names.end(),
+              [](const QString &a, const QString &b) {
+                  return a.compare(b, Qt::CaseInsensitive) < 0;
+              });
+    return names;
+}
+
+bool SettingsManager::hasProfile(const QString &name) const
+{
+    const QString normalized = normalizeProfileName(name);
+    if (normalized.isEmpty())
+        return false;
+    return m_config->hasGroup(profileGroupPrefix() + normalized);
+}
+
+QString SettingsManager::activeProfile() const
+{
+    const QString stored =
+        m_config->group(kGroupGeneral).readEntry("ActiveProfile", QString());
+    return normalizeProfileName(stored);
+}
+
+bool SettingsManager::saveProfile(const QString &name, QString *error)
+{
+    const QString normalized = normalizeProfileName(name);
+    if (!isValidProfileName(normalized)) {
+        if (error)
+            *error = tr("Profile names use 1–40 printable characters without / \\ [ ].");
+        return false;
+    }
+    const QJsonObject snapshot = exportToJson();
+    KConfigGroup profile = m_config->group(profileGroupPrefix() + normalized);
+    profile.writeEntry("Snapshot",
+                       QString::fromUtf8(QJsonDocument(snapshot).toJson(QJsonDocument::Compact)));
+    profile.writeEntry<qint64>("SavedMs", QDateTime::currentMSecsSinceEpoch());
+    m_config->group(kGroupGeneral).writeEntry("ActiveProfile", normalized);
+    m_config->sync();
+    return true;
+}
+
+bool SettingsManager::applyProfile(const QString &name, QString *error)
+{
+    const QString normalized = normalizeProfileName(name);
+    QString stored = normalized;
+    if (!hasProfile(stored)) {
+        // Palette completion is case-insensitive: resolve that way too.
+        bool resolved = false;
+        for (const QString &candidate : profileNames()) {
+            if (candidate.compare(normalized, Qt::CaseInsensitive) == 0) {
+                stored = candidate;
+                resolved = true;
+                break;
+            }
+        }
+        if (!resolved) {
+            if (error)
+                *error = tr("Unknown profile “%1”.").arg(normalized);
+            return false;
+        }
+    }
+    const QString snapshotText =
+        m_config->group(profileGroupPrefix() + stored).readEntry("Snapshot", QString());
+    QJsonParseError parseError{};
+    const QJsonDocument document = QJsonDocument::fromJson(snapshotText.toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        if (error)
+            *error = tr("Profile “%1” is damaged and cannot be applied.").arg(stored);
+        return false;
+    }
+    QString importError;
+    if (!importFromJson(document.object(), &importError)) {
+        if (error)
+            *error = importError;
+        return false;
+    }
+    // importFromJson already emitted the single changed(); record the active
+    // profile without a second emission.
+    m_suppressChanged = true;
+    m_config->group(kGroupGeneral).writeEntry("ActiveProfile", stored);
+    m_config->sync();
+    m_suppressChanged = false;
+    return true;
+}
+
+bool SettingsManager::deleteProfile(const QString &name, QString *error)
+{
+    const QString normalized = normalizeProfileName(name);
+    if (!hasProfile(normalized)) {
+        if (error)
+            *error = tr("Unknown profile “%1”.").arg(normalized);
+        return false;
+    }
+    m_config->deleteGroup(profileGroupPrefix() + normalized);
+    if (activeProfile() == normalized)
+        m_config->group(kGroupGeneral).writeEntry("ActiveProfile", QString());
+    m_config->sync();
+    return true;
 }
 
 void SettingsManager::save()

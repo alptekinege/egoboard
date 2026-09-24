@@ -181,6 +181,10 @@ private:
     QSpinBox *m_backupKeep = nullptr;
     QPushButton *m_backupNowBtn = nullptr;
     QLabel *m_backupStatus = nullptr;
+    // U14 profiles ("Work"/"Personal"): named setting sets beside the
+    // settings Export/Import row.
+    QComboBox *m_profileCombo = nullptr;
+    void refreshProfileList();
     // U11 (G9) cancelable backup/restore progress dialog for manual runs
     // (automatic runs only touch the status label).
     QPointer<QProgressDialog> m_ioProgress;

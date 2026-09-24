@@ -73,6 +73,9 @@ private slots:
     void resetCaptureRestoresDefaults();
     void resetPrivacyHistorySearchAutomationStorage();
     void resetPageEmitsSingleChangedAndPreservesSessionState();
+    void profileSaveApplyDeleteRoundTrip();
+    void profileRejectsBadNamesAndUnknownApply();
+    void profileApplyEmitsSingleChanged();
 
 private:
     QTemporaryDir m_tempDir;
@@ -1333,6 +1336,111 @@ void TestSettings::resetPageEmitsSingleChangedAndPreservesSessionState()
     QCOMPARE(settings.recentSearches(), QStringList({QStringLiteral("foo")}));
     QCOMPARE(settings.lastBackupMs(), qint64(123456));
     QCOMPARE(settings.sortMode(), 2);
+}
+
+void TestSettings::profileSaveApplyDeleteRoundTrip()
+{
+    // U14 profiles: a saved profile round-trips the whole setting set through
+    // its own KConfig group and can be re-applied after local edits.
+    QFile::remove(m_tempDir.path() + QStringLiteral("/egoboardrc"));
+    SettingsManager settings;
+    QVERIFY(settings.profileNames().isEmpty());
+    QVERIFY(settings.activeProfile().isEmpty());
+
+    settings.setQuickPasteCount(3);
+    settings.setTrayMode(QStringLiteral("hidden"));
+    settings.setSensitiveMode(SettingsManager::SensitiveMode::Mark);
+    QString error;
+    QVERIFY2(settings.saveProfile(QStringLiteral("Work"), &error), qPrintable(error));
+    QCOMPARE(settings.profileNames(), QStringList({QStringLiteral("Work")}));
+    QVERIFY(settings.hasProfile(QStringLiteral("Work")));
+    QCOMPARE(settings.activeProfile(), QStringLiteral("Work"));
+
+    // Local edits diverge from the snapshot...
+    settings.setQuickPasteCount(7);
+    settings.setTrayMode(QStringLiteral("always"));
+    settings.setSensitiveMode(SettingsManager::SensitiveMode::Off);
+
+    QVERIFY2(settings.applyProfile(QStringLiteral("Work"), &error), qPrintable(error));
+    QCOMPARE(settings.quickPasteCount(), 3);
+    QCOMPARE(settings.trayMode(), QStringLiteral("hidden"));
+    QCOMPARE(settings.sensitiveMode(), SettingsManager::SensitiveMode::Mark);
+    QCOMPARE(settings.activeProfile(), QStringLiteral("Work"));
+
+    // A second profile coexists; names sort case-insensitively.
+    settings.setQuickPasteCount(5);
+    QVERIFY2(settings.saveProfile(QStringLiteral("personal"), &error), qPrintable(error));
+    QCOMPARE(settings.profileNames(),
+             QStringList({QStringLiteral("personal"), QStringLiteral("Work")}));
+    QCOMPARE(settings.activeProfile(), QStringLiteral("personal"));
+
+    QVERIFY2(settings.deleteProfile(QStringLiteral("Work"), &error), qPrintable(error));
+    QCOMPARE(settings.profileNames(), QStringList({QStringLiteral("personal")}));
+    QVERIFY(!settings.hasProfile(QStringLiteral("Work")));
+    // Deleting the active profile clears it; other live settings are kept.
+    QVERIFY2(settings.deleteProfile(QStringLiteral("personal"), &error), qPrintable(error));
+    QVERIFY(settings.profileNames().isEmpty());
+    QVERIFY(settings.activeProfile().isEmpty());
+    QCOMPARE(settings.quickPasteCount(), 5);
+
+    // Profiles survive a fresh instance (they live in egoboardrc groups).
+    QVERIFY2(settings.saveProfile(QStringLiteral("Work"), &error), qPrintable(error));
+    SettingsManager reloaded;
+    QCOMPARE(reloaded.profileNames(), QStringList({QStringLiteral("Work")}));
+    QVERIFY(reloaded.hasProfile(QStringLiteral("Work")));
+}
+
+void TestSettings::profileRejectsBadNamesAndUnknownApply()
+{
+    // Profile names stay INI-safe and bounded; unknown profiles fail loudly.
+    QFile::remove(m_tempDir.path() + QStringLiteral("/egoboardrc"));
+    SettingsManager settings;
+    QString error;
+    QVERIFY(!settings.saveProfile(QString(), &error));
+    QVERIFY(!error.isEmpty());
+    QVERIFY(!settings.saveProfile(QStringLiteral("   "), &error));
+    QVERIFY(!settings.saveProfile(QStringLiteral("a/b"), &error));
+    QVERIFY(!settings.saveProfile(QStringLiteral("a\\b"), &error));
+    QVERIFY(!settings.saveProfile(QStringLiteral("a[b]"), &error));
+    QVERIFY(!settings.saveProfile(QString(41, QLatin1Char('x')), &error));
+    QVERIFY(settings.profileNames().isEmpty());
+
+    QVERIFY(!settings.applyProfile(QStringLiteral("Nobody"), &error));
+    QVERIFY(error.contains(QStringLiteral("Nobody")));
+    QVERIFY(!settings.deleteProfile(QStringLiteral("Nobody"), &error));
+    QVERIFY(!error.isEmpty());
+
+    // Case-insensitive apply resolves the stored spelling...
+    QVERIFY2(settings.saveProfile(QStringLiteral("Work"), &error), qPrintable(error));
+    QVERIFY2(settings.applyProfile(QStringLiteral("work"), &error), qPrintable(error));
+    QCOMPARE(settings.activeProfile(), QStringLiteral("Work"));
+
+    // ...while surrounding whitespace is trimmed everywhere.
+    QVERIFY(settings.hasProfile(QStringLiteral("  Work  ")));
+    QVERIFY(!settings.hasProfile(QString()));
+}
+
+void TestSettings::profileApplyEmitsSingleChanged()
+{
+    // Applying routes through the validating import: one changed(), and the
+    // machine-local backup schedule still does not travel with the profile.
+    QFile::remove(m_tempDir.path() + QStringLiteral("/egoboardrc"));
+    SettingsManager settings;
+    settings.setCaptureText(false);
+    settings.setQuickPasteCount(4);
+    settings.setLastBackupMs(999);
+    QString error;
+    QVERIFY2(settings.saveProfile(QStringLiteral("Work"), &error), qPrintable(error));
+
+    settings.setCaptureText(true);
+    settings.setQuickPasteCount(9);
+    settings.setLastBackupMs(123456);
+    QSignalSpy spy(&settings, &SettingsManager::changed);
+    QVERIFY2(settings.applyProfile(QStringLiteral("Work"), &error), qPrintable(error));
+    QCOMPARE(spy.count(), 1);
+    QVERIFY(!settings.captureText());
+    QCOMPARE(settings.quickPasteCount(), 4);
+    QCOMPARE(settings.lastBackupMs(), qint64(123456)); // schedule state stays local
 }
 
 QTEST_GUILESS_MAIN(TestSettings)

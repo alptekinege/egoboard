@@ -1649,6 +1649,8 @@ void MainWindow::openPalette()
             m_ctx.setCapturePaused(!m_ctx.isCapturePaused());
         });
         connect(m_palette, &CommandPalette::settingsRequested, this, &MainWindow::openSettings);
+        connect(m_palette, &CommandPalette::profileRequested, this,
+                &MainWindow::applyProfileByName);
         connect(m_palette, &CommandPalette::clearHistoryRequested, this, &MainWindow::clearHistory);
         connect(m_palette, &CommandPalette::commandExecuted, this, [this](const QString &id){
             m_ctx.settings()->addRecentPaletteCommand(id);
@@ -1705,6 +1707,7 @@ void MainWindow::openPalette()
     m_palette->setGroupCandidates(groupNames);
     m_palette->setRecentCommands(m_ctx.settings()->recentPaletteCommands());
     m_palette->setRecentSearches(m_ctx.settings()->recentSearches());
+    m_palette->setProfileCandidates(m_ctx.settings()->profileNames());
     m_palette->openPalette();
 }
 
@@ -1777,6 +1780,29 @@ void MainWindow::exportHistoryToFormat(const QString &format)
     else
         QMessageBox::information(this, tr("Export finished"),
                                  tr("History exported to %1.").arg(request.path));
+}
+
+// ">profile <name>": switches the whole setting set to a saved profile.
+// The palette already accepted itself; unknown names warn with the profiles
+// that do exist (saved in Settings ▸ Storage).
+void MainWindow::applyProfileByName(const QString &name)
+{
+    const QString trimmed = name.trimmed();
+    if (trimmed.isEmpty())
+        return;
+    QString error;
+    if (!m_ctx.settings()->applyProfile(trimmed, &error)) {
+        const QStringList profiles = m_ctx.settings()->profileNames();
+        QMessageBox::warning(
+            this, tr("Switch profile"),
+            profiles.isEmpty()
+                ? tr("%1 Save one in Settings ▸ Storage first.").arg(error)
+                : tr("%1 Available: %2.").arg(error, profiles.join(QStringLiteral(", "))));
+        return;
+    }
+    QMessageBox::information(this, tr("Switch profile"),
+                             tr("Switched to profile “%1”.")
+                                 .arg(m_ctx.settings()->activeProfile()));
 }
 
 void MainWindow::openSnippetDialog()

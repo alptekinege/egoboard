@@ -314,6 +314,24 @@ public:
     };
     void resetPageToDefaults(SettingsPage page);
 
+    // U14 profiles ("Work"/"Personal"): named setting sets. Each profile is
+    // its own KConfig group ("Profile <name>") holding a JSON snapshot of
+    // exportToJson(), so switching routes through importFromJson with the
+    // same validation, machine-local exclusions and single changed().
+    // History data and KWallet secrets never enter a profile. Saving or
+    // deleting a profile only syncs (no changed(): live settings untouched);
+    // applying emits the single changed() of the import. ActiveProfile tracks
+    // the last saved/applied profile; manual edits do not clear it.
+    static QString profileGroupPrefix();
+    static bool isValidProfileName(const QString &name);
+    static QString normalizeProfileName(const QString &name);
+    QStringList profileNames() const; // sorted case-insensitively
+    bool hasProfile(const QString &name) const; // exact match after trim
+    QString activeProfile() const;
+    bool saveProfile(const QString &name, QString *error = nullptr);
+    bool applyProfile(const QString &name, QString *error = nullptr);
+    bool deleteProfile(const QString &name, QString *error = nullptr);
+
     static QString defaultDatabasePath();
     static QString autostartDesktopFilePath();
 

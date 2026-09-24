@@ -49,6 +49,9 @@ public:
     // Palette ">export [format]": opens the export dialog, preselected
     // ("images" opens the image-only folder flow).
     void exportHistoryToFormat(const QString &format);
+    // Palette ">profile <name>": switches the whole setting set to a saved
+    // settings profile (warns when the name is unknown).
+    void applyProfileByName(const QString &name);
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
