@@ -22,6 +22,7 @@ class QuickPasteMenu;
 class QMenu;
 class QTimer;
 class PortalPaster;
+class ScreencastWatcher;
 class ScriptActionManager;
 class SettingsManager;
 class SnippetManager;
@@ -137,6 +138,7 @@ private:
     ExpireScheduler *m_expire = nullptr;
     AutoPaster *m_paster = nullptr;
     PortalPaster *m_portal = nullptr; // opt-in Wayland RemoteDesktop source
+    ScreencastWatcher *m_cast = nullptr; // R6 best-effort sharing detection
     HotkeyManager *m_hotkeys = nullptr;
     TrayController *m_tray = nullptr;
     std::unique_ptr<MainWindow> m_window;

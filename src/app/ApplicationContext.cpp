@@ -2,6 +2,7 @@
 
 #include "AutoPaster.h"
 #include "PortalPaster.h"
+#include "ScreencastWatcher.h"
 #include "BackupService.h"
 #include "BookmarkManager.h"
 #include "ClipboardWatcher.h"
@@ -194,6 +195,7 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
     m_portal = new PortalPaster(this);
     m_paster->setSettingsManager(m_settings);
     m_paster->setPortalPaster(m_portal);
+    m_cast = new ScreencastWatcher(this);
     m_expire = new ExpireScheduler(m_storage, m_settings, this);
     m_hotkeys = new HotkeyManager(this);
     m_tray = new TrayController(m_storage, m_settings, this);
@@ -326,6 +328,12 @@ void ApplicationContext::start()
     connect(m_tray, &TrayController::settingsRequested, m_window.get(), &MainWindow::openSettings);
     connect(m_tray, &TrayController::clearRequested, m_window.get(), &MainWindow::clearHistory);
     connect(m_tray, &TrayController::quitRequested, qApp, &QCoreApplication::quit);
+
+    // R6 screencast awareness: status-dot indicator plus preview auto-blur
+    // while the screen is shared (best-effort PipeWire probe, graceful down).
+    connect(m_cast, &ScreencastWatcher::sharingChanged, m_window.get(),
+            &MainWindow::setScreencastActive);
+    m_cast->start();
 
     connect(m_quickPaste, &QuickPasteMenu::pasteRequested, this,
             [this](qint64 entryId) { pasteEntry(entryId); });

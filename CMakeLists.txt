@@ -34,6 +34,12 @@ find_package(WaylandScanner REQUIRED)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(WAYLAND_CLIENT IMPORTED_TARGET wayland-client)
+# Best-effort screencast detection (R6) reads the local PipeWire registry.
+# Absent headers degrade to "never sharing" with no behavior change.
+pkg_check_modules(PIPEWIRE QUIET IMPORTED_TARGET libpipewire-0.3)
+if(PIPEWIRE_FOUND)
+    set(EGOBOARD_HAVE_PIPEWIRE ON)
+endif()
 
 option(EGOBOARD_USE_SQLCIPHER "Enable SQLCipher at-rest encryption (opt-in, KWallet-held key)" OFF)
 
@@ -109,6 +115,7 @@ add_executable(egoboard
     src/app/ExpireScheduler.cpp
     src/app/AutoPaster.cpp
     src/app/PortalPaster.cpp
+    src/app/ScreencastWatcher.cpp
     src/app/BackupService.cpp
     src/app/HotkeyManager.cpp
     src/app/TrayController.cpp
@@ -188,6 +195,11 @@ if(EGOBOARD_HAVE_SQLCIPHER)
     if(TARGET PkgConfig::SQLCIPHER)
         target_link_libraries(egoboard PRIVATE PkgConfig::SQLCIPHER)
     endif()
+endif()
+
+if(EGOBOARD_HAVE_PIPEWIRE)
+    target_compile_definitions(egoboard PRIVATE EGOBOARD_HAVE_PIPEWIRE=1)
+    target_link_libraries(egoboard PRIVATE PkgConfig::PIPEWIRE)
 endif()
 
 if(KF6Runner_FOUND)

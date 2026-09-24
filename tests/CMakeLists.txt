@@ -220,3 +220,16 @@ target_include_directories(tst_crashreport PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/.
 target_link_libraries(tst_crashreport PRIVATE Qt6::Core Qt6::Test)
 target_compile_options(tst_crashreport PRIVATE -Wall -Wextra)
 add_test(NAME tst_crashreport COMMAND tst_crashreport)
+
+# Screencast awareness (R6): pure node heuristic + live PipeWire probe,
+# headless-safe (inactive without a daemon or a share). The PipeWire client
+# code only compiles when the headers were found (graceful stub otherwise).
+add_executable(tst_screencast tst_screencast.cpp ../src/app/ScreencastWatcher.cpp)
+target_include_directories(tst_screencast PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app)
+target_link_libraries(tst_screencast PRIVATE Qt6::Concurrent Qt6::Test)
+if(EGOBOARD_HAVE_PIPEWIRE)
+    target_compile_definitions(tst_screencast PRIVATE EGOBOARD_HAVE_PIPEWIRE=1)
+    target_link_libraries(tst_screencast PRIVATE PkgConfig::PIPEWIRE)
+endif()
+target_compile_options(tst_screencast PRIVATE -Wall -Wextra)
+add_test(NAME tst_screencast COMMAND tst_screencast)

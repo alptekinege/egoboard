@@ -47,6 +47,7 @@
 #include <QRegularExpression>
 #include <QScreen>
 #include <QSplitter>
+#include <QStatusBar>
 #include <QTimer>
 #include <QDockWidget>
 #include <QProgressDialog>
@@ -1599,6 +1600,37 @@ void MainWindow::openTour()
     // Shown is shown: finished, skipped or closed via the window frame, the
     // tour never auto-shows again (re-open from the Tour button or `>tour`).
     m_ctx.settings()->setTourSeen(true);
+}
+
+void MainWindow::setScreencastActive(bool active)
+{
+    if (m_preview)
+        m_preview->setScreencastActive(active);
+    // Lazily built indicator: no status-bar chrome until the first share.
+    if (active && !m_shareDot) {
+        auto *dot = new QWidget(statusBar());
+        auto *row = new QHBoxLayout(dot);
+        row->setContentsMargins(0, 0, 0, 0);
+        row->setSpacing(DesignTokens::SpaceS);
+        auto *icon = new QLabel(dot);
+        icon->setPixmap(QIcon::fromTheme(QStringLiteral("media-record")).pixmap(16, 16));
+        icon->setAccessibleName(tr("Recording indicator icon"));
+        row->addWidget(icon);
+        auto *text = new QLabel(tr("Sharing"), dot);
+        text->setAccessibleName(tr("Screen sharing active"));
+        row->addWidget(text);
+        dot->setToolTip(
+            tr("Screen sharing detected — previews are blurred until hovered."));
+        dot->setAccessibleName(tr("Screen sharing active"));
+        dot->setAccessibleDescription(
+            tr("Screen sharing detected — previews are blurred until hovered."));
+        statusBar()->addPermanentWidget(dot);
+        m_shareDot = dot;
+    }
+    if (!m_shareDot)
+        return; // never shared: leave the status bar uncreated
+    m_shareDot->setVisible(active);
+    statusBar()->setVisible(active); // the bar only takes space while sharing
 }
 
 void MainWindow::maybeShowFirstRunTour()

@@ -134,6 +134,7 @@ private slots:
     void touchScrollGrabbedOnViewport();
     void pseudoLongExpandsGermanStyle();
     void longTranslationsDoNotClip();
+    void screencastBlurPolicy();
     void dayHeaderCoversTodayAndYesterday();
     void delegateRespectsRowExtras();
     void settingsDeferredSnapshotsNeverTouchStorageOffThread();
@@ -1135,6 +1136,20 @@ void TestUiDesign::longTranslationsDoNotClip()
         QVERIFY(noClippedLabels(&dialog, "tour-narrow"));
     }
     dialog.close();
+}
+
+void TestUiDesign::screencastBlurPolicy()
+{
+    // R6 auto-blur truth table: sharing hides any valid payload; otherwise
+    // the R2 rule stands (sensitive entries behind the privacy-blur setting).
+    QVERIFY(!UiHelpers::shouldBlurPreview(false, false, false, false));
+    QVERIFY(!UiHelpers::shouldBlurPreview(true, false, false, false));
+    QVERIFY(!UiHelpers::shouldBlurPreview(true, true, false, false));
+    QVERIFY(UiHelpers::shouldBlurPreview(true, true, true, false));
+    QVERIFY(UiHelpers::shouldBlurPreview(true, false, false, true));
+    QVERIFY(UiHelpers::shouldBlurPreview(true, true, false, true));
+    QVERIFY(UiHelpers::shouldBlurPreview(true, false, true, true));
+    QVERIFY(!UiHelpers::shouldBlurPreview(false, true, true, true));
 }
 
 void TestUiDesign::dayHeaderCoversTodayAndYesterday()

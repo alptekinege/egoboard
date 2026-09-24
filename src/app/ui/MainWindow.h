@@ -53,6 +53,9 @@ public:
     // Palette ">profile <name>": switches the whole setting set to a saved
     // settings profile (warns when the name is unknown).
     void applyProfileByName(const QString &name);
+    // R6 screencast awareness: status-dot indicator plus preview auto-blur
+    // while the screen is shared (driven by ScreencastWatcher).
+    void setScreencastActive(bool active);
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
@@ -189,4 +192,5 @@ private:
     CommandPalette *m_palette = nullptr;
     TimelineStrip *m_timeline = nullptr;
     QComboBox *m_timelineCombo = nullptr; // U10: condensed day filter under Narrow
+    QWidget *m_shareDot = nullptr; // R6: screencast indicator, bar shows iff set
 };

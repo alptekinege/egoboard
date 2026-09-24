@@ -36,6 +36,9 @@ public:
     void setCloseVisible(bool visible);
     // Words from the active search, marked in the current text preview.
     void setSearchTerms(const QStringList &terms);
+    // R6 screencast auto-blur: while the screen is shared every payload hides
+    // behind the same hover/focus overlay (driven by ScreencastWatcher).
+    void setScreencastActive(bool active);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -106,6 +109,7 @@ private:
     ClipboardRecord m_current;
     QString m_originalText;
     bool m_isTransformed = false;
+    bool m_screencastActive = false; // R6: blur everything while sharing
     ScriptActionManager *m_scripts = nullptr;
     SettingsManager *m_settings = nullptr;
 

@@ -97,6 +97,11 @@ QWidget *makeToast(const QString &message, QWidget *parent, const QString &actio
 // the touch floor so compact rows stay tappable.
 void ensureTouchTarget(QWidget *widget, const QString &density);
 
+// R6 screencast auto-blur: the payload hides while the screen is shared (any
+// entry) or, as before, for sensitive entries behind the privacy-blur
+// setting. Pure so the truth table stays pinned offscreen.
+bool shouldBlurPreview(bool valid, bool privacyBlur, bool sensitive, bool sharingActive);
+
 // Touch scrolling (§7 tail): kinetic swipe on an item-view viewport for
 // touchscreens (TouchGesture only — mouse drags keep their DnD meaning).
 // Null-safe; harmless without touch hardware.

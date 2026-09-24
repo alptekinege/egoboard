@@ -519,10 +519,18 @@ void PreviewPane::updateImageView()
     m_imageLabel->setPixmap(pixmap);
 }
 
-void PreviewPane::updateBlurOverlay()
+void PreviewPane::setScreencastActive(bool active)
 {
-    const bool blur = m_settings && m_settings->privacyBlur() && m_current.isValid()
-        && m_current.sensitive;
+    if (active == m_screencastActive)
+        return;
+    m_screencastActive = active;
+    updateBlurOverlay();
+}
+
+void PreviewPane::updateBlurOverlay()
+{    const bool blur = UiHelpers::shouldBlurPreview(
+        m_current.isValid(), m_settings ? m_settings->privacyBlur() : false,
+        m_current.sensitive, m_screencastActive);
     if (!m_blurLabel)
         return;
     if (!blur) {

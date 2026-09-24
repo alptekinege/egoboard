@@ -422,6 +422,12 @@ void UiHelpers::ensureTouchTarget(QWidget *widget, const QString &density)
         widget->setMinimumHeight(floor);
 }
 
+bool UiHelpers::shouldBlurPreview(bool valid, bool privacyBlur, bool sensitive,
+                                   bool sharingActive)
+{
+    return valid && (sharingActive || (privacyBlur && sensitive));
+}
+
 void UiHelpers::enableTouchScroll(QAbstractScrollArea *view)
 {
     if (!view || !view->viewport())
