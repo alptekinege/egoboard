@@ -25,6 +25,21 @@ public:
     // The day filter was dropped somewhere else (date preset, "Any time"):
     // stop showing a clicked bar as active.
     void clearSelection();
+    // U10 narrow-combo variant: days with entries as combo rows (same caption
+    // language as the paint labels), so day filtering stays reachable while
+    // the strip is collapsed.
+    struct DayOption {
+        QString label; // "Today" / "Yest." / "M/d"
+        qint64 fromMs = 0;
+        qint64 toMs = 0;
+        int count = 0;
+    };
+    QVector<DayOption> dayOptions() const;
+    // Drives the strip from the narrow combo with click-identical toggle
+    // semantics (unknown or empty days clear the day filter).
+    void selectDay(qint64 fromMs);
+    // Day start behind a bar index (0 when outside the bins).
+    qint64 barDayStart(int index) const;
     // Keyboard day cursor (-1 = none yet) and active filter bar (-1 = none).
     int focusedBar() const { return m_focusedBar; }
     int selectedBar() const { return m_selected; }

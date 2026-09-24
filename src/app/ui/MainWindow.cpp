@@ -307,6 +307,21 @@ void MainWindow::buildUi()
     m_timeline->setVisible(m_ctx.settings()->timelineEnabled());
     layout->addWidget(m_timeline);
 
+    // U10 narrow-combo variant: while the strip is collapsed the combo keeps
+    // day filtering reachable with click-identical toggle semantics.
+    m_timelineCombo = new QComboBox(central);
+    m_timelineCombo->setAccessibleName(tr("Filter by day"));
+    m_timelineCombo->setAccessibleDescription(
+        tr("Condensed timeline: pick a day to filter the history"));
+    m_timelineCombo->hide();
+    layout->addWidget(m_timelineCombo);
+    connect(m_timelineCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int row) {
+                if (!m_timeline || !m_timelineCombo || row < 0)
+                    return;
+                m_timeline->selectDay(m_timelineCombo->itemData(row).toLongLong());
+            });
+
     // --- list + preview -----------------------------------------------------
     auto *splitter = new QSplitter(Qt::Horizontal, central);
 
@@ -642,6 +657,9 @@ void MainWindow::connectSignals()
         if (m_timeline)
             m_timeline->setVisible(m_ctx.settings()->timelineEnabled()
                                    && width() >= DesignTokens::TimelineCollapseWidth);
+        if (m_timelineCombo)
+            m_timelineCombo->setVisible(m_ctx.settings()->timelineEnabled()
+                                        && width() < DesignTokens::TimelineCollapseWidth);
         if (m_delegate) {
             m_delegate->setRowPadding(
                 DesignTokens::rowPaddingForDensity(m_ctx.settings()->listDensity()));
@@ -882,6 +900,7 @@ void MainWindow::applyCurrentFilter()
     showListSkeleton();
     m_model->setFilter(filter);
     if (m_timeline) m_timeline->setFilter(filter);
+    updateTimelineCombo(); // day bins recomputed above: refresh the narrow rows
 
     // Mark the searched words in the list rows and the text preview. Operators
     // (AND/OR/NOT) and quotes are dropped; two-letter terms are too noisy.
@@ -2031,6 +2050,40 @@ void MainWindow::applyResponsiveMode(int width)
     if (m_timeline)
         m_timeline->setVisible(m_ctx.settings()->timelineEnabled()
                                && width >= DesignTokens::TimelineCollapseWidth);
+    // U10 groups overlay: under Wide the dock stays put; off Wide it floats
+    // as a drawer instead of squeezing the list.
+    if (m_groupsDock)
+        m_groupsDock->setOverlayMode(mode != DesignTokens::ShellMode::Wide);
+    // U10 narrow combo: visible exactly while the strip is collapsed.
+    if (m_timelineCombo)
+        m_timelineCombo->setVisible(m_ctx.settings()->timelineEnabled()
+                                    && width < DesignTokens::TimelineCollapseWidth);
+    updateTimelineCombo();
+}
+
+void MainWindow::updateTimelineCombo()
+{
+    if (!m_timeline || !m_timelineCombo)
+        return;
+    const QSignalBlocker blocker(m_timelineCombo);
+    m_timelineCombo->clear();
+    m_timelineCombo->addItem(tr("All days"), qint64(0));
+    for (const auto &option : m_timeline->dayOptions()) {
+        m_timelineCombo->addItem(tr("%1 (%n entrie(s))", nullptr, option.count).arg(option.label),
+                                 option.fromMs);
+    }
+    // Sync with the strip's active bar (presets and Esc clear it → All days).
+    const qint64 active = m_timeline->barDayStart(m_timeline->selectedBar());
+    int row = 0;
+    if (active != 0) {
+        for (int i = 0; i < m_timelineCombo->count(); ++i) {
+            if (m_timelineCombo->itemData(i).toLongLong() == active) {
+                row = i;
+                break;
+            }
+        }
+    }
+    m_timelineCombo->setCurrentIndex(row);
 }
 
 void MainWindow::saveSplitterForMode()

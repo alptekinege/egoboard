@@ -126,6 +126,8 @@ private slots:
     void timelineKeyboardMovesAndActivates();
     void timelineAccessibleNamesBars();
     void timelineCollapsesBelowItsWidth();
+    void timelineDayOptionsFeedNarrowCombo();
+    void groupsOverlayDrawerFloats();
     void dayHeaderCoversTodayAndYesterday();
     void delegateRespectsRowExtras();
     void settingsDeferredSnapshotsNeverTouchStorageOffThread();
@@ -975,6 +977,88 @@ void TestUiDesign::timelineCollapsesBelowItsWidth()
     const DesignTokens::TimelineGeometry geometry = DesignTokens::timelineGeometry(
         QSize(DesignTokens::TimelineCollapseWidth - 100, 48), 14, 12);
     QVERIFY(geometry.barWidth >= DesignTokens::TimelineMinBarWidth);
+}
+
+void TestUiDesign::timelineDayOptionsFeedNarrowCombo()
+{
+    // U10 narrow-combo variant: days with entries as labeled ranges that the
+    // condensed combo drives with click-identical toggle semantics.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    StorageManager storage(dir.filePath(QStringLiteral("timeline-options.db")));
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QVERIFY(storage.insertOrUpdate(makeTimelineRecord(QByteArrayLiteral("do-today"),
+                                                      now - 3600000))
+            != 0);
+    QVERIFY(storage.insertOrUpdate(makeTimelineRecord(QByteArrayLiteral("do-yesterday"),
+                                                      now - 86400000 - 3600000))
+            != 0);
+    TimelineStrip strip(&storage);
+    strip.resize(400, 60);
+    strip.show();
+    QTest::qWait(20);
+
+    const QVector<TimelineStrip::DayOption> options = strip.dayOptions();
+    QCOMPARE(options.size(), 2); // empty days stay out of the combo
+    QCOMPARE(options.at(0).label, QStringLiteral("Yest."));
+    QCOMPARE(options.at(0).count, 1);
+    QCOMPARE(options.at(1).label, QStringLiteral("Today"));
+    QCOMPARE(options.at(1).count, 1);
+    for (const auto &option : options) {
+        QVERIFY(option.fromMs > 0);
+        QCOMPARE(option.toMs - option.fromMs, qint64(86400000 - 1));
+    }
+
+    // Driving the strip from a day start filters exactly like a bar click,
+    // and re-driving the active day clears again.
+    QSignalSpy selected(&strip, &TimelineStrip::daySelected);
+    strip.selectDay(options.at(1).fromMs);
+    QCOMPARE(strip.selectedBar(), 13);
+    QCOMPARE(selected.count(), 1);
+    QCOMPARE(selected.at(0).at(0).toLongLong(), options.at(1).fromMs);
+    strip.selectDay(options.at(1).fromMs);
+    QCOMPARE(strip.selectedBar(), -1);
+    QCOMPARE(selected.count(), 2);
+    QCOMPARE(selected.at(1).at(0).toLongLong(), qint64(0));
+    // Unknown days fall through to the clear path, never to a stray filter.
+    strip.selectDay(12345);
+    QCOMPARE(strip.selectedBar(), -1);
+    QCOMPARE(selected.count(), 3);
+    QCOMPARE(strip.barDayStart(-1), qint64(0));
+    QCOMPARE(strip.barDayStart(99), qint64(0));
+    QVERIFY(strip.barDayStart(13) > 0);
+}
+
+void TestUiDesign::groupsOverlayDrawerFloats()
+{
+    // U10 groups overlay: off Wide the dock floats as a drawer (drawer width
+    // follows the parent window, accessible description names the mode).
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    StorageManager storage(dir.filePath(QStringLiteral("groups-overlay.db")));
+    BookmarkManager bookmarks(storage.database());
+    QWidget window;
+    window.resize(800, 600);
+    GroupsDock dock(&bookmarks, &window);
+    window.show();
+    QTest::qWait(50);
+
+    QVERIFY(!dock.isOverlayMode());
+    QVERIFY(!dock.isFloating());
+    dock.setOverlayMode(true);
+    QVERIFY(dock.isOverlayMode());
+    QVERIFY(dock.isFloating());
+    QVERIFY(!dock.accessibleDescription().isEmpty());
+    QVERIFY(dock.width() >= 240 && dock.width() <= 420);
+    // Idempotent: re-asserting the mode neither re-floats nor renames.
+    const QString description = dock.accessibleDescription();
+    dock.setOverlayMode(true);
+    QVERIFY(dock.isFloating());
+    QCOMPARE(dock.accessibleDescription(), description);
+    dock.setOverlayMode(false);
+    QVERIFY(!dock.isOverlayMode());
+    QVERIFY(!dock.isFloating());
+    QVERIFY(!dock.accessibleDescription().isEmpty());
 }
 
 void TestUiDesign::dayHeaderCoversTodayAndYesterday()

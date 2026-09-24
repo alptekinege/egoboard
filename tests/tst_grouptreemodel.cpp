@@ -29,6 +29,7 @@ private slots:
     void rebuildsOnGroupChanges();
     void rejectsInvalidDropPayloads();
     void deduplicatesDraggedGroups();
+    void dropEntryCountDecodesIds();
 
 private:
     QTemporaryDir m_dir;
@@ -359,6 +360,44 @@ void TestGroupTreeModel::deduplicatesDraggedGroups()
     const auto moved = m_bookmarks->group(source);
     QVERIFY(moved.has_value());
     QCOMPARE(moved->parentId, target);
+}
+
+void TestGroupTreeModel::dropEntryCountDecodesIds()
+{
+    // U10 drop-target count badge: the carried entry count behind the badge.
+    const auto encodeEntries = [](const QList<qint64> &ids) {
+        QByteArray encoded;
+        QDataStream stream(&encoded, QIODevice::WriteOnly);
+        stream << ids;
+        QMimeData *mime = new QMimeData;
+        mime->setData(QStringLiteral("application/x-egoboard-entry-ids"), encoded);
+        return mime;
+    };
+    std::unique_ptr<QMimeData> three(encodeEntries({7, 8, 9}));
+    QCOMPARE(GroupTreeModel::entryCount(three.get()), 3);
+    std::unique_ptr<QMimeData> one(encodeEntries({42}));
+    QCOMPARE(GroupTreeModel::entryCount(one.get()), 1);
+    std::unique_ptr<QMimeData> none(encodeEntries({}));
+    QCOMPARE(GroupTreeModel::entryCount(none.get()), 0);
+
+    // Group drags, foreign payloads, malformed blobs and null carry no count.
+    QByteArray groupEncoded;
+    QDataStream groupStream(&groupEncoded, QIODevice::WriteOnly);
+    groupStream << QList<qint64>{5};
+    QMimeData groupMime;
+    groupMime.setData(QStringLiteral("application/x-egoboard-group-ids"), groupEncoded);
+    QCOMPARE(GroupTreeModel::entryCount(&groupMime), 0);
+
+    QMimeData foreign;
+    foreign.setData(QStringLiteral("text/plain"), QByteArrayLiteral("hello"));
+    QCOMPARE(GroupTreeModel::entryCount(&foreign), 0);
+    QMimeData empty;
+    QCOMPARE(GroupTreeModel::entryCount(&empty), 0);
+    QMimeData malformed;
+    malformed.setData(QStringLiteral("application/x-egoboard-entry-ids"),
+                      QByteArrayLiteral("bad payload"));
+    QCOMPARE(GroupTreeModel::entryCount(&malformed), 0);
+    QCOMPARE(GroupTreeModel::entryCount(nullptr), 0);
 }
 
 QTEST_GUILESS_MAIN(TestGroupTreeModel)

@@ -17,6 +17,11 @@ public:
 
     // U15/§7 focus area: keyboard lands in the group tree.
     void focusTree();
+    // U10 groups overlay: under Medium/Narrow the dock floats as a drawer
+    // instead of squeezing the list. Driven by MainWindow::applyResponsiveMode;
+    // idempotent, keeps visibility, drawer width follows the parent window.
+    void setOverlayMode(bool overlay);
+    bool isOverlayMode() const { return m_overlayMode; }
 
     signals:
         void groupSelected(qint64 groupId); // 0 = show everything
@@ -36,4 +41,5 @@ private:
     GroupTreeModel *m_model = nullptr;
     QTreeView *m_tree = nullptr;
     QWidget *m_emptyState = nullptr; // U13 empty state overlay
+    bool m_overlayMode = false; // U10: floating drawer under Medium/Narrow
 };

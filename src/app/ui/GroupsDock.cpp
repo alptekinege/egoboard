@@ -12,6 +12,7 @@
 #include <QDragLeaveEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
+#include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QInputDialog>
@@ -40,7 +41,9 @@ const char *kIconPresets[] = {
 };
 
 // Tree view that marks the group the dragged entries would land on, so the
-// drop target is visible before the mouse button is released.
+// drop target is visible before the mouse button is released. The hovered
+// row also carries the dragged-entry count (U10), in the same Highlight /
+// HighlightedText badge language as the list drag pixmap.
 class DropTargetTreeView : public QTreeView {
 public:
     using QTreeView::QTreeView;
@@ -49,18 +52,21 @@ protected:
     void dragMoveEvent(QDragMoveEvent *event) override
     {
         setDropIndex(indexAt(event->position().toPoint()));
+        m_dropCount = GroupTreeModel::entryCount(event->mimeData());
         QTreeView::dragMoveEvent(event);
     }
 
     void dragLeaveEvent(QDragLeaveEvent *event) override
     {
         setDropIndex({});
+        m_dropCount = 0;
         QTreeView::dragLeaveEvent(event);
     }
 
     void dropEvent(QDropEvent *event) override
     {
         setDropIndex({});
+        m_dropCount = 0;
         QTreeView::dropEvent(event);
     }
 
@@ -71,6 +77,21 @@ protected:
             QColor wash = palette().color(QPalette::Highlight);
             wash.setAlpha(DesignTokens::DropTargetAlpha);
             painter->fillRect(option.rect, wash);
+            if (m_dropCount > 0) {
+                const QString text = QString::number(m_dropCount);
+                const QFontMetrics metrics(font());
+                const int badgeHeight = metrics.height();
+                const int badgeWidth =
+                    metrics.horizontalAdvance(text) + 2 * DesignTokens::SpaceS;
+                const QRect badge(option.rect.right() - badgeWidth - DesignTokens::SpaceS,
+                                  option.rect.center().y() - badgeHeight / 2, badgeWidth,
+                                  badgeHeight);
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(palette().color(QPalette::Highlight));
+                painter->drawRoundedRect(badge, DesignTokens::RadiusM, DesignTokens::RadiusM);
+                painter->setPen(palette().color(QPalette::HighlightedText));
+                painter->drawText(badge, Qt::AlignCenter, text);
+            }
         }
         QTreeView::drawRow(painter, option, index);
     }
@@ -85,6 +106,7 @@ private:
     }
 
     QModelIndex m_dropIndex;
+    int m_dropCount = 0; // entries carried by the current drag (0 = none/group)
 };
 
 class GroupDialog : public QDialog {
@@ -171,6 +193,7 @@ GroupsDock::GroupsDock(BookmarkManager *bookmarks, QWidget *parent)
 {
     setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
     setFeatures(DockWidgetMovable | DockWidgetClosable);
+    setAccessibleDescription(tr("Groups dock"));
 
     auto *container = new QWidget(this);
     auto *layout = new QVBoxLayout(container);
@@ -297,6 +320,23 @@ void GroupsDock::focusTree()
 {
     if (m_tree)
         m_tree->setFocus();
+}
+
+void GroupsDock::setOverlayMode(bool overlay)
+{
+    if (overlay == m_overlayMode)
+        return;
+    m_overlayMode = overlay;
+    setFloating(overlay);
+    if (overlay) {
+        // Drawer width follows the window like the preview drawer does.
+        const int parentWidth = parentWidget() ? parentWidget()->width() : 0;
+        resize(qBound(240, int(parentWidth * DesignTokens::DrawerWidthFraction), 420),
+               height());
+        setAccessibleDescription(tr("Groups overlay drawer"));
+    } else {
+        setAccessibleDescription(tr("Groups dock"));
+    }
 }
 
 void GroupsDock::updateEmptyState()

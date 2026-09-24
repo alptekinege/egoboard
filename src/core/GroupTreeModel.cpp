@@ -185,6 +185,16 @@ QStringList GroupTreeModel::mimeTypes() const
     return {QString::fromLatin1(kGroupMime), QString::fromLatin1(kEntryMime)};
 }
 
+int GroupTreeModel::entryCount(const QMimeData *data)
+{
+    if (!data || !data->hasFormat(QString::fromLatin1(kEntryMime)))
+        return 0;
+    QDataStream stream(data->data(QString::fromLatin1(kEntryMime)));
+    QList<qint64> ids;
+    stream >> ids;
+    return stream.status() == QDataStream::Ok ? ids.size() : 0;
+}
+
 QMimeData *GroupTreeModel::mimeData(const QModelIndexList &indexes) const
 {
     QList<qint64> ids;

@@ -231,6 +231,45 @@ void TimelineStrip::clearSelection()
     update();
 }
 
+QVector<TimelineStrip::DayOption> TimelineStrip::dayOptions() const
+{
+    QVector<DayOption> options;
+    const int n = m_bins.size();
+    for (int i = 0; i < n; ++i) {
+        const auto &bin = m_bins.at(i);
+        if (bin.count == 0)
+            continue; // an empty day would clear on pick: keep the combo clean
+        DayOption option;
+        const QDate day = QDateTime::fromMSecsSinceEpoch(bin.dayStartMs).date();
+        option.label = (i == n - 1) ? tr("Today") : (i == n - 2) ? tr("Yest.")
+                                                                : day.toString(QStringLiteral("M/d"));
+        option.fromMs = bin.dayStartMs;
+        option.toMs = bin.dayStartMs + kDayMs - 1;
+        option.count = bin.count;
+        options.append(option);
+    }
+    return options;
+}
+
+void TimelineStrip::selectDay(qint64 fromMs)
+{
+    int index = -1;
+    for (int i = 0; i < m_bins.size(); ++i) {
+        if (m_bins.at(i).dayStartMs == fromMs) {
+            index = i;
+            break;
+        }
+    }
+    activateBar(index); // unknown days fall through to the clear path
+}
+
+qint64 TimelineStrip::barDayStart(int index) const
+{
+    if (index < 0 || index >= m_bins.size())
+        return 0;
+    return m_bins.at(index).dayStartMs;
+}
+
 void TimelineStrip::activateBar(int index)
 {
     // Clicking an empty bar, outside the strip, or the bar that is already

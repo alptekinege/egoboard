@@ -96,7 +96,9 @@ private:
     void clearAllFilters();
     void updateBulkBar();
     void bulkPin(bool pinned);
-    void bulkTag();
+    // U10 narrow-combo variant: rebuilds the condensed day combo from the
+    // strip's day options and syncs it with the active bar.
+    void updateTimelineCombo();    void bulkTag();
     void bulkMoveToGroup();
     void bulkExport();
     // Image-only export flow (U17): folder + manifest, cancelable progress.
@@ -186,4 +188,5 @@ private:
     ExportImportDialogs::DateRange m_lastRange;
     CommandPalette *m_palette = nullptr;
     TimelineStrip *m_timeline = nullptr;
+    QComboBox *m_timelineCombo = nullptr; // U10: condensed day filter under Narrow
 };
