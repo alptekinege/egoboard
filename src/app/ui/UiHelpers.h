@@ -12,6 +12,7 @@ class QLineEdit;
 class QLabel;
 class QListView;
 class QListWidget;
+class QAbstractScrollArea;
 class QBoxLayout;
 class QWidget;
 
@@ -95,6 +96,16 @@ QWidget *makeToast(const QString &message, QWidget *parent, const QString &actio
 // Minimum interactive height for a widget under a density (U5): never below
 // the touch floor so compact rows stay tappable.
 void ensureTouchTarget(QWidget *widget, const QString &density);
+
+// Touch scrolling (§7 tail): kinetic swipe on an item-view viewport for
+// touchscreens (TouchGesture only — mouse drags keep their DnD meaning).
+// Null-safe; harmless without touch hardware.
+void enableTouchScroll(QAbstractScrollArea *view);
+
+// Pseudo-long translation probe (§7 tail): German-length expansion of a UI
+// string for offscreen layout checks (vowel doubling, ~+30%, bracketed so
+// truncation is visible). Test utility; never shown to users.
+QString pseudoLong(const QString &text);
 
 // One placeholder row (U11): translucent rounded rect with a pulse shimmer
 // when motion is enabled, static when Reduce motion is on. Used for skeleton

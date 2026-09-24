@@ -5,6 +5,7 @@
 
 #include <QAbstractButton>
 #include <QAbstractItemView>
+#include <QAbstractScrollArea>
 #include <QAccessible>
 #include <QApplication>
 #include <QBoxLayout>
@@ -25,6 +26,7 @@
 #include <QPropertyAnimation>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScroller>
 #include <QStyle>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -418,6 +420,29 @@ void UiHelpers::ensureTouchTarget(QWidget *widget, const QString &density)
     const int floor = DesignTokens::rowMinHeightForDensity(density);
     if (widget->minimumHeight() < floor)
         widget->setMinimumHeight(floor);
+}
+
+void UiHelpers::enableTouchScroll(QAbstractScrollArea *view)
+{
+    if (!view || !view->viewport())
+        return;
+    QScroller::grabGesture(view->viewport(), QScroller::TouchGesture);
+}
+
+QString UiHelpers::pseudoLong(const QString &text)
+{
+    if (text.isEmpty())
+        return QStringLiteral("[]");
+    QString expanded;
+    expanded.reserve(text.size() + text.size() / 3 + 2);
+    expanded += QLatin1Char('[');
+    for (const QChar character : text) {
+        expanded += character;
+        if (QStringLiteral("aeiouAEIOUäöüÄÖÜ").contains(character))
+            expanded += character; // German-length vowel doubling
+    }
+    expanded += QLatin1Char(']');
+    return expanded;
 }
 
 QWidget *UiHelpers::makeSkeleton(QWidget *parent)

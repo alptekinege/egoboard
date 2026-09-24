@@ -343,6 +343,7 @@ void MainWindow::buildUi()
     m_list->setDragEnabled(true);
     m_list->setDragDropMode(QAbstractItemView::DragOnly);
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
+    UiHelpers::enableTouchScroll(m_list); // §7 tail: swipe on touchscreens
     splitter->addWidget(m_list);
 
     // "No entries yet" / "nothing matches this filter", over the empty viewport.

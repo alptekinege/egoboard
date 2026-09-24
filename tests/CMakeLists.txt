@@ -172,6 +172,7 @@ add_test(NAME tst_paletteui COMMAND tst_paletteui)
 add_executable(tst_uidesign tst_uidesign.cpp
     ../src/app/ui/EntryDelegate.cpp
     ../src/app/ui/UiHelpers.cpp
+    ../src/app/ui/FirstRunTour.cpp
     ../src/app/ui/GroupsDock.cpp
     ../src/app/ui/TimelineStrip.cpp
     ../src/app/ui/ExportImportDialogs.cpp

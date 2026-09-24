@@ -15,6 +15,7 @@
 #include "ColorSchemeIndex.h"
 #include "DesignTokens.h"
 #include "EntryDelegate.h"
+#include "FirstRunTour.h"
 #include "GroupsDock.h"
 #include "TextAppearance.h"
 #include "TimelineStrip.h"
@@ -35,11 +36,13 @@
 #include <QImage>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListView>
 #include <QListWidget>
 #include <QPalette>
 #include <QPointer>
 #include <QPropertyAnimation>
 #include <QPushButton>
+#include <QScroller>
 #include <QSignalSpy>
 #include <QStackedWidget>
 #include <QTemporaryDir>
@@ -128,6 +131,9 @@ private slots:
     void timelineCollapsesBelowItsWidth();
     void timelineDayOptionsFeedNarrowCombo();
     void groupsOverlayDrawerFloats();
+    void touchScrollGrabbedOnViewport();
+    void pseudoLongExpandsGermanStyle();
+    void longTranslationsDoNotClip();
     void dayHeaderCoversTodayAndYesterday();
     void delegateRespectsRowExtras();
     void settingsDeferredSnapshotsNeverTouchStorageOffThread();
@@ -1059,6 +1065,76 @@ void TestUiDesign::groupsOverlayDrawerFloats()
     QVERIFY(!dock.isOverlayMode());
     QVERIFY(!dock.isFloating());
     QVERIFY(!dock.accessibleDescription().isEmpty());
+}
+
+void TestUiDesign::touchScrollGrabbedOnViewport()
+{
+    // §7 tail: the history list swipes on touchscreens (TouchGesture on the
+    // viewport — mouse drags keep their DnD meaning). Null-safe.
+    QListView view;
+    QVERIFY(!QScroller::hasScroller(view.viewport()));
+    UiHelpers::enableTouchScroll(&view);
+    QVERIFY(QScroller::hasScroller(view.viewport()));
+    UiHelpers::enableTouchScroll(nullptr); // must not crash
+}
+
+void TestUiDesign::pseudoLongExpandsGermanStyle()
+{
+    // §7 tail probe: German-length expansion for offscreen layout checks.
+    QCOMPARE(UiHelpers::pseudoLong(QString()), QStringLiteral("[]"));
+    const QString expanded = UiHelpers::pseudoLong(QStringLiteral("Paste"));
+    QVERIFY(expanded.startsWith(QLatin1Char('[')));
+    QVERIFY(expanded.endsWith(QLatin1Char(']')));
+    QCOMPARE(expanded, QStringLiteral("[Paastee]"));
+    QVERIFY(expanded.size() > QStringLiteral("Paste").size() + 2);
+    // Consonants survive in order; umlauts double like plain vowels.
+    QVERIFY(UiHelpers::pseudoLong(QStringLiteral("Grüße")).contains(QStringLiteral("üü")));
+}
+
+namespace {
+// §7 tail: every word-wrapped label must be tall enough for its own width —
+// anything shorter clips German-length text.
+bool noClippedLabels(QWidget *dialog, const char *context)
+{
+    for (QLabel *label : dialog->findChildren<QLabel *>()) {
+        if (!label->isVisible() || !label->wordWrap() || label->width() <= 0)
+            continue;
+        const int needed = label->heightForWidth(label->width());
+        if (needed >= 0 && label->height() < needed) {
+            qWarning("%s: label clips (%dx%d, needs %d): %s", context, label->width(),
+                     label->height(), needed, qPrintable(label->text().left(40)));
+            return false;
+        }
+    }
+    return true;
+}
+} // namespace
+
+void TestUiDesign::longTranslationsDoNotClip()
+{
+    // §7 tail: the tour survives German-length strings at default and narrow
+    // widths without clipping a wrapped label.
+    QList<FirstRunTour::Step> steps;
+    for (const auto &step : FirstRunTour::defaultSteps()) {
+        steps.append({step.iconName, UiHelpers::pseudoLong(step.title),
+                      UiHelpers::pseudoLong(step.body), UiHelpers::pseudoLong(step.hint)});
+    }
+    FirstRunTour dialog(steps);
+    dialog.show();
+    QTest::qWait(50);
+    for (int i = 0; i < dialog.stepCount(); ++i) {
+        dialog.goToStep(i);
+        QTest::qWait(20);
+        QVERIFY(noClippedLabels(&dialog, "tour-default"));
+    }
+    dialog.resize(360, 300); // narrow window: wrapping absorbs the length
+    QTest::qWait(50);
+    for (int i = 0; i < dialog.stepCount(); ++i) {
+        dialog.goToStep(i);
+        QTest::qWait(20);
+        QVERIFY(noClippedLabels(&dialog, "tour-narrow"));
+    }
+    dialog.close();
 }
 
 void TestUiDesign::dayHeaderCoversTodayAndYesterday()
