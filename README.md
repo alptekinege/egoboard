@@ -1,10 +1,10 @@
-<p align="center">
+<p>
   <img src="data/egoboard.svg" width="128" alt="Egoboard icon">
 </p>
 
 # Egoboard
 
-<p align="center">
+<p>
   <a href="https://github.com/alptekinege/egoboard"><img src="https://img.shields.io/github/stars/alptekinege/egoboard?style=flat-square" alt="GitHub stars"></a>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License: MIT">
   <img src="https://img.shields.io/badge/Qt-6-blue?style=flat-square" alt="Qt 6">
