@@ -4,6 +4,14 @@
 
 # Egoboard
 
+<p align="center">
+  <a href="https://github.com/alptekinege/egoboard"><img src="https://img.shields.io/github/stars/alptekinege/egoboard?style=flat-square" alt="GitHub stars"></a>
+  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License: MIT">
+  <img src="https://img.shields.io/badge/Qt-6-blue?style=flat-square" alt="Qt 6">
+  <img src="https://img.shields.io/badge/C++-20-blue?style=flat-square" alt="C++20">
+  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20KDE%20Plasma-blue?style=flat-square" alt="Platform: Linux, KDE Plasma">
+</p>
+
 Clipboard history manager for KDE Plasma. Keeps everything you copy, lets you search it, and paste it back with one keypress. Works on X11 and Wayland. Local-only: SQLite database, no accounts, no network, no telemetry.
 
 ## Features
