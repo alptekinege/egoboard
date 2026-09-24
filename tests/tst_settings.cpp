@@ -77,6 +77,7 @@ private slots:
     void profileRejectsBadNamesAndUnknownApply();
     void profileApplyEmitsSingleChanged();
     void tourSeenDefaultsFalsePersistsAndStaysLocal();
+    void portalPasteFlagPersistsTravelsAndResets();
 
 private:
     QTemporaryDir m_tempDir;
@@ -1463,6 +1464,30 @@ void TestSettings::tourSeenDefaultsFalsePersistsAndStaysLocal()
     QString error;
     QVERIFY2(reloaded.importFromJson(snapshot, &error), qPrintable(error));
     QVERIFY(!reloaded.tourSeen()); // the import leaves local onboarding alone
+}
+
+void TestSettings::portalPasteFlagPersistsTravelsAndResets()
+{
+    // R6 portal paste: off by default (opt-in), persists, travels in the
+    // settings JSON like any other preference, and resets with General.
+    QFile::remove(m_tempDir.path() + QStringLiteral("/egoboardrc"));
+    SettingsManager settings;
+    QVERIFY(!settings.portalPasteEnabled());
+    settings.setPortalPasteEnabled(true);
+    QVERIFY(settings.portalPasteEnabled());
+
+    SettingsManager reloaded;
+    QVERIFY(reloaded.portalPasteEnabled());
+
+    const QJsonObject snapshot = settings.exportToJson();
+    QCOMPARE(snapshot.value(QStringLiteral("portalPasteEnabled")).toBool(), true);
+    reloaded.setPortalPasteEnabled(false);
+    QString error;
+    QVERIFY2(reloaded.importFromJson(snapshot, &error), qPrintable(error));
+    QVERIFY(reloaded.portalPasteEnabled());
+
+    reloaded.resetPageToDefaults(SettingsManager::SettingsPage::General);
+    QVERIFY(!reloaded.portalPasteEnabled());
 }
 
 QTEST_GUILESS_MAIN(TestSettings)

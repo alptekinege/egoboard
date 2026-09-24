@@ -1,6 +1,8 @@
 #include "AutoPaster.h"
 
 #include "ClipboardWatcher.h"
+#include "PortalPaster.h"
+#include "SettingsManager.h"
 
 #include <KNotification>
 
@@ -125,6 +127,13 @@ void AutoPaster::paste(const ClipboardRecord &record, QWidget *windowToHide)
 void AutoPaster::simulateCtrlV()
 {
     const bool isX11 = QGuiApplication::platformName() == QLatin1String("xcb");
+    // Opt-in Wayland portal: only through a live consented session; anything
+    // else (flag off, no portal, session down) keeps the notification below.
+    const bool portalReady = !isX11 && m_settings && m_settings->portalPasteEnabled()
+        && m_portal && m_portal->hasSession();
+    if (PortalPaster::pasteMethod(isX11, portalReady) == PortalPaster::Method::Portal
+        && m_portal->paste())
+        return;
     if (!isX11) {
         KNotification::event(
             QStringLiteral("pasteReady"),

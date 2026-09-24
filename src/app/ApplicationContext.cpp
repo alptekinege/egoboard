@@ -1,6 +1,7 @@
 #include "ApplicationContext.h"
 
 #include "AutoPaster.h"
+#include "PortalPaster.h"
 #include "BackupService.h"
 #include "BookmarkManager.h"
 #include "ClipboardWatcher.h"
@@ -190,6 +191,9 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
                                      this);
     m_dataControl = new WlrDataControlHelper(m_settings, m_tracker.get(), this);
     m_paster = new AutoPaster(m_watcher, this);
+    m_portal = new PortalPaster(this);
+    m_paster->setSettingsManager(m_settings);
+    m_paster->setPortalPaster(m_portal);
     m_expire = new ExpireScheduler(m_storage, m_settings, this);
     m_hotkeys = new HotkeyManager(this);
     m_tray = new TrayController(m_storage, m_settings, this);
@@ -206,6 +210,7 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
         m_quickPaste->setItemCount(m_settings->quickPasteCount());
         m_quickPaste->setTwoLine(m_settings->quickPasteTwoLine());
         UiHelpers::setReduceMotion(m_settings->reduceMotion());
+        syncPortalSession(); // opt-in/out takes effect without a restart
     });
     connect(m_ocr, &OcrWorker::recognized, this, [this](qint64 id, const QString &text){
         m_storage->setOcrText(id, text);
@@ -333,6 +338,7 @@ void ApplicationContext::start()
     // Apply the configured theme before any window is shown.
     UiHelpers::setReduceMotion(m_settings->reduceMotion());
     applyThemes(m_settings->theme(), m_settings->iconTheme(), m_settings->textAppearance());
+    syncPortalSession(); // per-session consent starts here when opted in
     if (m_settings->startVisible())
         m_window->show();
 
@@ -506,6 +512,17 @@ void ApplicationContext::toggleMainWindow()
         m_window->hide();
     else
         m_window->show();
+}
+
+void ApplicationContext::syncPortalSession()
+{
+    if (!m_portal || !m_settings)
+        return;
+    if (QGuiApplication::platformName() == QLatin1String("wayland")
+        && m_settings->portalPasteEnabled())
+        m_portal->ensureSession();
+    else
+        m_portal->closeSession();
 }
 
 void ApplicationContext::showQuickPaste()

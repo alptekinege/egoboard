@@ -15,9 +15,9 @@ egoboard_add_test(tst_storage)
 egoboard_add_test(tst_schema)
 egoboard_add_test(tst_vacuum)
 # Auto-paste MIME reconstruction is headless-safe with the offscreen platform
-add_executable(tst_autopaster tst_autopaster.cpp ../src/app/AutoPaster.cpp ../src/app/ClipboardWatcher.cpp ../src/app/SettingsManager.cpp ../src/app/ColorSchemeIndex.cpp ../src/app/IconThemeIndex.cpp)
+add_executable(tst_autopaster tst_autopaster.cpp ../src/app/AutoPaster.cpp ../src/app/PortalPaster.cpp ../src/app/ClipboardWatcher.cpp ../src/app/SettingsManager.cpp ../src/app/ColorSchemeIndex.cpp ../src/app/IconThemeIndex.cpp)
 target_include_directories(tst_autopaster PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
-target_link_libraries(tst_autopaster PRIVATE egoboard::core Qt6::Gui Qt6::Widgets Qt6::Test KF6::ConfigCore KF6::Notifications)
+target_link_libraries(tst_autopaster PRIVATE egoboard::core Qt6::Gui Qt6::Widgets Qt6::DBus Qt6::Test KF6::ConfigCore KF6::Notifications)
 target_compile_options(tst_autopaster PRIVATE -Wall -Wextra)
 add_test(NAME tst_autopaster COMMAND tst_autopaster)
 

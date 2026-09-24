@@ -88,6 +88,8 @@ private:
     void previewCrashReport(const CrashReport::Data &data, const QString &saveDir);
     // Redact mode: sync kind-toggle enabled state with the selected radio.
     void updateRedactUi();
+    // R6 portal paste: availability line under the opt-in checkbox.
+    void updatePortalStatus();
     // Expire-rules editor: rebuild the list widget from m_expireRules.
     void refreshExpireList();
     // Coalesced deferred refresh: safe to call from list-item signal handlers
@@ -141,6 +143,8 @@ private:
     QCheckBox *m_closeAfterPaste = nullptr;
     QCheckBox *m_bumpOnPaste = nullptr;
     QCheckBox *m_pasteAsPlainText = nullptr;
+    QCheckBox *m_portalPaste = nullptr; // R6 opt-in Wayland portal paste
+    QLabel *m_portalStatus = nullptr; // portal availability at dialog open
     QCheckBox *m_rememberGeometry = nullptr;
     QCheckBox *m_restoreFilter = nullptr;
     QComboBox *m_timestampCombo = nullptr;

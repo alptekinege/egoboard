@@ -11,6 +11,7 @@
 #include "../ScriptActionManager.h"
 #include "../SettingsManager.h"
 #include "../OcrWorker.h"
+#include "../PortalPaster.h"
 #include "AppearancePreview.h"
 #include "DesignTokens.h"
 #include "SnippetManager.h"
@@ -519,6 +520,14 @@ QWidget *SettingsDialog::buildGeneralPage()
     m_pasteAsPlainText = new QCheckBox(tr("Always paste as plain text (strip formatting)"), pastingBox);
     pastingLayout->addWidget(m_pasteAsPlainText);
     pastingLayout->addWidget(makeHint(tr("Plain-text paste affects rich text (HTML) entries — images and file copies are unchanged. The stored entry keeps its original formatting either way."), pastingBox));
+    // R6 portal paste (Wayland only, opt-in): the compositor presses Ctrl+V
+    // through the desktop portal after its own permission prompt.
+    m_portalPaste = new QCheckBox(tr("Paste via the Wayland portal (asks permission first)"), pastingBox);
+    m_portalPaste->setToolTip(tr("On Wayland, asks the compositor to press Ctrl+V through the desktop portal instead of showing the manual-paste notification. Off everywhere else."));
+    pastingLayout->addWidget(m_portalPaste);
+    m_portalStatus = makeStatusPanel(QString(), pastingBox);
+    pastingLayout->addWidget(m_portalStatus);
+    pastingLayout->addWidget(makeHint(tr("How it works: on the first paste of each session Plasma shows a permission prompt from the compositor — nothing is pasted without that approval, and clipboard contents never leave the machine. Turn this off anytime to go back to the manual Ctrl+V notification; the fallback always stays. Needs a portal-providing compositor (Plasma Wayland); without one the notification path is used automatically."), pastingBox));
     layout->addWidget(pastingBox);
 
     auto *generalResetRow = new QHBoxLayout();
@@ -2581,6 +2590,8 @@ void SettingsDialog::load()
     if (m_closeAfterPaste) m_closeAfterPaste->setChecked(m_ctx.settings()->closeAfterPaste());
     if (m_bumpOnPaste) m_bumpOnPaste->setChecked(m_ctx.settings()->bumpOnPaste());
     if (m_pasteAsPlainText) m_pasteAsPlainText->setChecked(m_ctx.settings()->pasteAsPlainText());
+    if (m_portalPaste) m_portalPaste->setChecked(m_ctx.settings()->portalPasteEnabled());
+    updatePortalStatus();
     if (m_rememberGeometry)
         m_rememberGeometry->setChecked(m_ctx.settings()->rememberWindowGeometry());
     if (m_restoreFilter) m_restoreFilter->setChecked(m_ctx.settings()->restoreLastFilter());
@@ -2711,6 +2722,7 @@ void SettingsDialog::save()
     if (m_closeAfterPaste) m_ctx.settings()->setCloseAfterPaste(m_closeAfterPaste->isChecked());
     if (m_bumpOnPaste) m_ctx.settings()->setBumpOnPaste(m_bumpOnPaste->isChecked());
     if (m_pasteAsPlainText) m_ctx.settings()->setPasteAsPlainText(m_pasteAsPlainText->isChecked());
+    if (m_portalPaste) m_ctx.settings()->setPortalPasteEnabled(m_portalPaste->isChecked());
     if (m_rememberGeometry)
         m_ctx.settings()->setRememberWindowGeometry(m_rememberGeometry->isChecked());
     if (m_restoreFilter)
@@ -2870,6 +2882,22 @@ void SettingsDialog::updateRedactUi()
             box->setEnabled(redact);
     if (m_redactTestBtn)
         m_redactTestBtn->setEnabled(redact);
+}
+
+void SettingsDialog::updatePortalStatus()
+{
+    if (!m_portalStatus)
+        return;
+    // Availability at dialog open: platform first, portal service second.
+    // The per-session consent itself happens live at paste time.
+    if (QGuiApplication::platformName() != QLatin1String("wayland")) {
+        m_portalStatus->setText(tr("Portal paste is a Wayland feature — this session runs on %1.")
+                                    .arg(QGuiApplication::platformName()));
+    } else if (PortalPaster::isAvailable()) {
+        m_portalStatus->setText(tr("Portal available — opt in above and Plasma will ask permission on first use."));
+    } else {
+        m_portalStatus->setText(tr("Portal unavailable here — the manual Ctrl+V notification is used."));
+    }
 }
 
 void SettingsDialog::refreshExpireList()

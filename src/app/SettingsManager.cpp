@@ -951,6 +951,19 @@ void SettingsManager::setPasteAsPlainText(bool plain)
     save();
 }
 
+bool SettingsManager::portalPasteEnabled() const
+{
+    // Opt-in Wayland portal paste (RemoteDesktop Ctrl+V); off by default so
+    // nothing ever talks to the portal without an explicit choice.
+    return m_config->group(kGroupUi).readEntry("PortalPaste", false);
+}
+
+void SettingsManager::setPortalPasteEnabled(bool enabled)
+{
+    m_config->group(kGroupUi).writeEntry("PortalPaste", enabled);
+    save();
+}
+
 QString SettingsManager::listDensity() const
 {
     const QString v = m_config->group(kGroupUi).readEntry("ListDensity", QStringLiteral("comfortable"));
@@ -1255,6 +1268,7 @@ void SettingsManager::resetPageToDefaults(SettingsPage page)
         setCloseAfterPaste(true);
         setBumpOnPaste(true);
         setPasteAsPlainText(false);
+        setPortalPasteEnabled(false);
         break;
     case SettingsPage::Capture:
         setMonitorPrimarySelection(false);
@@ -1575,6 +1589,7 @@ QJsonObject SettingsManager::exportToJson() const
     root.insert(QStringLiteral("closeAfterPaste"), closeAfterPaste());
     root.insert(QStringLiteral("bumpOnPaste"), bumpOnPaste());
     root.insert(QStringLiteral("pasteAsPlainText"), pasteAsPlainText());
+    root.insert(QStringLiteral("portalPasteEnabled"), portalPasteEnabled());
     root.insert(QStringLiteral("listDensity"), listDensity());
     root.insert(QStringLiteral("sortMode"), sortMode());
     root.insert(QStringLiteral("searchScope"), searchScope());
@@ -1761,6 +1776,8 @@ bool SettingsManager::importFromJson(const QJsonObject &root, QString *error)
         setBumpOnPaste(getBool("bumpOnPaste"));
     if (has("pasteAsPlainText"))
         setPasteAsPlainText(getBool("pasteAsPlainText"));
+    if (has("portalPasteEnabled"))
+        setPortalPasteEnabled(getBool("portalPasteEnabled"));
     if (has("listDensity"))
         setListDensity(getString("listDensity"));
     if (has("sortMode"))

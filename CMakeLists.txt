@@ -108,6 +108,7 @@ add_executable(egoboard
     src/app/ClipboardWatcher.cpp
     src/app/ExpireScheduler.cpp
     src/app/AutoPaster.cpp
+    src/app/PortalPaster.cpp
     src/app/BackupService.cpp
     src/app/HotkeyManager.cpp
     src/app/TrayController.cpp

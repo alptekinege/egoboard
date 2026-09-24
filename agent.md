@@ -167,7 +167,7 @@ The codebase must support both X11 and Wayland Plasma sessions cleanly:
 | Feature | X11 Implementation | Wayland Implementation |
 | :--- | :--- | :--- |
 | **Active Window Tracking** | `KWindowSystem` + `_NET_WM_PID` → process name | `wlr-foreign-toplevel-management` protocol → `app_id` |
-| **Paste Simulation** | `libXtst` key event injection (fallback: `xdotool`) | Passive `KNotification` asking user to press `Ctrl+V` |
+| **Paste Simulation** | `libXtst` key event injection (fallback: `xdotool`) | Passive `KNotification` asking user to press `Ctrl+V`, or portal-synthesized `Ctrl+V` when opted in (`PortalPaste`) |
 | **Global Shortcuts** | `KF6::GlobalAccel` (`Meta+V`, `Meta+Shift+V`) | `KF6::GlobalAccel` (`Meta+V`, `Meta+Shift+V`) |
 | **Popup Positioning** | `QCursor::pos()` multi-monitor aware | `QCursor::pos()` multi-monitor aware |
 

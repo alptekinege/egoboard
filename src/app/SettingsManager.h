@@ -223,6 +223,13 @@ public:
     void setBumpOnPaste(bool bump);
     bool pasteAsPlainText() const; // strip HTML formatting on paste (default off)
     void setPasteAsPlainText(bool plain);
+    // Opt-in Wayland portal paste (default off): asks the compositor to press
+    // Ctrl+V through RemoteDesktop after its permission prompt, instead of
+    // the manual-paste notification. A plain preference, so it travels in
+    // settings export/import and profiles; without a portal it degrades to
+    // the notification path automatically.
+    bool portalPasteEnabled() const;
+    void setPortalPasteEnabled(bool enabled);
 
     // History list density: "compact" | "comfortable" | "spacious"
     QString listDensity() const;

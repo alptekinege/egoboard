@@ -21,6 +21,7 @@ class MainWindow;
 class QuickPasteMenu;
 class QMenu;
 class QTimer;
+class PortalPaster;
 class ScriptActionManager;
 class SettingsManager;
 class SnippetManager;
@@ -108,6 +109,10 @@ private slots:
 
 private:
     void onCaptured(const ClipboardRecord &record);
+    // Opt-in portal paste follows the toggle without a restart: enabled (on
+    // Wayland, portal present) opens the consented session, anything else
+    // closes it and pastes keep the notification fallback.
+    void syncPortalSession();
     // Re-registers the snippet hotkeys from the database and records the ones
     // that could not be bound.
     void bindSnippetShortcuts();
@@ -131,6 +136,7 @@ private:
     WlrDataControlHelper *m_dataControl = nullptr;
     ExpireScheduler *m_expire = nullptr;
     AutoPaster *m_paster = nullptr;
+    PortalPaster *m_portal = nullptr; // opt-in Wayland RemoteDesktop source
     HotkeyManager *m_hotkeys = nullptr;
     TrayController *m_tray = nullptr;
     std::unique_ptr<MainWindow> m_window;
