@@ -41,6 +41,8 @@ const QVector<Command> &table()
         {QStringLiteral("settings"),
          {QStringLiteral("settings"), QStringLiteral("config"), QStringLiteral("prefs")},
          QStringLiteral(">settings"), QStringLiteral("Open the settings dialog")},
+        {QStringLiteral("tour"), {QStringLiteral("tour")},
+         QStringLiteral(">tour"), QStringLiteral("Show the first-run introduction tour")},
         {QStringLiteral("clean"), {QStringLiteral("clean"), QStringLiteral("clear")},
          QStringLiteral(">clean"), QStringLiteral("Delete the clipboard history (asks first)")},
         {QStringLiteral("profile"), {QStringLiteral("profile"), QStringLiteral("prof")},

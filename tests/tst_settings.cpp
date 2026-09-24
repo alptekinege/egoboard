@@ -76,6 +76,7 @@ private slots:
     void profileSaveApplyDeleteRoundTrip();
     void profileRejectsBadNamesAndUnknownApply();
     void profileApplyEmitsSingleChanged();
+    void tourSeenDefaultsFalsePersistsAndStaysLocal();
 
 private:
     QTemporaryDir m_tempDir;
@@ -1441,6 +1442,27 @@ void TestSettings::profileApplyEmitsSingleChanged()
     QVERIFY(!settings.captureText());
     QCOMPARE(settings.quickPasteCount(), 4);
     QCOMPARE(settings.lastBackupMs(), qint64(123456)); // schedule state stays local
+}
+
+void TestSettings::tourSeenDefaultsFalsePersistsAndStaysLocal()
+{
+    // U15 first-run tour: unseen by default, persists, and never travels in
+    // settings export/import (onboarding state stays machine-local).
+    QFile::remove(m_tempDir.path() + QStringLiteral("/egoboardrc"));
+    SettingsManager settings;
+    QVERIFY(!settings.tourSeen());
+    settings.setTourSeen(true);
+    QVERIFY(settings.tourSeen());
+
+    SettingsManager reloaded;
+    QVERIFY(reloaded.tourSeen());
+
+    const QJsonObject snapshot = settings.exportToJson();
+    QVERIFY(!snapshot.contains(QStringLiteral("tourSeen")));
+    reloaded.setTourSeen(false);
+    QString error;
+    QVERIFY2(reloaded.importFromJson(snapshot, &error), qPrintable(error));
+    QVERIFY(!reloaded.tourSeen()); // the import leaves local onboarding alone
 }
 
 QTEST_GUILESS_MAIN(TestSettings)

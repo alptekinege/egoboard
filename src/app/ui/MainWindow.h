@@ -21,6 +21,7 @@ class QLabel;
 class QLineEdit;
 class QListView;
 class QSplitter;
+class QShowEvent;
 class QTimer;
 class QToolBar;
 class QToolButton;
@@ -57,6 +58,7 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
     void changeEvent(QEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    void showEvent(QShowEvent *event) override; // U15: first-run tour hook
     void hideEvent(QHideEvent *event) override;
     // Keeps the empty-list hint the size of the list viewport.
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -121,6 +123,9 @@ private:
     void openSnippetDialog();
     void openTransformChain();
     void openCheatsheet(); // U15 shortcut reference (`?`)
+    void openTour(); // U15 first-run tour (also on first launch, once)
+    // U15 first-launch hook: offers the tour once, then never again.
+    void maybeShowFirstRunTour();
     // U15/§7 focus areas: 0 = search, 1 = list, 2 = preview, 3 = groups, 4 = timeline.
     void focusArea(int index);
     void repositionCenteredOnActiveScreen();
@@ -177,6 +182,7 @@ private:
 
     qint64 m_selectedId = 0;
     qint64 m_groupFilter = 0; // 0 = all
+    bool m_tourChecked = false; // U15: first-launch tour offered at most once
     ExportImportDialogs::DateRange m_lastRange;
     CommandPalette *m_palette = nullptr;
     TimelineStrip *m_timeline = nullptr;

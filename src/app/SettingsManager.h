@@ -271,6 +271,13 @@ public:
     void setRememberWindowGeometry(bool remember);
     bool restoreLastFilter() const; // re-apply the last filter on start (default off)
     void setRestoreLastFilter(bool restore);
+    // U15 first-run tour: shown once on first launch only (default false =
+    // unseen). Skipped or finished, the flag is set so the tour never
+    // re-shows without asking (More menu ▸ Tour, palette `>tour`). Onboarding
+    // state stays machine-local like lastBackupMs: it never travels in
+    // settings export/import or profiles.
+    bool tourSeen() const;
+    void setTourSeen(bool seen);
     QByteArray windowGeometry() const;
     void setWindowGeometry(const QByteArray &geometry);
     QByteArray splitterState() const;

@@ -200,6 +200,18 @@ target_link_libraries(tst_cheatsheet PRIVATE Qt6::Widgets Qt6::Test)
 target_compile_options(tst_cheatsheet PRIVATE -Wall -Wextra)
 add_test(NAME tst_cheatsheet COMMAND tst_cheatsheet)
 
+# First-run tour (U15): data-only steps + offscreen navigation, same pattern
+add_executable(tst_tour tst_tour.cpp
+    ../src/app/ui/FirstRunTour.cpp
+    ../src/app/ui/UiHelpers.cpp
+    ../src/app/TextAppearance.cpp
+    ../src/app/ColorSchemeIndex.cpp
+    ../src/app/IconThemeIndex.cpp)
+target_include_directories(tst_tour PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/app/ui ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(tst_tour PRIVATE Qt6::Widgets Qt6::Test KF6::ConfigCore KF6::ConfigWidgets)
+target_compile_options(tst_tour PRIVATE -Wall -Wextra)
+add_test(NAME tst_tour COMMAND tst_tour)
+
 # Crash/support reports: QtCore-only (schema, redaction, gdb/ELF parsing), no
 # GUI or database, so the report path itself never depends on the app running.
 add_executable(tst_crashreport tst_crashreport.cpp ../src/app/CrashReport.cpp)

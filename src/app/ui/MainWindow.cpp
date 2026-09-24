@@ -18,6 +18,7 @@
 #include "SnippetDialog.h"
 #include "StorageManager.h"
 #include "CommandPalette.h"
+#include "FirstRunTour.h"
 #include "ShortcutCheatsheet.h"
 #include "TimelineStrip.h"
 #include "TransformChainDialog.h"
@@ -501,6 +502,13 @@ void MainWindow::buildUi()
                                               tr("Clear"));
     connect(clearAction, &QAction::triggered, this, &MainWindow::clearHistory);
 
+    // U15 first-run tour re-entry: secondary action, collapses into More off
+    // Wide with the other secondary actions below.
+    QAction *tourAction = m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("help-hint")),
+                                               tr("Tour"));
+    tourAction->setToolTip(tr("Show the first-run introduction tour"));
+    connect(tourAction, &QAction::triggered, this, &MainWindow::openTour);
+
     // "More" overflow for Medium/Narrow (U3): secondary actions move here.
     m_moreButton = new QToolButton(m_toolbar);
     m_moreButton->setText(tr("More"));
@@ -510,7 +518,7 @@ void MainWindow::buildUi()
     m_moreButton->setVisible(false);
     m_toolbar->addWidget(m_moreButton);
     m_overflowActions = {m_pinnedOnlyAction, m_sensitiveAction, m_deleteFilteredAction,
-                         m_groupsAction, snipAction, chainAction};
+                         m_groupsAction, snipAction, chainAction, tourAction};
 
     // --- groups dock --------------------------------------------------------
     m_groupsDock = new GroupsDock(m_ctx.bookmarks(), this);
@@ -1564,6 +1572,27 @@ void MainWindow::openCheatsheet()
     dialog.exec();
 }
 
+void MainWindow::openTour()
+{
+    FirstRunTour dialog(FirstRunTour::defaultSteps(), this);
+    dialog.exec();
+    // Shown is shown: finished, skipped or closed via the window frame, the
+    // tour never auto-shows again (re-open from the Tour button or `>tour`).
+    m_ctx.settings()->setTourSeen(true);
+}
+
+void MainWindow::maybeShowFirstRunTour()
+{
+    if (m_tourChecked)
+        return;
+    m_tourChecked = true;
+    if (!FirstRunTour::shouldShow(m_ctx.settings()->tourSeen()))
+        return;
+    // Deferred past the show event so the window paints first; the guard
+    // above keeps it to one offer per run.
+    QTimer::singleShot(0, this, &MainWindow::openTour);
+}
+
 void MainWindow::focusArea(int index)
 {
     switch (index) {
@@ -1649,6 +1678,7 @@ void MainWindow::openPalette()
             m_ctx.setCapturePaused(!m_ctx.isCapturePaused());
         });
         connect(m_palette, &CommandPalette::settingsRequested, this, &MainWindow::openSettings);
+        connect(m_palette, &CommandPalette::tourRequested, this, &MainWindow::openTour);
         connect(m_palette, &CommandPalette::profileRequested, this,
                 &MainWindow::applyProfileByName);
         connect(m_palette, &CommandPalette::clearHistoryRequested, this, &MainWindow::clearHistory);
@@ -1941,6 +1971,12 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     QMainWindow::resizeEvent(event);
     if (event && event->size().width() != event->oldSize().width())
         applyResponsiveMode(event->size().width());
+}
+
+void MainWindow::showEvent(QShowEvent *event)
+{
+    QMainWindow::showEvent(event);
+    maybeShowFirstRunTour();
 }
 
 void MainWindow::applyResponsiveMode(int width)

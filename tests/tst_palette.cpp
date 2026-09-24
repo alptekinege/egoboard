@@ -17,6 +17,7 @@ private slots:
     void completesPrefixBeforeSubstring();
     void offersStaticFormatCandidates();
     void profileCommandParsesResolvesSuggestsCompletes();
+    void tourCommandParsesAndResolves();
 
 private:
     static QStringList ids(const QVector<PaletteCommands::Command> &commands);
@@ -191,6 +192,22 @@ void TestPalette::profileCommandParsesResolvesSuggestsCompletes()
                                           QStringLiteral("WORK")),
              (QStringList{QStringLiteral("Work"), QStringLiteral("network-test")}));
     QVERIFY(PaletteCommands::staticCandidates(PaletteCommands::Argument::Profile).isEmpty());
+}
+
+void TestPalette::tourCommandParsesAndResolves()
+{
+    // U15 tour re-entry: `>tour` is argument-less and resolves unambiguously.
+    const PaletteCommands::Parsed parsed =
+        PaletteCommands::parse(QStringLiteral(">tour"));
+    QVERIFY(parsed.hasPrefix);
+    QCOMPARE(parsed.word, QStringLiteral("tour"));
+    QVERIFY(parsed.argument.isEmpty());
+    QVERIFY(parsed.command != nullptr);
+    QCOMPARE(parsed.command->id, QStringLiteral("tour"));
+    QVERIFY(!parsed.command->takesArgument());
+    QCOMPARE(PaletteCommands::find(QStringLiteral("tou"))->id, QStringLiteral("tour"));
+    QVERIFY(ids(PaletteCommands::suggest(QStringLiteral("tou")))
+                .contains(QStringLiteral("tour")));
 }
 
 QTEST_MAIN(TestPalette)

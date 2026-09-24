@@ -129,6 +129,7 @@ add_executable(egoboard
     src/app/ui/ExportImportDialogs.cpp
     src/app/ui/CommandPalette.cpp
     src/app/ui/PaletteCommands.cpp
+    src/app/ui/FirstRunTour.cpp
     src/app/ui/ShortcutCheatsheet.cpp
     src/app/ui/TimelineStrip.cpp
     src/app/ui/SnippetDialog.cpp

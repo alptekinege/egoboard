@@ -1146,6 +1146,17 @@ void SettingsManager::setRestoreLastFilter(bool restore)
     save();
 }
 
+bool SettingsManager::tourSeen() const
+{
+    return m_config->group(kGroupGeneral).readEntry("TourSeen", false);
+}
+
+void SettingsManager::setTourSeen(bool seen)
+{
+    m_config->group(kGroupGeneral).writeEntry("TourSeen", seen);
+    save();
+}
+
 QByteArray SettingsManager::windowGeometry() const
 {
     return m_config->group(kGroupUi).readEntry("WindowGeometry", QByteArray());
