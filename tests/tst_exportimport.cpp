@@ -37,6 +37,7 @@ private slots:
     void overwriteClearsAllUserData();
     void importBatchesSignalsIntoOneReset();
     void rejectsMalformedImportFiles();
+    void olderVersionExportStillImports();
     void reportsExportWriteErrors();
     void writesAndPrunesAutomaticBackups();
     void importsKlipperHistory();
@@ -664,6 +665,40 @@ void TestExportImport::rejectsMalformedImportFiles()
     result = m_io->importFromFile(newer, ExportImportManager::ImportMode::Merge);
     QVERIFY(!result.ok);
     QVERIFY(result.error.contains(QStringLiteral("newer"), Qt::CaseInsensitive));
+}
+
+void TestExportImport::olderVersionExportStillImports()
+{
+    // P1 data safety: a version-1 export (sparse keys, no newer fields)
+    // imports cleanly into the current schema — old backups keep working.
+    const QString path = m_dir.filePath(QStringLiteral("v1-export.json"));
+    {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(file.write(R"({"format":"egoboard-export","version":1,)"
+                           R"("groups":[{"id":7,"name":"OldGroup"}],)"
+                           R"("entries":[{"hash":"v1hash","timestamp":4242,)"
+                           R"("type":"text","text":"legacy payload"}]})")
+                > 0);
+    }
+    const auto result = m_io->importFromFile(path, ExportImportManager::ImportMode::Merge);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.entriesImported, 1);
+    QCOMPARE(result.groupsImported, 1);
+    QCOMPARE(m_storage->stats().entryCount, qint64(1));
+
+    // Content survives the sparse round-trip; absent keys read as defaults.
+    // (fetchPage rows are light — no text payload — so re-read the full row.)
+    const auto page = m_storage->fetchPage({}, {}, 10);
+    QCOMPARE(page.size(), 1);
+    QCOMPARE(page.first().timestamp, qint64(4242));
+    ClipboardRecord full;
+    QVERIFY(m_storage->fetchFull(page.first().id, &full));
+    QCOMPARE(full.textData, QStringLiteral("legacy payload"));
+    QVERIFY(!full.pinned);
+    const auto groups = m_bookmarks->groups();
+    QCOMPARE(groups.size(), 1);
+    QCOMPARE(groups.first().name, QStringLiteral("OldGroup"));
 }
 
 void TestExportImport::reportsExportWriteErrors()

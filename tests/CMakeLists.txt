@@ -233,3 +233,9 @@ if(EGOBOARD_HAVE_PIPEWIRE)
 endif()
 target_compile_options(tst_screencast PRIVATE -Wall -Wextra)
 add_test(NAME tst_screencast COMMAND tst_screencast)
+
+# P1 packaging verification: shipped metadata stays valid and installable.
+add_executable(tst_packaging tst_packaging.cpp)
+target_link_libraries(tst_packaging PRIVATE Qt6::Test)
+target_compile_options(tst_packaging PRIVATE -Wall -Wextra)
+add_test(NAME tst_packaging COMMAND tst_packaging)

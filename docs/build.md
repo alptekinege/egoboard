@@ -26,7 +26,9 @@ Notes:
   `wlr-data-control` protocol XMLs in `third_party/protocols/`.
 - Runtime dependencies for optional features are detected at runtime, not build
   time: `tesseract` (+ language data) for OCR, `xdotool` as the X11 paste
-  fallback.
+  fallback, and a portal-providing compositor (Plasma Wayland) for the opt-in
+  portal paste — each degrades gracefully to the documented fallback when
+  absent.
 
 Optional build/feature dependencies:
 
@@ -36,6 +38,9 @@ Optional build/feature dependencies:
 - `libxtst` — XTest auto-paste on X11 (compiled in automatically when found).
 - `layer-shell-qt` — layer-shell quick-paste popup on Wayland (compiled in
   automatically when found).
+- `pipewire` (`libpipewire-0.3`) — best-effort screencast detection for the
+  sharing indicator + preview auto-blur (compiled in automatically when
+  found; without it sharing is simply never reported).
 
 ## Build and test
 
