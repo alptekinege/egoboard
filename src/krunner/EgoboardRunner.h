@@ -21,6 +21,8 @@ public:
     static QString actionLabel(RunnerActions::Kind kind, bool pinned);
     // "Firefox · text · pinned" — what KRunner shows under the preview.
     static QString subtextFor(const EntryRow &row);
+    // Display label for a matchCategory() id ("text" | "images" | "files").
+    static QString categoryLabel(const QString &category);
 
 private:
     static QDBusInterface *iface();

@@ -102,6 +102,15 @@ QString EgoboardRunner::subtextFor(const EntryRow &row)
     return parts.join(QStringLiteral(" · "));
 }
 
+QString EgoboardRunner::categoryLabel(const QString &category)
+{
+    if (category == QLatin1String("images"))
+        return i18n("Images");
+    if (category == QLatin1String("files"))
+        return i18n("Files");
+    return i18n("Text");
+}
+
 void EgoboardRunner::match(KRunner::RunnerContext &context)
 {
     const QString query = context.query();
@@ -158,6 +167,12 @@ void EgoboardRunner::match(KRunner::RunnerContext &context)
         m.setSubtext(subtextFor(entry));
         m.setIconName(iconForType(entry.type));
         m.setData(QString::number(entry.id));
+        // Result categories by content type (text first — the common case),
+        // so images and file copies group under their own headers.
+        m.setMatchCategory(categoryLabel(entry.matchCategory()));
+        m.setCategoryRelevance(entry.matchCategory() == QLatin1String("text")
+                                   ? KRunner::QueryMatch::CategoryRelevance::High
+                                   : KRunner::QueryMatch::CategoryRelevance::Moderate);
         // Pinned entries are what the user deliberately kept: rank them up.
         m.setRelevance(entry.pinned ? 0.95 : 0.9);
         // Pin and Unpin are one kind in the menu, chosen by the entry's state.

@@ -58,3 +58,17 @@ QString EntryRow::summary() const
         parts << type;
     return parts.join(QStringLiteral(" · "));
 }
+
+QString EntryRow::matchCategory() const
+{
+    return categoryForType(type);
+}
+
+QString EntryRow::categoryForType(const QString &typeId)
+{
+    if (typeId == QLatin1String("image"))
+        return QStringLiteral("images");
+    if (typeId == QLatin1String("files"))
+        return QStringLiteral("files");
+    return QStringLiteral("text"); // plain + rich text, and anything unknown
+}

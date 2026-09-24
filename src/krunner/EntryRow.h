@@ -41,4 +41,10 @@ struct EntryRow {
 
     // "Firefox · text" — empty parts are left out.
     QString summary() const;
+
+    // KRunner result category for this row's content type: plain and rich
+    // text share "text", images and files group on their own. Pure over the
+    // type id so the grouping is unit-testable without KRunner itself.
+    QString matchCategory() const;
+    static QString categoryForType(const QString &typeId);
 };

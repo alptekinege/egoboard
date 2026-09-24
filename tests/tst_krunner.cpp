@@ -26,6 +26,7 @@ private slots:
     void actionsRefuseUnknownEntries();
     void contentTypeIdsCoverAllTypes();
     void runnerActionProtocolMapsToDbusMethods();
+    void matchCategoryGroupsByContentType();
 
 private:
     static qint64 addEntry(StorageManager &storage, const QString &text, const QString &hash,
@@ -393,6 +394,27 @@ void TestKRunner::runnerActionProtocolMapsToDbusMethods()
         ids.insert(RunnerActions::id(kind));
     QCOMPARE(ids.size(), RunnerActions::all().size());
     QCOMPARE(RunnerActions::all().size(), 5);
+}
+
+void TestKRunner::matchCategoryGroupsByContentType()
+{
+    // §8 KRunner categories: plain + rich text share "text", images and
+    // files group on their own, unknown types fall back to text (same
+    // fallback philosophy as the match icons).
+    QCOMPARE(EntryRow::categoryForType(QStringLiteral("text")), QStringLiteral("text"));
+    QCOMPARE(EntryRow::categoryForType(QStringLiteral("html")), QStringLiteral("text"));
+    QCOMPARE(EntryRow::categoryForType(QStringLiteral("image")), QStringLiteral("images"));
+    QCOMPARE(EntryRow::categoryForType(QStringLiteral("files")), QStringLiteral("files"));
+    QCOMPARE(EntryRow::categoryForType(QString()), QStringLiteral("text"));
+    QCOMPARE(EntryRow::categoryForType(QStringLiteral("future-type")), QStringLiteral("text"));
+
+    EntryRow row;
+    row.type = QStringLiteral("image");
+    QCOMPARE(row.matchCategory(), QStringLiteral("images"));
+    row.type = QStringLiteral("files");
+    QCOMPARE(row.matchCategory(), QStringLiteral("files"));
+    row.type = QStringLiteral("html");
+    QCOMPARE(row.matchCategory(), QStringLiteral("text"));
 }
 
 QTEST_GUILESS_MAIN(TestKRunner)
