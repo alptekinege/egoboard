@@ -26,6 +26,19 @@ private slots:
     void rejectsNonPositiveAndOverflowAges();
     void decodesOnlyValidRules();
     void schedulerIgnoresInvalidAndEmptyRules();
+    void parsesNumericAndNamedTypes();
+    void parseBoolVariants();
+    void rejectsExtraFieldsAndPipeInWildcard();
+    void toStringMasksInvalidTypeAsAny();
+    void decodePreservesOrderAndDropsInvalid();
+    void parsesAgeEdgeForms();
+    void cutoffBoundaryIsStrictlyOlder();
+    void questionMarkAndEscapedWildcards();
+    void emptyWildcardMatchesNullSourceApp();
+    void multiRuleUnionKeepsBroadest();
+    void keepPinnedFalseOverridesProtection();
+    void overlappingRulesCountOnce();
+    void noSignalWithoutVictims();
 
 private:
     ClipboardRecord makeRecord(const QByteArray &hash, const QString &text, qint64 timestamp);
@@ -264,6 +277,307 @@ void TestExpire::schedulerIgnoresInvalidAndEmptyRules()
     settings.setExpireRules({});
     scheduler.applyRules();
     QCOMPARE(spy.count(), 0);
+    QCOMPARE(storage.stats().entryCount, qint64(1));
+}
+
+void TestExpire::parsesNumericAndNamedTypes()
+{
+    // Hand-written numeric enum values are accepted inside the range.
+    QCOMPARE(ExpireRule::fromString(QStringLiteral("0||60|1")).contentType,
+             int(ContentType::Text));
+    QCOMPARE(ExpireRule::fromString(QStringLiteral("2||60|1")).contentType,
+             int(ContentType::Image));
+    // Out-of-range numerics are invalid and dropped by the list codec.
+    QVERIFY(!ExpireRule::fromString(QStringLiteral("99||60|1")).isValid());
+    QVERIFY(!ExpireRule::fromString(QStringLiteral("-2||60|1")).isValid());
+    QCOMPARE(decodeRules(QStringList{QStringLiteral("99||60|1"),
+                                     QStringLiteral("text||60|1")})
+                 .size(),
+             1);
+    // Names are case-insensitive and whitespace-tolerant; unknown stays "any".
+    QCOMPARE(ExpireRule::fromString(QStringLiteral("ANY||60|1")).contentType, -1);
+    QCOMPARE(ExpireRule::fromString(QStringLiteral(" Text ||60|1")).contentType,
+             int(ContentType::Text));
+    QCOMPARE(ExpireRule::fromString(QStringLiteral(" IMAGE ||60|1")).contentType,
+             int(ContentType::Image));
+}
+
+void TestExpire::parseBoolVariants()
+{
+    const QStringList truthy{QStringLiteral("1"), QStringLiteral("true"),
+                             QStringLiteral("yes"), QStringLiteral("on"),
+                             QStringLiteral("TRUE"), QStringLiteral("YES"),
+                             QStringLiteral("ON"), QStringLiteral(" on ")};
+    for (const QString &flag : truthy) {
+        const ExpireRule rule =
+            ExpireRule::fromString(QStringLiteral("any||60|%1").arg(flag));
+        QVERIFY2(rule.keepPinned, qPrintable(flag));
+    }
+    // Everything else — including "false", "0" and typos — is false. A
+    // misspelled flag therefore deletes pinned entries (see
+    // keepPinnedFalseOverridesProtection).
+    const QStringList falsy{QStringLiteral("0"), QStringLiteral("false"),
+                            QStringLiteral("no"), QStringLiteral("off"),
+                            QStringLiteral(""), QStringLiteral("flase"),
+                            QStringLiteral("2")};
+    for (const QString &flag : falsy) {
+        const ExpireRule rule =
+            ExpireRule::fromString(QStringLiteral("any||60|%1").arg(flag));
+        QVERIFY2(!rule.keepPinned, qPrintable(flag));
+    }
+}
+
+void TestExpire::rejectsExtraFieldsAndPipeInWildcard()
+{
+    QVERIFY(!ExpireRule::fromString(QStringLiteral("a|b|c|d|e")).isValid()); // 5 fields
+    // A '|' inside the wildcard splits the codec: the rule is dropped.
+    QVERIFY(!ExpireRule::fromString(QStringLiteral("text|konsole|work|60|1")).isValid());
+}
+
+void TestExpire::toStringMasksInvalidTypeAsAny()
+{
+    // Known quirk: contentTypeName(-2) prints "any", so an invalid rule
+    // re-parses as a valid any-rule. Documented, not fixed: callers must
+    // validate before serializing.
+    ExpireRule rule;
+    rule.contentType = -2;
+    rule.ageSeconds = 60;
+    QCOMPARE(rule.toString(), QStringLiteral("any||60|1"));
+    const ExpireRule reparsed = ExpireRule::fromString(rule.toString());
+    QCOMPARE(reparsed.contentType, -1);
+    QVERIFY(reparsed.isValid());
+}
+
+void TestExpire::decodePreservesOrderAndDropsInvalid()
+{
+    const QStringList encoded{QStringLiteral("image||60|1"), QStringLiteral("text||120|1"),
+                              QStringLiteral("any||180|1"), QStringLiteral("99||60|1")};
+    const QList<ExpireRule> decoded = decodeRules(encoded);
+    QCOMPARE(decoded.size(), 3);
+    QCOMPARE(decoded.at(0).contentType, int(ContentType::Image));
+    QCOMPARE(decoded.at(1).contentType, int(ContentType::Text));
+    QCOMPARE(decoded.at(2).contentType, -1);
+    QCOMPARE(decoded.at(2).ageSeconds, qint64(180));
+}
+
+void TestExpire::parsesAgeEdgeForms()
+{
+    QCOMPARE(ExpireRule::fromString(QStringLiteral("any|| 60 |1")).ageSeconds, qint64(60));
+    const QStringList invalid{QStringLiteral("any||00|1"), QStringLiteral("any||+5|1"),
+                              QStringLiteral("any||5.5|1"), QStringLiteral("any||0x10|1"),
+                              QStringLiteral("any||1W|1"), QStringLiteral("any||  |1")};
+    for (const QString &encoded : invalid)
+        QVERIFY2(!ExpireRule::fromString(encoded).isValid(), qPrintable(encoded));
+}
+
+void TestExpire::cutoffBoundaryIsStrictlyOlder()
+{
+    const QString path = m_dir.filePath(
+        QStringLiteral("expire-edge-%1.db").arg(QRandomGenerator::global()->generate64()));
+    StorageManager storage(path);
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 stamp = now - 3600 * 1000;
+    storage.insertOrUpdate(makeRecord(QByteArrayLiteral("edge"), QStringLiteral("edge"), stamp));
+    QCOMPARE(storage.stats().entryCount, qint64(1));
+
+    // timestamp_ms < cutoff: exactly at the cutoff survives.
+    QCOMPARE(storage.expireEntries(stamp, -1, QString(), true), 0);
+    QCOMPARE(storage.stats().entryCount, qint64(1));
+    // One millisecond later the same row is strictly older and goes.
+    QCOMPARE(storage.expireEntries(stamp + 1, -1, QString(), true), 1);
+    QCOMPARE(storage.stats().entryCount, qint64(0));
+}
+
+void TestExpire::questionMarkAndEscapedWildcards()
+{
+    const QString path = m_dir.filePath(
+        QStringLiteral("expire-wild-%1.db").arg(QRandomGenerator::global()->generate64()));
+    StorageManager storage(path);
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const auto seedApp = [&](const char *hash, const QString &app) {
+        ClipboardRecord record =
+            makeRecord(QByteArray(hash), QStringLiteral("payload"), now - 7200 * 1000);
+        record.sourceApp = app;
+        storage.insertOrUpdate(record);
+    };
+    seedApp("w1", QStringLiteral("org.kde.konsole"));
+    seedApp("w2", QStringLiteral("100%match"));
+    seedApp("w3", QStringLiteral("my_app"));
+    seedApp("w4", QStringLiteral("myXapp"));
+    QCOMPARE(storage.stats().entryCount, qint64(4));
+
+    // '?' matches exactly one character.
+    QCOMPARE(storage.expireEntries(now, -1, QStringLiteral("org.kde.konsol?"), true), 1);
+    // A literal '%' in the wildcard must not act as LIKE's match-all.
+    QCOMPARE(storage.expireEntries(now, -1, QStringLiteral("100%match"), true), 1);
+    QCOMPARE(storage.stats().entryCount, qint64(2));
+    // A literal '_' matches only itself, not "any character".
+    QCOMPARE(storage.expireEntries(now, -1, QStringLiteral("my_app"), true), 1);
+    const auto rows = storage.fetchAll(FilterSpec{});
+    QCOMPARE(rows.size(), 1);
+    ClipboardRecord survivor;
+    QVERIFY(storage.fetchFull(rows.first().id, &survivor));
+    QCOMPARE(survivor.sourceApp, QStringLiteral("myXapp"));
+}
+
+void TestExpire::emptyWildcardMatchesNullSourceApp()
+{
+    const QString path = m_dir.filePath(
+        QStringLiteral("expire-nullapp-%1.db").arg(QRandomGenerator::global()->generate64()));
+    StorageManager storage(path);
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // No source app recorded (NULL in the database).
+    storage.insertOrUpdate(
+        makeRecord(QByteArrayLiteral("noapp"), QStringLiteral("no app"), now - 7200 * 1000));
+    QCOMPARE(storage.stats().entryCount, qint64(1));
+
+    // "source_app LIKE 'konsole%'" never matches NULL.
+    QCOMPARE(storage.expireEntries(now, -1, QStringLiteral("konsole*"), true), 0);
+    QCOMPARE(storage.stats().entryCount, qint64(1));
+    // An empty wildcard adds no predicate: the row is swept.
+    QCOMPARE(storage.expireEntries(now, -1, QString(), true), 1);
+    QCOMPARE(storage.stats().entryCount, qint64(0));
+}
+
+void TestExpire::multiRuleUnionKeepsBroadest()
+{
+    const QString path = m_dir.filePath(
+        QStringLiteral("expire-union-%1.db").arg(QRandomGenerator::global()->generate64()));
+    StorageManager storage(path);
+    SettingsManager settings;
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const auto seedApp = [&](const char *hash, const QString &text, const QString &app,
+                             qint64 stamp, bool pinned) {
+        ClipboardRecord record = makeRecord(QByteArray(hash), text, stamp);
+        record.sourceApp = app;
+        const qint64 id = storage.insertOrUpdate(record);
+        if (pinned)
+            storage.setPinned(id, true);
+    };
+    seedApp("u-konsole", QStringLiteral("old konsole"), QStringLiteral("org.kde.konsole"),
+            now - 3 * 3600 * 1000, false);
+    seedApp("u-kate", QStringLiteral("old kate"), QStringLiteral("org.kde.kate"),
+            now - 3 * 3600 * 1000, false);
+    seedApp("u-fresh", QStringLiteral("fresh konsole"), QStringLiteral("org.kde.konsole"), now,
+            false);
+    seedApp("u-pinned", QStringLiteral("old pinned"), QStringLiteral("org.kde.konsole"),
+            now - 3 * 3600 * 1000, true);
+    QCOMPARE(storage.stats().entryCount, qint64(4));
+
+    // Narrow rule fires on konsole text only; the broad rule fires on both
+    // old rows. Union: victims are swept once, pinned + fresh survive.
+    ExpireRule narrow;
+    narrow.contentType = int(ContentType::Text);
+    narrow.sourceAppWildcard = QStringLiteral("org.kde.konsole*");
+    narrow.ageSeconds = 2 * 3600;
+    narrow.keepPinned = true;
+    ExpireRule broad;
+    broad.contentType = -1;
+    broad.ageSeconds = 3600;
+    broad.keepPinned = true;
+    settings.setExpireRules({narrow, broad});
+
+    ExpireScheduler scheduler(&storage, &settings);
+    QSignalSpy spy(&scheduler, &ExpireScheduler::expired);
+    scheduler.applyRules();
+
+    QCOMPARE(spy.count(), 1); // one emission for the whole sweep
+    QCOMPARE(spy.first().at(0).toInt(), 2);
+    QCOMPARE(storage.stats().entryCount, qint64(2));
+    const QList<qint64> victims = scheduler.takeLastExpiredIds();
+    QCOMPARE(victims.size(), 2);
+    QVERIFY(scheduler.takeLastExpiredIds().isEmpty()); // cleared on take
+}
+
+void TestExpire::keepPinnedFalseOverridesProtection()
+{
+    const QString path = m_dir.filePath(
+        QStringLiteral("expire-pin-%1.db").arg(QRandomGenerator::global()->generate64()));
+    StorageManager storage(path);
+    SettingsManager settings;
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    ClipboardRecord pinned =
+        makeRecord(QByteArrayLiteral("pin"), QStringLiteral("pinned"), now - 7200 * 1000);
+    const qint64 pinnedId = storage.insertOrUpdate(pinned);
+    storage.setPinned(pinnedId, true);
+    storage.insertOrUpdate(
+        makeRecord(QByteArrayLiteral("plain"), QStringLiteral("plain"), now - 7200 * 1000));
+    QCOMPARE(storage.stats().entryCount, qint64(2));
+
+    // Parsed from strings to tie the parseBool danger end to end: "off" is
+    // not truthy, so the second rule sweeps pinned rows the first one spared.
+    const QList<ExpireRule> rules =
+        decodeRules(QStringList{QStringLiteral("any||3600|1"), QStringLiteral("any||3600|off")});
+    QCOMPARE(rules.size(), 2);
+    QVERIFY(!rules.at(1).keepPinned);
+    settings.setExpireRules(rules);
+
+    ExpireScheduler scheduler(&storage, &settings);
+    QSignalSpy spy(&scheduler, &ExpireScheduler::expired);
+    scheduler.applyRules();
+
+    // No first-wins / deny-wins: the union of both rules decides.
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.first().at(0).toInt(), 2);
+    QCOMPARE(storage.stats().entryCount, qint64(0));
+}
+
+void TestExpire::overlappingRulesCountOnce()
+{
+    const QString path = m_dir.filePath(
+        QStringLiteral("expire-overlap-%1.db").arg(QRandomGenerator::global()->generate64()));
+    StorageManager storage(path);
+    SettingsManager settings;
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    storage.insertOrUpdate(
+        makeRecord(QByteArrayLiteral("v1"), QStringLiteral("victim 1"), now - 7200 * 1000));
+    storage.insertOrUpdate(
+        makeRecord(QByteArrayLiteral("v2"), QStringLiteral("victim 2"), now - 7200 * 1000));
+
+    ExpireRule rule;
+    rule.contentType = -1;
+    rule.ageSeconds = 3600;
+    rule.keepPinned = true;
+    settings.setExpireRules({rule, rule}); // same rule twice
+
+    ExpireScheduler scheduler(&storage, &settings);
+    QSignalSpy spy(&scheduler, &ExpireScheduler::expired);
+    scheduler.applyRules();
+
+    // The second pass finds nothing (rows already in trash): counted once.
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.first().at(0).toInt(), 2);
+    QCOMPARE(scheduler.takeLastExpiredIds().size(), 2);
+    QCOMPARE(storage.stats().entryCount, qint64(0));
+}
+
+void TestExpire::noSignalWithoutVictims()
+{
+    const QString path = m_dir.filePath(
+        QStringLiteral("expire-quiet-%1.db").arg(QRandomGenerator::global()->generate64()));
+    StorageManager storage(path);
+    SettingsManager settings;
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    storage.insertOrUpdate(makeRecord(QByteArrayLiteral("fresh"), QStringLiteral("fresh"), now));
+
+    ExpireRule rule;
+    rule.contentType = -1;
+    rule.ageSeconds = 3600;
+    settings.setExpireRules({rule});
+
+    ExpireScheduler scheduler(&storage, &settings);
+    QSignalSpy spy(&scheduler, &ExpireScheduler::expired);
+    scheduler.applyRules();
+
+    QCOMPARE(spy.count(), 0); // valid rule, nothing aged out: silent
+    QVERIFY(scheduler.takeLastExpiredIds().isEmpty());
     QCOMPARE(storage.stats().entryCount, qint64(1));
 }
 
