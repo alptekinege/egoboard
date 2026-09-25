@@ -50,6 +50,7 @@ qt6/
 # AI tooling state
 .zcode/
 future-plan.md
+egoboard-development-plan.md
 
 # AppImage packaging
 build-appimage/

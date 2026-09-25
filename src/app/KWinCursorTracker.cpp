@@ -97,7 +97,7 @@ void KWinCursorTracker::queryGlobal(const std::function<void(const QPoint &)> &c
         callback(QCursor::pos());
         return;
     }
-    if (script.write(kCursorScript) != qstrlen(kCursorScript) || !script.flush()) {
+    if (script.write(kCursorScript) != qint64(qstrlen(kCursorScript)) || !script.flush()) {
         tracker->m_kwinUnavailable = true;
         callback(QCursor::pos());
         return;

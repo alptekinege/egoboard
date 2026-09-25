@@ -6,6 +6,8 @@
 #include "StorageManager.h"
 
 #include <QDateTime>
+#include <QCoreApplication>
+#include <QGuiApplication>
 #include <QRandomGenerator>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -39,6 +41,7 @@ private slots:
     void keepPinnedFalseOverridesProtection();
     void overlappingRulesCountOnce();
     void noSignalWithoutVictims();
+    void runsWithoutGuiApplicationInstance();
 
 private:
     ClipboardRecord makeRecord(const QByteArray &hash, const QString &text, qint64 timestamp);
@@ -579,6 +582,25 @@ void TestExpire::noSignalWithoutVictims()
     QCOMPARE(spy.count(), 0); // valid rule, nothing aged out: silent
     QVERIFY(scheduler.takeLastExpiredIds().isEmpty());
     QCOMPARE(storage.stats().entryCount, qint64(1));
+}
+
+void TestExpire::runsWithoutGuiApplicationInstance()
+{
+    // Headless contract (Phase 1): SettingsManager pulls in QtGui value
+    // types (QColor/QFont via TextAppearance) and KConfig, but must work
+    // under a plain QCoreApplication (QGuiApplication::instance()
+    // static-casts, so the probe uses qobject_cast). Fails if the harness
+    // ever gains a GUI app.
+    QVERIFY(qobject_cast<QGuiApplication *>(QCoreApplication::instance()) == nullptr);
+
+    SettingsManager settings;
+    ExpireRule rule;
+    rule.contentType = -1;
+    rule.ageSeconds = 3600;
+    rule.keepPinned = true;
+    settings.setExpireRules({rule});
+    QCOMPARE(settings.expireRules().size(), 1);
+    QCOMPARE(settings.expireRules().first().ageSeconds, qint64(3600));
 }
 
 QTEST_GUILESS_MAIN(TestExpire)

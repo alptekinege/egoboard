@@ -5,7 +5,10 @@
 #include "StorageManager.h"
 
 #include <QColor>
+#include <QCoreApplication>
 #include <QDataStream>
+#include <QGuiApplication>
+#include <QIcon>
 #include <QIODevice>
 #include <QMimeData>
 #include <QRandomGenerator>
@@ -30,6 +33,7 @@ private slots:
     void rejectsInvalidDropPayloads();
     void deduplicatesDraggedGroups();
     void dropEntryCountDecodesIds();
+    void decorationRoleStaysHeadlessSafe();
 
 private:
     QTemporaryDir m_dir;
@@ -398,6 +402,32 @@ void TestGroupTreeModel::dropEntryCountDecodesIds()
                       QByteArrayLiteral("bad payload"));
     QCOMPARE(GroupTreeModel::entryCount(&malformed), 0);
     QCOMPARE(GroupTreeModel::entryCount(nullptr), 0);
+}
+
+void TestGroupTreeModel::decorationRoleStaysHeadlessSafe()
+{
+    // Headless contract (Phase 1): this suite runs under QTEST_GUILESS_MAIN,
+    // so the app instance must be a plain QCoreApplication. Note
+    // QGuiApplication::instance() static-casts (non-null even here), so the
+    // probe uses qobject_cast. If a future change swaps the macro or
+    // constructs widgets, this fails instead of silently skipping in CI.
+    QVERIFY(qobject_cast<QGuiApplication *>(QCoreApplication::instance()) == nullptr);
+
+    const qint64 gid = m_bookmarks->createGroup(
+        QStringLiteral("Icons"), 0, QStringLiteral("#ff5500"), QStringLiteral("code-context"));
+    QVERIFY(gid != 0);
+    GroupTreeModel model(m_bookmarks);
+    const QModelIndex idx = model.index(0, 0);
+    QVERIFY(idx.isValid());
+
+    // DecorationRole goes through QIcon::fromTheme (GroupTreeModel.cpp).
+    // Touching it under QCoreApplication must neither crash nor require a
+    // GUI instance; the QVariant stays convertible to QIcon either way.
+    const QVariant decoration = model.data(idx, Qt::DecorationRole);
+    QVERIFY(decoration.isValid());
+    QVERIFY(decoration.canConvert<QIcon>());
+    const QIcon icon = qvariant_cast<QIcon>(decoration);
+    Q_UNUSED(icon);
 }
 
 QTEST_GUILESS_MAIN(TestGroupTreeModel)

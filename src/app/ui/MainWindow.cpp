@@ -1445,7 +1445,6 @@ void MainWindow::bulkExport()
 void MainWindow::runImageExport(ExportImportManager::ImageExportRequest::Scope initialScope,
                                 const QList<qint64> &selectedIds)
 {
-    using ImageScope = ExportImportManager::ImageExportRequest::Scope;
     const FilterSpec currentFilter = m_model ? m_model->filter() : FilterSpec{};
     ExportImportDialogs::ImageExportDialog dialog(m_ctx.bookmarks(), selectedIds, currentFilter,
                                                   !currentFilter.isTrivial(), this);

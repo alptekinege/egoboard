@@ -8,8 +8,8 @@
 #include <QImage>
 #include <QProcess>
 #include <QStandardPaths>
+#include <QThreadPool>
 #include <QTemporaryDir>
-#include <QtConcurrent>
 
 OcrWorker::OcrWorker(IClipboardStorage *storage, QObject *parent)
     : QObject(parent), m_storage(storage)
@@ -50,7 +50,7 @@ void OcrWorker::recognize(qint64 entryId, const QImage &image)
     const QString lang = m_language;
     const int maxChars = qMax(1, m_maxChars);
     QPointer<OcrWorker> guard(this);
-    QtConcurrent::run([guard, entryId, copy, lang, maxChars]() {
+    QThreadPool::globalInstance()->start([guard, entryId, copy, lang, maxChars]() {
         // All failures funnel through this helper: emit only while alive.
         auto fail = [guard](qint64 id, const QString &reason) {
             if (!guard) return;

@@ -2,9 +2,8 @@
 
 #include <QCoreApplication>
 #include <QPointer>
+#include <QThreadPool>
 #include <QTimer>
-
-#include <QtConcurrent>
 
 #ifdef EGOBOARD_HAVE_PIPEWIRE
 #include <pipewire/pipewire.h>
@@ -189,7 +188,7 @@ void ScreencastWatcher::poll()
     // instance, and both delivery hops drop out when it is gone, so teardown
     // can never race a late probe.
     QPointer<ScreencastWatcher> guard(this);
-    QtConcurrent::run([guard] {
+    QThreadPool::globalInstance()->start([guard] {
         const bool active = ScreencastWatcher::probeOnce();
         if (!guard)
             return;

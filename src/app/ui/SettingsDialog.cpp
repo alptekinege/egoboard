@@ -70,6 +70,7 @@
 #include <QSqlQuery>
 #include <QStackedWidget>
 #include <QTextBrowser>
+#include <QThreadPool>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -1118,7 +1119,7 @@ QWidget *SettingsDialog::buildSearchPreviewPage()
         }
         m_ocrStatus->setText(tr("Checking tesseract…"));
         QPointer<SettingsDialog> guard(this);
-        QtConcurrent::run([guard]{
+        QThreadPool::globalInstance()->start([guard]{
             const QString ver = tesseractVersion();
             QMetaObject::invokeMethod(qApp, [guard, ver]{
                 if (!guard) return;
@@ -2283,7 +2284,7 @@ void SettingsDialog::refreshDiagnostics()
             const StorageStats ocrStatsSnap = stats;
             const QString ocrLangSnap = m_ctx.settings()->ocrLanguage();
             QPointer<SettingsDialog> guard(this);
-            QtConcurrent::run([guard, ocrStatsSnap, ocrLangSnap]{
+            QThreadPool::globalInstance()->start([guard, ocrStatsSnap, ocrLangSnap]{
                 const QString ver = tesseractVersion();
                 QMetaObject::invokeMethod(qApp, [guard, ver, ocrStatsSnap, ocrLangSnap]{
                     if (!guard) return;
@@ -2352,7 +2353,7 @@ void SettingsDialog::refreshDiagnostics()
         const QString qpaSnap = QGuiApplication::platformName();
         const QString dbPathSnap = m_ctx.storage()->databasePath();
         QPointer<SettingsDialog> guard(this);
-        QtConcurrent::run([guard, qpaSnap, dbPathSnap]{
+        QThreadPool::globalInstance()->start([guard, qpaSnap, dbPathSnap]{
             const QString kw = kwinVersion();
             QMetaObject::invokeMethod(qApp, [guard, kw, qpaSnap, dbPathSnap]{
                 if (!guard) return;
@@ -2429,7 +2430,7 @@ void SettingsDialog::refreshDiagnostics()
         // the worker only runs the external probes, never QObject state.
         const bool ocrAvailSnap = OcrWorker::isAvailable();
         QPointer<SettingsDialog> guard(this);
-        QtConcurrent::run([guard, ocrAvailSnap]{
+        QThreadPool::globalInstance()->start([guard, ocrAvailSnap]{
             const QString kw = kwinVersion();
             const QString tess = ocrAvailSnap ? tesseractVersion() : QString();
             QMetaObject::invokeMethod(qApp, [guard, kw, tess]{
