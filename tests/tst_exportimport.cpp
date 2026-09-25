@@ -63,6 +63,20 @@ private slots:
     void importReportsProgressToTotal();
     void klipperCancelBeforeStartImportsNothing();
     void backupCancelBeforeStartWritesNothing();
+    void freshExportDeclaresFormatV2();
+    void rejectsSchemaVariants();
+    void unknownTypeTagFallsBackToText();
+    void corruptBlobAndNonNumericFields();
+    void v1RichExportStillImports();
+    void mergeTakesMaxOfFlagsAndCounts();
+    void duplicateSnippetNameLeftUntouched();
+    void intraFileDuplicatesSkippedInOverwrite();
+    void danglingMembershipsIgnored();
+    void badSavedSearchFilterStillImports();
+    void staticHelpersReportKnownIds();
+    void backupPruningEdgeCases();
+    void exportPathEdgeCases();
+    void klipperTimestampFallbackAndBlankSkip();
 
 private:
     void seed(StorageManager *storage, BookmarkManager *bookmarks);
@@ -1356,6 +1370,525 @@ void TestExportImport::backupCancelBeforeStartWritesNothing()
     QVERIFY(!result.ok);
     QVERIFY(result.error.contains(QStringLiteral("canceled")));
     QVERIFY(ExportImportManager::listBackups(folder).isEmpty());
+}
+
+void TestExportImport::freshExportDeclaresFormatV2()
+{
+    seed(m_storage, m_bookmarks);
+
+    const QString path = m_dir.filePath(QStringLiteral("tagged.json"));
+    ExportImportManager::ExportRequest request;
+    request.scope = ExportImportManager::Scope::Everything;
+    request.path = path;
+    QString error;
+    QVERIFY2(m_io->exportToFile(request, &error), qPrintable(error));
+
+    // The envelope every importer (and every old backup) relies on.
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QJsonParseError parseError{};
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    QCOMPARE(parseError.error, QJsonParseError::NoError);
+    QVERIFY(document.isObject());
+    const QJsonObject root = document.object();
+    QCOMPARE(root.value(QStringLiteral("format")).toString(),
+             QStringLiteral("egoboard-export"));
+    QCOMPARE(root.value(QStringLiteral("version")).toInt(), 2);
+    QCOMPARE(root.value(QStringLiteral("entries")).toArray().size(), 3);
+    QCOMPARE(root.value(QStringLiteral("groups")).toArray().size(), 1);
+}
+
+void TestExportImport::rejectsSchemaVariants()
+{
+    const auto writeFile = [this](const QString &name, const QByteArray &content) -> QString {
+        const QString path = m_dir.filePath(name);
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            return {};
+        if (!content.isEmpty() && file.write(content) <= 0)
+            return {};
+        return path;
+    };
+
+    // Lenient: a missing/null/string/zero version reads as 0, which is not
+    // newer than supported, so the file imports as an empty database.
+    const QStringList lenient{
+        QStringLiteral(R"({"format":"egoboard-export"})"),
+        QStringLiteral(R"({"format":"egoboard-export","version":0})"),
+        QStringLiteral(R"({"format":"egoboard-export","version":null})"),
+        QStringLiteral(R"({"format":"egoboard-export","version":"2"})"),
+        QStringLiteral(R"({"format":"egoboard-export","version":2,"entries":"oops"})"),
+        QStringLiteral(R"({"format":"egoboard-export","version":2,"entries":null})"),
+        QStringLiteral(R"({"format":"egoboard-export","version":2,"groups":42})"),
+    };
+    int counter = 0;
+    for (const QString &body : lenient) {
+        const QString path = writeFile(QStringLiteral("lenient-%1.json").arg(counter++),
+                                       body.toUtf8());
+        QVERIFY(!path.isEmpty());
+        const auto result = m_io->importFromFile(path, ExportImportManager::ImportMode::Merge);
+        QVERIFY2(result.ok, qPrintable(body + QStringLiteral(": ") + result.error));
+        QCOMPARE(result.entriesImported, 0);
+    }
+    QCOMPARE(m_storage->stats().entryCount, qint64(0));
+
+    // Strict: wrong format tag, non-object roots and unreadable bytes fail.
+    const QString noFormat = writeFile(
+        QStringLiteral("no-format.json"), QByteArrayLiteral(R"({"version":2})"));
+    auto result = m_io->importFromFile(noFormat, ExportImportManager::ImportMode::Merge);
+    QVERIFY(!result.ok);
+
+    const QString arrayRoot = writeFile(QStringLiteral("array.json"), QByteArrayLiteral("[1,2]"));
+    result = m_io->importFromFile(arrayRoot, ExportImportManager::ImportMode::Merge);
+    QVERIFY(!result.ok);
+
+    const QString empty = writeFile(QStringLiteral("empty.json"), QByteArray());
+    result = m_io->importFromFile(empty, ExportImportManager::ImportMode::Merge);
+    QVERIFY(!result.ok);
+
+    const QString truncated = writeFile(QStringLiteral("truncated.json"),
+                                        QByteArrayLiteral(
+                                            R"({"format":"egoboard-export","version":2,"entries":[{"hash":"x")"));
+    result = m_io->importFromFile(truncated, ExportImportManager::ImportMode::Merge);
+    QVERIFY(!result.ok);
+
+    result = m_io->importFromFile(m_dir.filePath(QStringLiteral("absent.json")),
+                                  ExportImportManager::ImportMode::Merge);
+    QVERIFY(!result.ok);
+    QVERIFY(!result.error.isEmpty());
+
+    // A directory is not a readable export.
+    result = m_io->importFromFile(m_dir.path(), ExportImportManager::ImportMode::Merge);
+    QVERIFY(!result.ok);
+    QCOMPARE(m_storage->stats().entryCount, qint64(0));
+}
+
+void TestExportImport::unknownTypeTagFallsBackToText()
+{
+    const QString path = m_dir.filePath(QStringLiteral("unknown-type.json"));
+    {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(file.write(R"({"format":"egoboard-export","version":2,)"
+                           R"("entries":[{"hash":"weird-type","timestamp":7,)"
+                           R"("type":"hologram","text":"future payload"}]})")
+                > 0);
+    }
+    const auto result = m_io->importFromFile(path, ExportImportManager::ImportMode::Merge);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.entriesImported, 1);
+
+    ClipboardRecord full;
+    const auto rows = m_storage->fetchAll(FilterSpec{});
+    QCOMPARE(rows.size(), 1);
+    QVERIFY(m_storage->fetchFull(rows.first().id, &full));
+    // typeFromTag falls back to Text instead of dropping the entry.
+    QCOMPARE(full.type, ContentType::Text);
+    QCOMPARE(full.textData, QStringLiteral("future payload"));
+}
+
+void TestExportImport::corruptBlobAndNonNumericFields()
+{
+    const QString path = m_dir.filePath(QStringLiteral("non-numeric.json"));
+    {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(file.write(R"({"format":"egoboard-export","version":2,)"
+                           R"("entries":[{"hash":"weird-1","timestamp":"soon",)"
+                           R"("type":"text","text":"weird","sizeBytes":"big",)"
+                           R"("blob":"!!!not-base64!!!"}]})")
+                > 0);
+    }
+    // Non-numeric numbers read as 0, invalid base64 chars are skipped: the
+    // import stays successful and the entry survives.
+    const auto result = m_io->importFromFile(path, ExportImportManager::ImportMode::Merge);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.entriesImported, 1);
+    QCOMPARE(m_storage->stats().entryCount, qint64(1));
+
+    ClipboardRecord full;
+    const auto rows = m_storage->fetchAll(FilterSpec{});
+    QVERIFY(m_storage->fetchFull(rows.first().id, &full));
+    QCOMPARE(full.textData, QStringLiteral("weird"));
+    QVERIFY(full.hasBlob);
+}
+
+void TestExportImport::v1RichExportStillImports()
+{
+    // A v1 file carrying the full field set plus sparse groups: blob, flags,
+    // counters and non-text types must survive; the hash-less entry is
+    // skipped; the child sorts before its parent; the dangling parent falls
+    // back to top level.
+    const QString path = m_dir.filePath(QStringLiteral("v1-rich.json"));
+    {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(file.write(R"({"format":"egoboard-export","version":1,)"
+                           R"("groups":[{"id":8,"parentId":7,"name":"Child"},)"
+                           R"({"id":7,"name":"Bare"},{"id":9,"parentId":999,"name":"Orphan"},)"
+                           R"({"id":10,"name":"NoMeta"}],)"
+                           R"("entries":[{"hash":"v1rich","timestamp":4242,)"
+                           R"("type":"richtext","text":"<b>hi</b>","preview":"hi",)"
+                           R"("pinned":true,"sensitive":true,"useCount":7,)"
+                           R"("sourceApp":"kate","blob":"UE5HREFUQQ=="},)"
+                           R"({"hash":"v1img","timestamp":100,"type":"image",)"
+                           R"("blob":"UE5HREFUQQ=="},)"
+                           R"({"hash":"v1files","timestamp":101,"type":"files",)"
+                           R"("text":"/tmp/a.txt"},)"
+                           R"({"timestamp":102,"type":"text","text":"no hash here"},)"
+                           R"({"hash":"v1plain","timestamp":103,"type":"text","text":"plain"}],)"
+                           R"("memberships":[{"entryHash":"v1rich","groupId":8}]})")
+                > 0);
+    }
+    const auto result = m_io->importFromFile(path, ExportImportManager::ImportMode::Merge);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.entriesImported, 4);
+    QCOMPARE(result.groupsImported, 4);
+    QCOMPARE(m_storage->stats().entryCount, qint64(4));
+
+    const auto byHash = [this](const QByteArray &hash) {
+        ClipboardRecord full;
+        const auto rows = m_storage->fetchAll(FilterSpec{});
+        for (const ClipboardRecord &row : rows) {
+            if (row.hash == hash && m_storage->fetchFull(row.id, &full))
+                return full;
+        }
+        return ClipboardRecord{};
+    };
+    const ClipboardRecord rich = byHash(QByteArrayLiteral("v1rich"));
+    QCOMPARE(rich.type, ContentType::RichText);
+    QCOMPARE(rich.textData, QStringLiteral("<b>hi</b>"));
+    QVERIFY(rich.pinned);
+    QVERIFY(rich.sensitive);
+    QCOMPARE(rich.useCount, 7);
+    QCOMPARE(rich.sourceApp, QStringLiteral("kate"));
+    QCOMPARE(rich.blobData, QByteArrayLiteral("PNGDATA"));
+    QCOMPARE(byHash(QByteArrayLiteral("v1img")).type, ContentType::Image);
+    QCOMPARE(byHash(QByteArrayLiteral("v1files")).type, ContentType::Files);
+
+    const auto groups = m_bookmarks->groups();
+    QCOMPARE(groups.size(), 4);
+    const auto findGroup = [&groups](const QString &name) {
+        for (const BookmarkGroup &group : groups) {
+            if (group.name == name)
+                return group;
+        }
+        return BookmarkGroup{};
+    };
+    const BookmarkGroup bare = findGroup(QStringLiteral("Bare"));
+    const BookmarkGroup child = findGroup(QStringLiteral("Child"));
+    const BookmarkGroup orphan = findGroup(QStringLiteral("Orphan"));
+    const BookmarkGroup noMeta = findGroup(QStringLiteral("NoMeta"));
+    QVERIFY(bare.id != 0 && child.id != 0 && orphan.id != 0 && noMeta.id != 0);
+    QCOMPARE(bare.parentId, qint64(0));
+    QCOMPARE(child.parentId, bare.id);
+    QCOMPARE(orphan.parentId, qint64(0)); // dangling parentId becomes top-level
+    QCOMPARE(noMeta.parentId, qint64(0));
+    QCOMPARE(m_bookmarks->entryCount(child.id), 1);
+}
+
+void TestExportImport::mergeTakesMaxOfFlagsAndCounts()
+{
+    ClipboardRecord first;
+    first.hash = QByteArrayLiteral("merge-1");
+    first.type = ContentType::Text;
+    first.textData = QStringLiteral("v1");
+    first.preview = first.textData;
+    first.timestamp = 1000;
+    QVERIFY(m_storage->insertOrUpdate(first) > 0);
+
+    ClipboardRecord second;
+    second.hash = QByteArrayLiteral("merge-2");
+    second.type = ContentType::Text;
+    second.textData = QStringLiteral("v2");
+    second.preview = second.textData;
+    second.timestamp = 1000;
+    const qint64 secondId = m_storage->insertOrUpdate(second);
+    QVERIFY(secondId > 0);
+    QVERIFY(m_storage->setOcrText(secondId, QStringLiteral("local-ocr-2")));
+
+    // The file copy of merge-1 is older but pins/locks/raises the counters;
+    // merge-2 is newer but must not clobber existing OCR text.
+    const QString path = m_dir.filePath(QStringLiteral("merge-flags.json"));
+    {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(file.write(R"({"format":"egoboard-export","version":2,)"
+                           R"("entries":[{"hash":"merge-1","timestamp":500,)"
+                           R"("type":"text","text":"v1-file","pinned":true,)"
+                           R"("sensitive":true,"useCount":9,"ocrText":"file-ocr",)"
+                           R"("tags":["b","a"]},)"
+                           R"({"hash":"merge-2","timestamp":2000,)"
+                           R"("type":"text","text":"v2-file","useCount":3,)"
+                           R"("ocrText":"file-ocr-2"}]})")
+                > 0);
+    }
+    const auto result = m_io->importFromFile(path, ExportImportManager::ImportMode::Merge);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.entriesMerged, 2);
+    QCOMPARE(result.tagsImported, 2); // tag union applies on the merge path too
+
+    const auto byHash = [this](const QByteArray &hash) {
+        ClipboardRecord full;
+        const auto rows = m_storage->fetchAll(FilterSpec{});
+        for (const ClipboardRecord &row : rows) {
+            if (row.hash == hash && m_storage->fetchFull(row.id, &full))
+                return full;
+        }
+        return ClipboardRecord{};
+    };
+    const ClipboardRecord merged = byHash(QByteArrayLiteral("merge-1"));
+    QCOMPARE(merged.timestamp, qint64(1000)); // newer local copy wins
+    QVERIFY(merged.pinned); // MAX(pinned): the file locks it
+    QVERIFY(merged.sensitive); // MAX(sensitive): the file locks it
+    QCOMPARE(merged.useCount, 9); // MAX(use_count)
+    QCOMPARE(merged.ocrText, QStringLiteral("file-ocr")); // fill-if-empty
+    QCOMPARE(merged.textData, QStringLiteral("v1")); // payload is never rewritten
+    const QStringList tags{QStringLiteral("a"), QStringLiteral("b")};
+    const auto rows = m_storage->fetchAll(FilterSpec{});
+    qint64 mergedId = 0;
+    for (const ClipboardRecord &row : rows) {
+        if (row.hash == QByteArrayLiteral("merge-1"))
+            mergedId = row.id;
+    }
+    QVERIFY(mergedId != 0);
+    QCOMPARE(m_storage->tagsForEntry(mergedId), tags);
+
+    const ClipboardRecord kept = byHash(QByteArrayLiteral("merge-2"));
+    QCOMPARE(kept.timestamp, qint64(2000));
+    QCOMPARE(kept.ocrText, QStringLiteral("local-ocr-2")); // existing OCR wins
+}
+
+void TestExportImport::duplicateSnippetNameLeftUntouched()
+{
+    QVERIFY(m_snippets->createSnippet(QStringLiteral("Signature"),
+                                      QStringLiteral("local template"))
+            > 0);
+    const QString path = m_dir.filePath(QStringLiteral("dup-snippets.json"));
+    {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(file.write(R"({"format":"egoboard-export","version":2,)"
+                           R"("snippets":[{"name":"Signature","template":"imported template"},)"
+                           R"({"name":"  Signature  ","template":"whitespace twin"},)"
+                           R"({"name":"Fresh","template":"fresh template"}]})")
+                > 0);
+    }
+    const auto result = m_io->importFromFile(path, ExportImportManager::ImportMode::Merge);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.snippetsImported, 1);
+
+    // The name is the identity: the local snippet keeps its template.
+    const auto snippets = m_snippets->snippets();
+    QCOMPARE(snippets.size(), 2);
+    for (const Snippet &snippet : snippets) {
+        if (snippet.name == QStringLiteral("Signature"))
+            QCOMPARE(snippet.templateText, QStringLiteral("local template"));
+        else
+            QCOMPARE(snippet.name, QStringLiteral("Fresh"));
+    }
+}
+
+void TestExportImport::intraFileDuplicatesSkippedInOverwrite()
+{
+    const QString path = m_dir.filePath(QStringLiteral("intra-dup.json"));
+    {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(file.write(R"({"format":"egoboard-export","version":2,)"
+                           R"("entries":[{"hash":"dup","timestamp":1,)"
+                           R"("type":"text","text":"first"},)"
+                           R"({"hash":"dup","timestamp":2,)"
+                           R"("type":"text","text":"second"}]})")
+                > 0);
+    }
+    // Overwrite wiped first, so the second same-hash row is a duplicate
+    // inside the file — not a merge.
+    const auto result = m_io->importFromFile(path, ExportImportManager::ImportMode::Overwrite);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.entriesImported, 1);
+    QCOMPARE(result.entriesSkipped, 1);
+    QCOMPARE(m_storage->stats().entryCount, qint64(1));
+}
+
+void TestExportImport::danglingMembershipsIgnored()
+{
+    const qint64 group = m_bookmarks->createGroup(QStringLiteral("G"));
+    QVERIFY(group != 0);
+    const QString path = m_dir.filePath(QStringLiteral("dangling.json"));
+    {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(file.write(R"({"format":"egoboard-export","version":2,)"
+                           R"("groups":[{"id":5,"name":"G"}],)"
+                           R"("entries":[{"hash":"real","timestamp":1,)"
+                           R"("type":"text","text":"real"}],)"
+                           R"("memberships":[{"entryHash":"ghost","groupId":5},)"
+                           R"({"entryHash":"real","groupId":77}]})")
+                > 0);
+    }
+    const auto result = m_io->importFromFile(path, ExportImportManager::ImportMode::Merge);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.entriesImported, 1);
+    QCOMPARE(m_storage->stats().entryCount, qint64(1));
+
+    qint64 localGroup = 0;
+    for (const BookmarkGroup &candidate : m_bookmarks->groups()) {
+        if (candidate.name == QStringLiteral("G"))
+            localGroup = candidate.id;
+    }
+    QVERIFY(localGroup != 0);
+    QCOMPARE(m_bookmarks->entryCount(localGroup), 0); // unknown hash ignored
+}
+
+void TestExportImport::badSavedSearchFilterStillImports()
+{
+    const QString path = m_dir.filePath(QStringLiteral("bad-filter.json"));
+    {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(file.write(R"({"format":"egoboard-export","version":2,)"
+                           R"("savedSearches":[{"name":"Broken","filter":"oops"},)"
+                           R"({"name":"","filter":{}}]})")
+                > 0);
+    }
+    // A non-object filter degrades to the default FilterSpec; the empty name
+    // is skipped.
+    const auto result = m_io->importFromFile(path, ExportImportManager::ImportMode::Merge);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.savedSearchesImported, 1);
+    const auto searches = m_storage->savedSearches();
+    QCOMPARE(searches.size(), 1);
+    QCOMPARE(searches.first().name, QStringLiteral("Broken"));
+}
+
+void TestExportImport::staticHelpersReportKnownIds()
+{
+    QCOMPARE(ExportImportManager::formatId(ExportImportManager::ExportFormat::Json),
+             QStringLiteral("json"));
+    QCOMPARE(ExportImportManager::formatId(ExportImportManager::ExportFormat::Markdown),
+             QStringLiteral("markdown"));
+    QCOMPARE(ExportImportManager::formatId(ExportImportManager::ExportFormat::Csv),
+             QStringLiteral("csv"));
+    QCOMPARE(ExportImportManager::formatId(ExportImportManager::ExportFormat::Html),
+             QStringLiteral("html"));
+    QCOMPARE(ExportImportManager::exportFormatTag(), QStringLiteral("egoboard-export"));
+    QCOMPARE(ExportImportManager::exportFormatVersion(), 2);
+    QCOMPARE(ExportImportManager::imageExportFormatTag(),
+             QStringLiteral("egoboard-image-export"));
+    QCOMPARE(ExportImportManager::imageExportFormatVersion(), 1);
+    QCOMPARE(ExportImportManager::ImageExportRequest::imageFileFormatName(
+                 ExportImportManager::ImageExportRequest::ImageFileFormat::Png),
+             QStringLiteral("png"));
+    QCOMPARE(ExportImportManager::ImageExportRequest::imageFileFormatName(
+                 ExportImportManager::ImageExportRequest::ImageFileFormat::Jpeg),
+             QStringLiteral("jpeg"));
+    QVERIFY(ExportImportManager::defaultKlipperPath().endsWith(
+        QStringLiteral("/klipper/history3.sqlite")));
+}
+
+void TestExportImport::backupPruningEdgeCases()
+{
+    seed(m_storage, m_bookmarks);
+    const QString folder = m_dir.filePath(QStringLiteral("backups-prune"));
+
+    // keep=1 prunes inside the call itself, even for same-millisecond runs
+    // (the -001/-002 sequence keeps name order chronological).
+    QList<int> pruned;
+    for (int i = 0; i < 3; ++i) {
+        const auto result = m_io->writeBackup(folder, 1);
+        QVERIFY2(result.ok, qPrintable(result.error));
+        pruned.append(result.pruned);
+    }
+    const QList<int> expected{0, 1, 1};
+    QCOMPARE(pruned, expected);
+    QCOMPARE(ExportImportManager::listBackups(folder).size(), 1);
+
+    // keep<=0 keeps everything; keep above the count removes nothing.
+    QCOMPARE(ExportImportManager::pruneBackups(folder, 0), 0);
+    QCOMPARE(ExportImportManager::pruneBackups(folder, -5), 0);
+    QCOMPARE(ExportImportManager::pruneBackups(folder, 99), 0);
+    QCOMPARE(ExportImportManager::listBackups(folder).size(), 1);
+
+    QVERIFY(ExportImportManager::listBackups(m_dir.filePath(QStringLiteral("absent"))).isEmpty());
+}
+
+void TestExportImport::exportPathEdgeCases()
+{
+    seed(m_storage, m_bookmarks);
+
+    ExportImportManager::ExportRequest empty;
+    empty.scope = ExportImportManager::Scope::Everything;
+    empty.path = QString();
+    QString error;
+    QVERIFY(!m_io->exportToFile(empty, &error));
+    QVERIFY(!error.isEmpty());
+
+    // A directory is not a writable export target.
+    ExportImportManager::ExportRequest directory = empty;
+    directory.path = m_dir.path();
+    error.clear();
+    QVERIFY(!m_io->exportToFile(directory, &error));
+    QVERIFY(!error.isEmpty());
+
+    // Reading formats honor mid-run cancel the same way JSON does: no file.
+    for (int i = 0; i < 300; ++i) {
+        ClipboardRecord record;
+        record.hash = QByteArrayLiteral("csv-cancel-") + QByteArray::number(i);
+        record.type = ContentType::Text;
+        record.textData = QStringLiteral("payload %1").arg(i);
+        record.preview = record.textData;
+        record.timestamp = 1000 + i;
+        record.sizeBytes = record.textData.size();
+        record.sourceApp = QStringLiteral("seeder");
+        QVERIFY(m_storage->insertOrUpdate(record) > 0);
+    }
+    ExportImportManager::ExportRequest csv;
+    csv.scope = ExportImportManager::Scope::Everything;
+    csv.format = ExportImportManager::ExportFormat::Csv;
+    csv.path = m_dir.filePath(QStringLiteral("canceled.csv"));
+    std::atomic<bool> cancel{false};
+    error.clear();
+    QVERIFY(!m_io->exportToFile(csv, &error, &cancel, [&](int done, int) {
+        if (done >= 64)
+            cancel.store(true, std::memory_order_relaxed);
+    }));
+    QVERIFY(error.contains(QStringLiteral("canceled")));
+    QVERIFY(!QFile::exists(csv.path));
+}
+
+void TestExportImport::klipperTimestampFallbackAndBlankSkip()
+{
+    const QString klipperPath = m_dir.filePath(QStringLiteral("edge-history3.sqlite"));
+    const QString connectionName = QStringLiteral("klipper-edge-fixture");
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+        db.setDatabaseName(klipperPath);
+        QVERIFY(db.open());
+        QSqlQuery query(db);
+        QVERIFY(query.exec(QStringLiteral(
+            "CREATE TABLE main (uuid char(40) PRIMARY KEY, added_time REAL NOT NULL,"
+            " last_used_time REAL, mimetypes TEXT NOT NULL, text NTEXT, starred BOOLEAN)")));
+        QVERIFY(query.exec(QStringLiteral(
+            "INSERT INTO main (uuid, added_time, last_used_time, mimetypes, text, starred)"
+            " VALUES ('w', 0, 1500000600.0, 'text/plain', 'fallback time entry', 0)")));
+        QVERIFY(query.exec(QStringLiteral(
+            "INSERT INTO main (uuid, added_time, last_used_time, mimetypes, text, starred)"
+            " VALUES ('s', 1500000700.0, 1500000700.0, 'text/plain', '   ', 0)")));
+        db.close();
+        db = QSqlDatabase();
+        QSqlDatabase::removeDatabase(connectionName);
+    }
+    const auto result = m_io->importKlipperHistory(klipperPath);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.entriesImported, 1);
+    QCOMPARE(result.entriesSkipped, 1); // whitespace-only text carries no entry
+
+    const auto rows = m_storage->fetchAll(FilterSpec{});
+    QCOMPARE(rows.size(), 1);
+    // added_time <= 0 falls back to last_used_time (seconds → ms).
+    QCOMPARE(rows.first().timestamp, qint64(1500000600) * 1000);
+    QCOMPARE(rows.first().preview, QStringLiteral("fallback time entry"));
 }
 
 QTEST_GUILESS_MAIN(TestExportImport)
