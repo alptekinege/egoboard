@@ -15,6 +15,7 @@
 #include "AppearancePreview.h"
 #include "DashboardDialog.h"
 #include "DesignTokens.h"
+#include "SettingsStructure.h"
 #include "SnippetManager.h"
 #include "StorageManager.h"
 #include "TransformEngine.h"
@@ -84,9 +85,8 @@ using UiHelpers::humanSize;
 using UiHelpers::makeHint;
 using UiHelpers::makeStatusPanel;
 
-// Wide-mode icon sidebar width, shared by the constructor clamp and the
-// responsive restore path below.
-constexpr int kSidebarWideWidth = 148;
+// Wide-mode icon sidebar width: SettingsStructure::kSidebarWideWidth, shared
+// by the factory clamp and the responsive restore path below.
 
 // Every page scrolls the same way, whatever its content height.
 QWidget *makeScrollable(QWidget *page)
@@ -207,45 +207,46 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
     // collapse token (U14 responsive narrow layout).
     auto *content = m_content = new QHBoxLayout();
     content->setContentsMargins(0, 0, 0, 0);
-    auto *sidebar = m_sidebar = new QListWidget(this);
-    sidebar->setViewMode(QListView::IconMode);
-    sidebar->setFlow(QListView::TopToBottom);
-    sidebar->setMovement(QListView::Static);
-    sidebar->setWrapping(false);
-    sidebar->setResizeMode(QListView::Adjust);
-    sidebar->setUniformItemSizes(true);
-    sidebar->setIconSize(QSize(28, 28));
-    sidebar->setGridSize(QSize(146, 64));
-    sidebar->setWordWrap(true);
-    sidebar->setFixedWidth(kSidebarWideWidth);
-    sidebar->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    sidebar->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
-    UiHelpers::styleItemList(sidebar);
+    auto *sidebar = m_sidebar = SettingsStructure::createSidebar(this);
 
     auto *stack = m_stack = new QStackedWidget(this);
-    const auto addPage = [this](const QString &iconName, const QString &label,
-                                QWidget *page) {
-        new QListWidgetItem(QIcon::fromTheme(iconName), label, m_sidebar);
-        m_stack->addWidget(page);
-    };
-    addPage(QStringLiteral("configure"), tr("General"), buildGeneralPage());
-    addPage(QStringLiteral("edit-copy"), tr("Capture"), buildCapturePage());
-    addPage(QStringLiteral("security-medium"), tr("Privacy"), buildPrivacyPage());
-    addPage(QStringLiteral("document-open-recent"), tr("History"), buildHistoryPage());
-    addPage(QStringLiteral("view-statistics"), tr("Usage"), buildUsagePage());
-    addPage(QStringLiteral("system-search"), tr("Search & Preview"), buildSearchPreviewPage());
-    addPage(QStringLiteral("applications-engineering"), tr("Automation"), buildAutomationPage());
-    addPage(QStringLiteral("preferences-desktop-keyboard"), tr("Shortcuts"), buildHotkeysPage());
-    addPage(QStringLiteral("drive-harddisk"), tr("Storage"), buildStoragePage());
-    addPage(QStringLiteral("utilities-system-monitor"), tr("Diagnostics"), buildPlatformDiagnosticsPage());
-    connect(sidebar, &QListWidget::currentRowChanged, stack, &QStackedWidget::setCurrentIndex);
+    // Sidebar plan (SettingsStructure): Normal pages first, the "Advanced"
+    // group header, advanced pages, About last. Sidebar rows and stack pages
+    // no longer share indices — m_sidebarToStack maps them (headers map to
+    // -1 and are never selectable, so they can never become current).
+    QVector<QWidget *> pages;
+    pages.reserve(11);
+    pages << buildGeneralPage() << buildCapturePage() << buildHistoryPage() << buildUsagePage()
+          << buildHotkeysPage() << buildStoragePage() << buildPrivacyPage()
+          << buildSearchPreviewPage() << buildAutomationPage() << buildPlatformDiagnosticsPage()
+          << buildAboutPage();
+    m_sidebarToStack.clear();
+    const QVector<SettingsStructure::SidebarRow> plan = SettingsStructure::sidebarRows();
+    SettingsStructure::populateSidebar(sidebar); // centered rows in plan order
+    Q_ASSERT(plan.size() == m_sidebar->count());
+    for (const SettingsStructure::SidebarRow &row : plan) {
+        if (row.header) {
+            m_sidebarToStack.append(-1); // group header: no page, never current
+            continue;
+        }
+        if (row.page < 0 || row.page >= pages.size())
+            continue; // programming error: plan and builders diverged (pinned by tests)
+        m_stack->addWidget(pages.at(row.page));
+        m_sidebarToStack.append(m_stack->count() - 1);
+    }
+    connect(sidebar, &QListWidget::currentRowChanged, this, [this](int sidebarRow) {
+        const int stackIndex = m_sidebarToStack.value(sidebarRow, -1);
+        if (stackIndex >= 0)
+            m_stack->setCurrentIndex(stackIndex);
+    });
     // The Usage page is a live snapshot: re-collect on every visit, since
     // captures may have landed while the dialog stayed open.
     if (m_usagePanel) {
-        const int usageIndex = m_stack->indexOf(m_usagePanel);
+        const int usageStack = m_stack->indexOf(m_usagePanel);
+        const int usageRow = m_sidebarToStack.indexOf(usageStack);
         connect(sidebar, &QListWidget::currentRowChanged, this,
-                [this, usageIndex](int row) {
-                    if (row == usageIndex)
+                [this, usageRow](int row) {
+                    if (row == usageRow)
                         m_usagePanel->refresh();
                 });
     }
@@ -1721,7 +1722,8 @@ void SettingsDialog::applyResponsiveLayout()
     if (narrow == m_narrowLayout)
         return;
     m_narrowLayout = narrow;
-    UiHelpers::applySidebarMode(m_sidebar, m_content, narrow, kSidebarWideWidth);
+    UiHelpers::applySidebarMode(m_sidebar, m_content, narrow,
+                                 SettingsStructure::kSidebarWideWidth);
 }
 
 void SettingsDialog::clearSettingsSearchHighlight()
@@ -1752,28 +1754,32 @@ void SettingsDialog::applySettingsSearch()
         m_searchRestoreRow = m_sidebar->currentRow();
         m_searching = true;
     }
-    // Per-page texts: the translated sidebar label plus every harvested knob
-    // text, so filtering follows translations with no keyword table.
-    QList<QStringList> pages;
-    pages.reserve(m_stack->count());
-    for (int i = 0; i < m_stack->count(); ++i) {
+    // Per-sidebar-row texts: the translated row label plus every harvested knob
+    // text of the mapped page (group headers carry only their label), so
+    // filtering follows translations with no keyword table.
+    const QVector<SettingsStructure::SidebarRow> plan = SettingsStructure::sidebarRows();
+    QVector<QStringList> rowTexts;
+    rowTexts.reserve(plan.size());
+    for (int r = 0; r < plan.size(); ++r) {
         QStringList texts;
-        if (QListWidgetItem *item = m_sidebar->item(i))
-            texts.append(item->text());
-        texts += UiHelpers::collectSettingTexts(m_stack->widget(i));
-        pages.append(texts);
-    }
-    int visible = 0;
-    int first = -1;
-    for (int i = 0; i < pages.size(); ++i) {
-        const bool match = UiHelpers::settingQueryMatches(pages.at(i), query);
-        m_sidebar->setRowHidden(i, !match);
-        if (match) {
-            ++visible;
-            if (first < 0)
-                first = i;
+        if (r < m_sidebar->count()) {
+            if (QListWidgetItem *item = m_sidebar->item(r))
+                texts.append(item->text());
         }
+        const int stackIndex = r < m_sidebarToStack.size() ? m_sidebarToStack.at(r) : -1;
+        if (stackIndex >= 0 && stackIndex < m_stack->count())
+            texts += UiHelpers::collectSettingTexts(m_stack->widget(stackIndex));
+        rowTexts.append(texts);
     }
+    const QVector<bool> visible = SettingsStructure::filterSidebarRows(rowTexts, plan, query);
+    int shownContent = 0;
+    for (int r = 0; r < plan.size() && r < m_sidebar->count(); ++r) {
+        const bool show = r < visible.size() && visible.at(r);
+        m_sidebar->setRowHidden(r, !show);
+        if (show && !plan.at(r).header)
+            ++shownContent;
+    }
+    const int first = SettingsStructure::firstContentRow(visible, plan);
     if (first >= 0 && m_sidebar->isRowHidden(m_sidebar->currentRow()))
         m_sidebar->setCurrentRow(first);
     // Bold the matching knobs on the now-visible page. Bold changes no color,
@@ -1803,10 +1809,16 @@ void SettingsDialog::applySettingsSearch()
         }
     }
     if (m_searchCount) {
-        if (visible == 0)
+        if (shownContent == 0)
             m_searchCount->setText(tr("No matching settings"));
-        else
-            m_searchCount->setText(tr("%1 of %2 pages").arg(visible).arg(pages.size()));
+        else {
+            int contentRows = 0;
+            for (const SettingsStructure::SidebarRow &row : plan) {
+                if (!row.header)
+                    ++contentRows;
+            }
+            m_searchCount->setText(tr("%1 of %2 pages").arg(shownContent).arg(contentRows));
+        }
     }
 }
 
@@ -2108,6 +2120,49 @@ QWidget *SettingsDialog::buildPlatformDiagnosticsPage()
     crashRow->addWidget(openReportBtn);
     crashRow->addStretch(1);
     layout->addLayout(crashRow);
+    return makeScrollable(page); // scrolls like every other page (U14 narrow)
+}
+
+QWidget *SettingsDialog::buildAboutPage()
+{
+    // Sade About: version, license, local-only note. No knobs, so no
+    // load()/save()/reset wiring (like Usage and Diagnostics).
+    const SettingsStructure::AboutInfo info =
+        SettingsStructure::aboutInfo(QStringLiteral(EGOBOARD_VERSION));
+    auto *page = new QWidget(this);
+    auto *layout = new QVBoxLayout(page);
+    layout->setAlignment(Qt::AlignTop);
+
+    auto *icon = new QLabel(page);
+    const QIcon theme = QIcon::fromTheme(QStringLiteral("egoboard"),
+                                         QIcon(QStringLiteral(":/icons/egoboard.svg")));
+    if (!theme.isNull())
+        icon->setPixmap(theme.pixmap(DesignTokens::IconL * 3, DesignTokens::IconL * 3));
+    icon->setAlignment(Qt::AlignCenter);
+    icon->setAccessibleName(info.title);
+    layout->addWidget(icon);
+
+    auto *title = new QLabel(info.title, page);
+    QFont titleFont = title->font();
+    titleFont.setWeight(QFont::DemiBold);
+    titleFont.setPointSize(titleFont.pointSize() + 4);
+    title->setFont(titleFont);
+    title->setAlignment(Qt::AlignCenter);
+    title->setTextFormat(Qt::PlainText);
+    layout->addWidget(title);
+
+    auto *version = new QLabel(info.version, page);
+    version->setAlignment(Qt::AlignCenter);
+    version->setTextFormat(Qt::PlainText);
+    version->setAccessibleName(tr("Application version"));
+    layout->addWidget(version);
+
+    for (const QString &paragraph : info.paragraphs) {
+        QLabel *line = makeHint(paragraph, page, /*richText=*/false);
+        line->setAlignment(Qt::AlignCenter);
+        layout->addWidget(line);
+    }
+    layout->addStretch(1);
     return makeScrollable(page); // scrolls like every other page (U14 narrow)
 }
 

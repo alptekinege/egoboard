@@ -11,9 +11,9 @@ This document defines the strict writing style, coding standards, architectural 
 - **Language Standard**: C++20 (`-std=c++20`, `CMAKE_CXX_STANDARD 20`)
 - **Build System**: CMake ≥ 3.24 + Ninja
 - **Core Frameworks**:
-  - **Qt 6**: `Core`, `Gui`, `Widgets`, `Sql`, `DBus`, `Concurrent`, `Network`, `WaylandClient`
+  - **Qt 6**: `Core`, `Gui`, `Widgets`, `Sql`, `DBus`, `Concurrent`, `Network`, `WaylandClient`, `Qml`
   - **KDE Frameworks 6 (KF6)**: `ConfigCore`, `GlobalAccel`, `Notifications`, `StatusNotifierItem`, `WindowSystem`, `XmlGui`
-  - **Wayland**: `wayland-client` + `wayland-scanner` (vendored `wlr-foreign-toplevel-management-unstable-v1.xml`)
+  - **Wayland**: `wayland-client` + `wayland-scanner` (vendored `wlr-foreign-toplevel-management-unstable-v1.xml` + `wlr-data-control-unstable-v1.xml`)
   - **X11 / XTest**: `libXtst` (optional build-time auto-paste simulation) + `xdotool` (runtime fallback)
   - **Database**: SQLite 3 (WAL mode, foreign keys enabled); optional SQLCipher (`-DEGOBOARD_USE_SQLCIPHER=ON`, KWallet key)
 
@@ -48,6 +48,10 @@ src/
 │   ├── ClipboardWatcher.{h,cpp}  # QClipboard listener, filters & sensitive policy
 │   ├── WlrDataControlHelper.{h,cpp} # wlr-data-control capture (Wayland, focus-free)
 │   ├── AutoPaster.{h,cpp}        # Clipboard restoration & paste-back
+│   ├── PortalPaster.{h,cpp}      # Opt-in Wayland RemoteDesktop paste source
+│   ├── ScreencastWatcher.{h,cpp} # Best-effort PipeWire sharing detection
+│   ├── BackupService.{h,cpp}     # Worker-thread automatic backups
+│   ├── CrashReport.{h,cpp}       # QtCore-only crash bundle collect/reader
 │   ├── HotkeyManager.{h,cpp}     # KGlobalAccel global shortcut manager
 │   ├── ExpireScheduler.{h,cpp}   # Applies expire rules on a timer/after captures
 │   ├── TrayController.{h,cpp}    # KStatusNotifierItem system tray integration
@@ -74,11 +78,17 @@ src/
 │       ├── PreviewPane.{h,cpp}         # Multi-format preview stack
 │       ├── QuickPasteMenu.{h,cpp}      # Frameless overlay with numeric shortcuts
 │       ├── GroupsDock.{h,cpp}          # Collapsible tree dock with drag & drop
-│       ├── CommandPalette.{h,cpp}      # Ctrl+K fuzzy palette + >commands
+│       ├── CommandPalette.{h,cpp}      # Ctrl+K fuzzy palette + >commands (incl. >dashboard)
+│       ├── PaletteCommands.{h,cpp}     # Pure '>' command table (parse/suggest/complete)
+│       ├── FirstRunTour.{h,cpp}        # 4-step once-only onboarding overlay
+│       ├── ShortcutCheatsheet.{h,cpp}  # '?' keyboard reference table
+│       ├── DashboardStats.{h,cpp}      # Read-only local aggregates (day/app/type/size/streak)
+│       ├── DashboardDialog.{h,cpp}     # QPainter dashboard (dialog + embeddable panel)
+│       ├── SettingsStructure.{h,cpp}   # Settings sidebar plan, grouping, About content
 │       ├── TimelineStrip.{h,cpp}       # 14-day histogram above the list
 │       ├── SnippetDialog.{h,cpp}       # Snippet editor
 │       ├── TransformChainDialog.{h,cpp}# Multi-step transform composer
-│       ├── SettingsDialog.{h,cpp}      # Multi-page preferences dialog
+│       ├── SettingsDialog.{h,cpp}      # Grouped preferences (Normal/Advanced/About plan in SettingsStructure)
 │       ├── AppearancePreview.{h,cpp}   # Live theme/text preview widget
 │       ├── CodePreviewHighlighter.{h,cpp} # Syntax highlighting for previews
 │       └── ExportImportDialogs.{h,cpp} # Export/import modal dialogs
@@ -178,7 +188,8 @@ The codebase must support both X11 and Wayland Plasma sessions cleanly:
 - **Native Plasma Look**: Do not hardcode custom color stylesheets (`setStyleSheet`) that break dark/light mode switching. Rely on `QPalette` and system Qt styles.
 - **Themed Icons**: Load icons via `QIcon::fromTheme(QStringLiteral("icon-name"))`.
 - **High-Performance Item Delegate**: `EntryDelegate` must keep item layouts lightweight, pre-cache group badge colors, and handle selection/hover rendering via `initStyleOption`.
-- **Virtualized Lists**: Set `m_list->setUniformItemSizes(true)` and `m_list->setLayoutMode(QListView::Batched)` for smooth scrolling over tens of thousands of items.
+- **Virtualized Lists**: Set `m_list->setUniformItemSizes(true)` and `m_list->setLayoutMode(QListView::Batched)` for smooth scrolling over tens of thousands of items. Reserve that flag for huge virtualized views — on small `IconMode` sidebars it elides every label.
+- **Small IconMode Sidebars**: Build them from a shared factory (e.g. `SettingsStructure::createSidebar`/`populateSidebar`) so dialog and tests share one source; set explicit `AlignHCenter` on rows so icons/labels stay centered on every style.
 
 ---
 
@@ -187,6 +198,7 @@ The codebase must support both X11 and Wayland Plasma sessions cleanly:
 - **Unit Testing Framework**: All tests reside in `tests/` using `Qt6::Test`.
 - **Test Isolation**: Every test case must instantiate its own `QTemporaryDir` and isolated SQLite database to eliminate state leakage.
 - **No GUI Dependency**: Core test executables must use `QTEST_GUILESS_MAIN(TestClassName)`.
+- **Widget Tests**: Use `QTEST_MAIN` (QApplication) and run offscreen via `QT_QPA_PLATFORM=offscreen`; keep pure plan/content modules (e.g. `SettingsStructure`, `PaletteCommands`) free of widget dependencies so their logic stays testable without constructing dialogs.
 - **Headless Smoke Test**: `main.cpp` must support the `--smoke` CLI flag to initialize storage, insert test entries, query them, and exit with code 0.
 
 ### Verification Protocol:

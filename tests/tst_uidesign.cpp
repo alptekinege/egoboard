@@ -17,6 +17,7 @@
 #include "EntryDelegate.h"
 #include "FirstRunTour.h"
 #include "GroupsDock.h"
+#include "SettingsStructure.h"
 #include "TextAppearance.h"
 #include "TimelineStrip.h"
 #include "UiHelpers.h"
@@ -143,6 +144,11 @@ private slots:
     void imageJpegEncoderRoundTripsPixels();
     void imageJpegEncoderRejectsUndecodableBlobs();
     void imageExportDialogDefaultsToSelection();
+    void settingsSidebarPlanGroupsNormalAndAdvanced();
+    void settingsSidebarLabelsStayFullyReadable();
+    void settingsSidebarItemsAreCentered();
+    void settingsSidebarFilterKeepsHeadersWithMatches();
+    void aboutInfoCarriesVersionLicenseAndLocalNote();
 };
 
 void TestUiDesign::delegateTextRolesKeepTheirContrastFloor()
@@ -1440,6 +1446,121 @@ void TestUiDesign::imageExportDialogDefaultsToSelection()
     QCOMPARE(dialog.jpegQuality(), 85);
     dialog.setScope(ExportImportDialogs::ImageExportDialog::Scope::Everything);
     QCOMPARE(dialog.scope(), ExportImportDialogs::ImageExportDialog::Scope::Everything);
+}
+
+void TestUiDesign::settingsSidebarPlanGroupsNormalAndAdvanced()
+{
+    // Normal/Advanced split: Normal pages first, one "Advanced" header,
+    // advanced pages, About last. Headers carry no page; pages cover the
+    // whole builder order exactly once.
+    const QVector<SettingsStructure::SidebarRow> rows = SettingsStructure::sidebarRows();
+    QCOMPARE(rows.size(), 12);
+    const QStringList normal{QStringLiteral("General"), QStringLiteral("Capture"),
+                             QStringLiteral("History"), QStringLiteral("Usage"),
+                             QStringLiteral("Shortcuts"), QStringLiteral("Storage")};
+    for (int i = 0; i < normal.size(); ++i) {
+        QVERIFY(!rows.at(i).header);
+        QCOMPARE(rows.at(i).label, normal.at(i));
+        QCOMPARE(rows.at(i).page, i);
+        QVERIFY(!rows.at(i).iconName.isEmpty());
+    }
+    QVERIFY(rows.at(6).header);
+    QCOMPARE(rows.at(6).label, QStringLiteral("Advanced"));
+    QCOMPARE(rows.at(6).page, -1);
+    const QStringList advanced{QStringLiteral("Privacy"), QStringLiteral("Search & Preview"),
+                               QStringLiteral("Automation"), QStringLiteral("Diagnostics")};
+    for (int i = 0; i < advanced.size(); ++i) {
+        QVERIFY(!rows.at(7 + i).header);
+        QCOMPARE(rows.at(7 + i).label, advanced.at(i));
+        QCOMPARE(rows.at(7 + i).page, 6 + i);
+    }
+    QVERIFY(!rows.last().header);
+    QCOMPARE(rows.last().label, QStringLiteral("About"));
+    QCOMPARE(rows.last().page, 10);
+}
+
+void TestUiDesign::settingsSidebarLabelsStayFullyReadable()
+{
+    // Regression: setUniformItemSizes on this IconMode sidebar forced every
+    // label into the first row's narrow text rect ("Gene…", "Searc…" —
+    // reproduced offscreen under Fusion and Breeze). The factory must leave
+    // it off, and every plan label must fit the cell (wrapping allowed).
+    QListWidget *sidebar = SettingsStructure::createSidebar();
+    QVERIFY(sidebar);
+    QVERIFY(!sidebar->uniformItemSizes());
+    QCOMPARE(sidebar->viewMode(), QListView::IconMode);
+    QCOMPARE(sidebar->gridSize(), QSize(146, 64));
+    QCOMPARE(sidebar->minimumWidth(), sidebar->maximumWidth());
+    const QFontMetrics metrics(sidebar->font());
+    const int cellWidth = sidebar->gridSize().width();
+    for (const SettingsStructure::SidebarRow &row : SettingsStructure::sidebarRows()) {
+        if (metrics.horizontalAdvance(row.label) <= cellWidth)
+            continue; // fits on one line
+        // Otherwise every whitespace-separated word must fit its own line.
+        for (const QString &word : row.label.split(QLatin1Char(' '))) {
+            QVERIFY2(metrics.horizontalAdvance(word) <= cellWidth, qPrintable(row.label));
+        }
+    }
+    sidebar->deleteLater();
+}
+
+void TestUiDesign::settingsSidebarItemsAreCentered()
+{
+    // IconMode centering varies by style — pin it explicitly on every row
+    // (icons follow the centered text block), headers included.
+    QListWidget *sidebar = SettingsStructure::createSidebar();
+    SettingsStructure::populateSidebar(sidebar);
+    QCOMPARE(sidebar->count(), SettingsStructure::sidebarRows().size());
+    for (int r = 0; r < sidebar->count(); ++r) {
+        // Note: QListWidgetItem::textAlignment() returns int, not Qt::Alignment.
+        const int alignment = sidebar->item(r)->textAlignment();
+        QVERIFY2(alignment & Qt::AlignHCenter, qPrintable(sidebar->item(r)->text()));
+    }
+    sidebar->deleteLater();
+}
+
+void TestUiDesign::settingsSidebarFilterKeepsHeadersWithMatches()
+{
+    // Search filtering over the grouped plan: a page match keeps its group
+    // header visible, the jump target skips headers, nothing matches nothing.
+    const QVector<SettingsStructure::SidebarRow> rows = SettingsStructure::sidebarRows();
+    QVector<QStringList> texts;
+    for (const auto &row : rows)
+        texts.append(QStringList{row.label});
+    texts[8].append(QStringLiteral("OCR language code")); // Search & Preview knob
+
+    const QVector<bool> ocrVisible =
+        SettingsStructure::filterSidebarRows(texts, rows, QStringLiteral("ocr"));
+    QVERIFY(ocrVisible.at(8)); // the matching page
+    QVERIFY(ocrVisible.at(6)); // its group header stays
+    QVERIFY(!ocrVisible.at(0)); // unrelated Normal pages hide
+    QVERIFY(!ocrVisible.at(11)); // About hides too
+    QCOMPARE(SettingsStructure::firstContentRow(ocrVisible, rows), 8);
+
+    const QVector<bool> noneVisible =
+        SettingsStructure::filterSidebarRows(texts, rows, QStringLiteral("zzz-no-match"));
+    for (bool show : noneVisible)
+        QVERIFY(!show);
+    QCOMPARE(SettingsStructure::firstContentRow(noneVisible, rows), -1);
+
+    const QVector<bool> allVisible =
+        SettingsStructure::filterSidebarRows(texts, rows, QString());
+    for (bool show : allVisible)
+        QVERIFY(show);
+    QCOMPARE(SettingsStructure::firstContentRow(allVisible, rows), 0);
+}
+
+void TestUiDesign::aboutInfoCarriesVersionLicenseAndLocalNote()
+{
+    // Sade About: title, the caller's version, description + MIT + local-only.
+    const SettingsStructure::AboutInfo info =
+        SettingsStructure::aboutInfo(QStringLiteral("9.9-test"));
+    QVERIFY(!info.title.isEmpty());
+    QCOMPARE(info.version, QStringLiteral("9.9-test"));
+    QCOMPARE(info.paragraphs.size(), 3);
+    QVERIFY(info.paragraphs.at(0).contains(QStringLiteral("clipboard"), Qt::CaseInsensitive));
+    QVERIFY(info.paragraphs.at(1).contains(QStringLiteral("MIT")));
+    QVERIFY(info.paragraphs.at(2).contains(QStringLiteral("telemetry")));
 }
 
 QTEST_MAIN(TestUiDesign)

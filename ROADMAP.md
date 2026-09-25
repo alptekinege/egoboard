@@ -11,6 +11,9 @@
 
 - P2-A dashboard — 2026-09-25 — read-only aggregates dialog (day/app/type/size + streak), QPainter fallback, toolbar/More + `>dashboard`, empty-state, keyboard/AT — `tst_dashboard` 8 slots, ctest 35/35 + `--smoke` OK.
 - P2-A follow-up — 2026-09-25 — dashboard moved into Settings ▸ Usage (shared `DashboardPanel`, refresh-on-visit; toolbar entry removed, `>dashboard` keeps the standalone dialog) — `tst_dashboard` 9 slots, ctest 35/35 + `--smoke` OK.
+- Settings Normal/Advanced + About — 2026-09-25 — sidebar grouped (Normal 6, Advanced header + 4, About last via pure `SettingsStructure` plan), Sade About page (version/MIT/local-only), search mapping fixed — 3 `tst_uidesign` slots, ctest 35/35 + `--smoke` OK.
+- Settings sidebar labels fix — 2026-09-25 — `setUniformItemSizes` removed from the IconMode sidebar (it forced every label into the first row's narrow rect: "Gene…", "Searc…"; reproduced offscreen under Fusion+Breeze), setup shared via `SettingsStructure::createSidebar` — 1 `tst_uidesign` slot, ctest 35/35 + `--smoke` OK.
+- Settings sidebar centering — 2026-09-25 — every row (headers included) explicitly `AlignHCenter` via `SettingsStructure::populateSidebar`, verified offscreen under Breeze — 1 `tst_uidesign` slot, ctest 35/35 + `--smoke` OK.
 - P1 docs — 2026-09-23 — README to actual product + `docs/build.md` PipeWire dep + `docs/release-checklist.md` + `tst_packaging` + v1-export back-compat slot — ctest 34/34 + `--smoke` OK.
 - R6 screencast — 2026-09-23 — `ScreencastWatcher` PipeWire probe + status indicator + preview auto-blur via `UiHelpers::shouldBlurPreview()` — `tst_screencast` + 1 `tst_uidesign` slot 5/5, ctest 33/33 + `--smoke` OK.
 - R6 portal paste — 2026-09-23 — `PortalPaster` RemoteDesktop Ctrl+V behind `portalPasteEnabled` + Settings opt-in + availability status — 3 `tst_autopaster` + 1 `tst_settings` slots, ctest 32/32 + `--smoke` OK.

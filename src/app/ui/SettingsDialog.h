@@ -9,6 +9,7 @@
 #include <QHash>
 #include <QList>
 #include <QPointer>
+#include <QVector>
 class ApplicationContext;
 class DashboardPanel;
 class KColorButton;
@@ -28,10 +29,10 @@ class QStackedWidget;
 class QTextBrowser;
 class QVBoxLayout;
 
-// Detailed settings dialog — 10 pages in a vertical icon+label sidebar: General /
-// Capture / Privacy / History / Usage / Search & Preview / Automation / Shortcuts /
-// Storage / Diagnostics. Every knob is exposed with live diagnostics, all
-// local, no network.
+// Detailed settings dialog — 11 pages in a vertical icon+label sidebar, grouped
+// into Normal (General / Capture / History / Usage / Shortcuts / Storage),
+// Advanced (Privacy / Search & Preview / Automation / Diagnostics) and About.
+// Every knob is exposed with live diagnostics, all local, no network.
 class SettingsDialog : public QDialog {
     Q_OBJECT
 public:
@@ -53,6 +54,7 @@ private:
     QWidget *buildHotkeysPage();
     QWidget *buildStoragePage();
     QWidget *buildPlatformDiagnosticsPage();
+    QWidget *buildAboutPage(); // version, license, local-only note (no knobs)
 
     void load();
     void save();    // Applies a changed encryption checkbox: rekeys the open database to
@@ -108,6 +110,9 @@ private:
     // restore and the pre-search row to return to on clear.
     QListWidget *m_sidebar = nullptr;
     QStackedWidget *m_stack = nullptr;
+    // Sidebar row -> stack index (-1 for the "Advanced" group header, which
+    // has no page). Sidebar rows and stack pages no longer share indices.
+    QVector<int> m_sidebarToStack;
     QBoxLayout *m_content = nullptr; // sidebar + pages: row in Wide, column in Narrow
     bool m_narrowLayout = false; // true while the top-strip mode is applied
     QLineEdit *m_search = nullptr;

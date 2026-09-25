@@ -175,6 +175,7 @@ add_executable(tst_uidesign tst_uidesign.cpp
     ../src/app/ui/FirstRunTour.cpp
     ../src/app/ui/GroupsDock.cpp
     ../src/app/ui/TimelineStrip.cpp
+    ../src/app/ui/SettingsStructure.cpp
     ../src/app/ui/ExportImportDialogs.cpp
     ../src/app/ui/CodePreviewHighlighter.cpp
     ../src/core/GroupTreeModel.cpp
