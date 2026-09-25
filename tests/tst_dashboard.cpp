@@ -58,6 +58,7 @@ private slots:
     void streakFromDayCountsHandlesEdges();
     void sizeBucketsFollowThresholds();
     void emptyDatabaseShowsEmptyState();
+    void panelEmbedsTheSameContentAndRefreshes();
     void fallbackChartsRenderOffscreenAndNavigate();
     void dashboardCommandParsesAndResolves();
     void contrastHoldsOverInstalledSchemes();
@@ -182,6 +183,40 @@ void TestDashboard::emptyDatabaseShowsEmptyState()
     QVERIFY(dialog.topAppsList() == nullptr);
     QVERIFY(dialog.windowTitle().contains(QStringLiteral("dashboard"), Qt::CaseInsensitive));
     dialog.close();
+}
+
+void TestDashboard::panelEmbedsTheSameContentAndRefreshes()
+{
+    // The Settings ▸ Usage page embeds this panel: snapshot at construction,
+    // fresh aggregates after refresh() (captures may land while open).
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    StorageManager storage(dir.filePath(QStringLiteral("dashboard-panel.db")));
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QVERIFY(storage.insertOrUpdate(makeDashboardRecord(QByteArrayLiteral("pn-1"), ContentType::Text,
+                                                       QStringLiteral("firefox"), now, 120))
+            != 0);
+
+    DashboardPanel panel(&storage);
+    panel.resize(520, 500);
+    panel.show();
+    QTest::qWait(50);
+    QCOMPARE(panel.stats().totalEntries, qint64(1));
+    QVERIFY(panel.dayChart() != nullptr);
+    QVERIFY(panel.typeChart() != nullptr);
+    QVERIFY(panel.sizeChart() != nullptr);
+    QVERIFY(panel.topAppsList() != nullptr);
+    QVERIFY(!panel.accessibleName().isEmpty());
+
+    QVERIFY(storage.insertOrUpdate(makeDashboardRecord(QByteArrayLiteral("pn-2"), ContentType::Image,
+                                                       QStringLiteral("konsole"), now, 5000))
+            != 0);
+    panel.refresh();
+    QTest::qWait(20);
+    QCOMPARE(panel.stats().totalEntries, qint64(2));
+    QVERIFY(panel.dayChart() != nullptr);
+    const QPixmap shot = panel.grab();
+    QVERIFY(!shot.isNull());
 }
 
 void TestDashboard::fallbackChartsRenderOffscreenAndNavigate()

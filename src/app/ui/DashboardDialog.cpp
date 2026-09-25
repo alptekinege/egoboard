@@ -24,9 +24,9 @@ namespace {
 QString shortDayLabel(qint64 dayStartMs, bool isToday, bool isYesterday)
 {
     if (isToday)
-        return DashboardDialog::tr("Today");
+        return DashboardPanel::tr("Today");
     if (isYesterday)
-        return DashboardDialog::tr("Yest.");
+        return DashboardPanel::tr("Yest.");
     return QDateTime::fromMSecsSinceEpoch(dayStartMs).date().toString(QStringLiteral("M/d"));
 }
 
@@ -69,10 +69,8 @@ void DashboardBarChart::announceFocus() const
 {
     if (m_focusedBar < 0 || m_focusedBar >= m_bars.size())
         return;
-    const auto &bar = m_bars.at(m_focusedBar);
     QAccessibleEvent focusEvent(const_cast<DashboardBarChart *>(this), QAccessible::Focus);
     QAccessible::updateAccessibility(&focusEvent);
-    Q_UNUSED(bar);
 }
 
 QRect DashboardBarChart::barRect(int index) const
@@ -206,27 +204,27 @@ void DashboardBarChart::mousePressEvent(QMouseEvent *event)
     QWidget::mousePressEvent(event);
 }
 
-QString DashboardDialog::activityTitle()
+QString DashboardPanel::activityTitle()
 {
     return tr("Activity — entries per day (last 14 days)");
 }
 
-QString DashboardDialog::typeTitle()
+QString DashboardPanel::typeTitle()
 {
     return tr("Entries by type");
 }
 
-QString DashboardDialog::topAppsTitle()
+QString DashboardPanel::topAppsTitle()
 {
     return tr("Top source apps");
 }
 
-QString DashboardDialog::sizeTitle()
+QString DashboardPanel::sizeTitle()
 {
     return tr("Entries by size");
 }
 
-QString DashboardDialog::sizeBucketLabel(int index)
+QString DashboardPanel::sizeBucketLabel(int index)
 {
     switch (index) {
     case 0:
@@ -240,7 +238,7 @@ QString DashboardDialog::sizeBucketLabel(int index)
     }
 }
 
-QString DashboardDialog::typeLabel(int contentType)
+QString DashboardPanel::typeLabel(int contentType)
 {
     switch (static_cast<ContentType>(contentType)) {
     case ContentType::Text:
@@ -255,11 +253,10 @@ QString DashboardDialog::typeLabel(int contentType)
     return tr("Text");
 }
 
-DashboardDialog::DashboardDialog(IClipboardStorage *storage, QWidget *parent)
-    : QDialog(parent)
+DashboardPanel::DashboardPanel(IClipboardStorage *storage, QWidget *parent)
+    : QWidget(parent)
     , m_storage(storage)
 {
-    setWindowTitle(tr("Usage dashboard"));
     setAccessibleName(tr("Usage dashboard"));
     setAccessibleDescription(
         tr("Local-only aggregates over the clipboard history — no entry text is shown."));
@@ -280,28 +277,28 @@ DashboardDialog::DashboardDialog(IClipboardStorage *storage, QWidget *parent)
     layout->addWidget(m_scroll, 1);
 
     auto *hint = UiHelpers::makeHint(
-        tr("Local-only aggregates — entry text is never shown here. Sensitive entries are "
-           "counted, never previewed."),
+        tr("Usage dashboard — local-only aggregates; entry text is never shown here. "
+           "Sensitive entries are counted, never previewed."),
         this, /*richText=*/false);
     layout->addWidget(hint);
 
-    auto *buttons = new QDialogButtonBox(this);
-    auto *refresh = buttons->addButton(tr("Refresh"), QDialogButtonBox::ActionRole);
+    auto *refresh = new QPushButton(tr("Refresh"), this);
     refresh->setAccessibleName(tr("Refresh dashboard"));
-    connect(refresh, &QPushButton::clicked, this, [this] {
-        m_stats = DashboardStats::collect(m_storage);
-        rebuild();
-    });
-    buttons->addButton(QDialogButtonBox::Close);
-    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
-    layout->addWidget(buttons);
+    refresh->setMinimumHeight(DesignTokens::TouchTargetCompact);
+    connect(refresh, &QPushButton::clicked, this, &DashboardPanel::refresh);
+    layout->addWidget(refresh, 0, Qt::AlignRight);
 
     m_stats = DashboardStats::collect(m_storage);
     rebuild();
-    resize(560, 620);
 }
 
-void DashboardDialog::rebuild()
+void DashboardPanel::refresh()
+{
+    m_stats = DashboardStats::collect(m_storage);
+    rebuild();
+}
+
+void DashboardPanel::rebuild()
 {
     // Summary line: aggregates only, sensitive counts labeled without content.
     const QString sizeText = UiHelpers::humanSize(m_stats.totalBytes);
@@ -348,10 +345,6 @@ void DashboardDialog::rebuild()
         m_emptyState->setAccessibleName(tr("Dashboard empty state"));
         contentLayout->addWidget(m_emptyState);
         contentLayout->addStretch(1);
-        m_dayChart = nullptr;
-        m_typeChart = nullptr;
-        m_sizeChart = nullptr;
-        m_topApps = nullptr;
         return;
     }
 
@@ -445,4 +438,47 @@ void DashboardDialog::rebuild()
     }
 
     contentLayout->addStretch(1);
+}
+
+DashboardDialog::DashboardDialog(IClipboardStorage *storage, QWidget *parent)
+    : QDialog(parent)
+{
+    setWindowTitle(tr("Usage dashboard"));
+    setAccessibleName(tr("Usage dashboard"));
+    setAccessibleDescription(
+        tr("Local-only aggregates over the clipboard history — no entry text is shown."));
+
+    auto *layout = new QVBoxLayout(this);
+    m_panel = new DashboardPanel(storage, this);
+    layout->addWidget(m_panel, 1);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    layout->addWidget(buttons);
+    resize(560, 620);
+}
+
+const DashboardStats &DashboardDialog::stats() const
+{
+    return m_panel->stats();
+}
+
+DashboardBarChart *DashboardDialog::dayChart() const
+{
+    return m_panel->dayChart();
+}
+
+DashboardBarChart *DashboardDialog::typeChart() const
+{
+    return m_panel->typeChart();
+}
+
+DashboardBarChart *DashboardDialog::sizeChart() const
+{
+    return m_panel->sizeChart();
+}
+
+QListWidget *DashboardDialog::topAppsList() const
+{
+    return m_panel->topAppsList();
 }

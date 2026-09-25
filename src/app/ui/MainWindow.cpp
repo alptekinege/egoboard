@@ -527,14 +527,8 @@ void MainWindow::buildUi()
     tourAction->setToolTip(tr("Show the first-run introduction tour"));
     connect(tourAction, &QAction::triggered, this, &MainWindow::openTour);
 
-    // P2-A usage dashboard: secondary action, collapses into More off Wide.
-    QAction *dashboardAction =
-        m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("view-statistics")),
-                             tr("Dashboard"));
-    dashboardAction->setToolTip(
-        tr("Usage dashboard — local-only counts by day, app, type and size"));
-    connect(dashboardAction, &QAction::triggered, this, &MainWindow::openDashboard);
-
+    // P2-A usage dashboard lives in Settings ▸ Usage (and on `>dashboard`);
+    // the toolbar stays reserved for history actions.
     // "More" overflow for Medium/Narrow (U3): secondary actions move here.
     m_moreButton = new QToolButton(m_toolbar);
     m_moreButton->setText(tr("More"));
@@ -544,7 +538,7 @@ void MainWindow::buildUi()
     m_moreButton->setVisible(false);
     m_toolbar->addWidget(m_moreButton);
     m_overflowActions = {m_pinnedOnlyAction, m_sensitiveAction, m_deleteFilteredAction,
-                         m_groupsAction, snipAction, chainAction, tourAction, dashboardAction};
+                         m_groupsAction, snipAction, chainAction, tourAction};
 
     // --- groups dock --------------------------------------------------------
     m_groupsDock = new GroupsDock(m_ctx.bookmarks(), this);

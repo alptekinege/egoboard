@@ -10,6 +10,7 @@
 #include <QList>
 #include <QPointer>
 class ApplicationContext;
+class DashboardPanel;
 class KColorButton;
 class QBoxLayout;
 class QCheckBox;
@@ -27,8 +28,8 @@ class QStackedWidget;
 class QTextBrowser;
 class QVBoxLayout;
 
-// Detailed settings dialog — 9 pages in a vertical icon+label sidebar: General /
-// Capture / Privacy / History / Search & Preview / Automation / Shortcuts /
+// Detailed settings dialog — 10 pages in a vertical icon+label sidebar: General /
+// Capture / Privacy / History / Usage / Search & Preview / Automation / Shortcuts /
 // Storage / Diagnostics. Every knob is exposed with live diagnostics, all
 // local, no network.
 class SettingsDialog : public QDialog {
@@ -46,6 +47,7 @@ private:
     QWidget *buildCapturePage();
     QWidget *buildPrivacyPage();
     QWidget *buildHistoryPage();
+    QWidget *buildUsagePage(); // P2-A dashboard, embedded (read-only aggregates)
     QWidget *buildSearchPreviewPage();
     QWidget *buildAutomationPage();
     QWidget *buildHotkeysPage();
@@ -205,6 +207,10 @@ private:
     QSpinBox *m_expireAgeH = nullptr;
     QCheckBox *m_expireKeepPinned = nullptr;
     QList<ExpireRule> m_expireRules; // working copy, written on save
+
+    // Usage (P2-A dashboard, embedded): read-only aggregates, no knobs, so no
+    // load()/save()/reset handling — snapshot at open, refreshed on each visit.
+    DashboardPanel *m_usagePanel = nullptr;
 
     // Search & preview
     QLabel *m_ftsStatus = nullptr;

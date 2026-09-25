@@ -6,12 +6,12 @@
 #include <QPair>
 #include <QString>
 #include <QVector>
+#include <QWidget>
 
 class IClipboardStorage;
 class QLabel;
 class QListWidget;
 class QScrollArea;
-class QWidget;
 
 // P2-A usage dashboard: read-only local aggregates over the existing history
 // indexes. Aggregates only — entry text is never rendered; sensitive entries
@@ -44,10 +44,17 @@ private:
     int m_focusedBar = -1;
 };
 
-class DashboardDialog : public QDialog {
+// The dashboard content itself, shared by the standalone dialog below and the
+// Settings ▸ Usage page: summary + day/type/size charts + top-apps list (or
+// the empty state on an empty history), with its own Refresh control.
+class DashboardPanel : public QWidget {
     Q_OBJECT
 public:
-    explicit DashboardDialog(IClipboardStorage *storage, QWidget *parent = nullptr);
+    explicit DashboardPanel(IClipboardStorage *storage, QWidget *parent = nullptr);
+
+    // Re-collects from storage and rebuilds (snapshot at construction plus
+    // this on demand — storage may change while the host stays open).
+    void refresh();
 
     const DashboardStats &stats() const { return m_stats; }
     // Test seams: the charts and the top-apps list behind their sections.
@@ -78,4 +85,20 @@ private:
     DashboardBarChart *m_typeChart = nullptr;
     DashboardBarChart *m_sizeChart = nullptr;
     QListWidget *m_topApps = nullptr;
+};
+
+class DashboardDialog : public QDialog {
+    Q_OBJECT
+public:
+    explicit DashboardDialog(IClipboardStorage *storage, QWidget *parent = nullptr);
+
+    const DashboardStats &stats() const;
+    // Test seams, forwarded to the shared panel.
+    DashboardBarChart *dayChart() const;
+    DashboardBarChart *typeChart() const;
+    DashboardBarChart *sizeChart() const;
+    QListWidget *topAppsList() const;
+
+private:
+    DashboardPanel *m_panel = nullptr;
 };

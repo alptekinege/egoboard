@@ -25,8 +25,7 @@ QT_QPA_PLATFORM=offscreen ./build/egoboard --bench=100000  # budgets must hold
   `Meta+Shift+P`) fire while the window is hidden.
 - Autostart: enable it, log out/in, the app returns (entry points at the
   installed binary, never a bare command name).
-- Dashboard (P2-A): open from the toolbar (More ▸ Dashboard off Wide) and via
-  `>dashboard` — activity/type/top-apps/size sections render, charts take
+- Dashboard (P2-A): open Settings ▸ Usage and via `>dashboard` — activity/type/top-apps/size sections render, charts take
   keyboard focus (arrows/Home/End), and an empty profile shows the empty state.
 
 ## 3. Plasma Wayland session
@@ -39,7 +38,7 @@ QT_QPA_PLATFORM=offscreen ./build/egoboard --bench=100000  # budgets must hold
 - Start a screen share (e.g. a video call): the status-bar Sharing indicator
   appears and previews blur until hovered; stopping clears both.
 - `eb query` in KRunner lists grouped matches with working actions.
-- Dashboard (P2-A): same as on X11 — toolbar/More and `>dashboard` open the
+- Dashboard (P2-A): same as on X11 — Settings ▸ Usage and `>dashboard` open the
   local aggregates; charts are keyboard-focusable; no entry text is shown.
 
 ## 4. Optional-feature matrix

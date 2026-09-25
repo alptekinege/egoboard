@@ -13,6 +13,7 @@
 #include "../OcrWorker.h"
 #include "../PortalPaster.h"
 #include "AppearancePreview.h"
+#include "DashboardDialog.h"
 #include "DesignTokens.h"
 #include "SnippetManager.h"
 #include "StorageManager.h"
@@ -231,12 +232,23 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
     addPage(QStringLiteral("edit-copy"), tr("Capture"), buildCapturePage());
     addPage(QStringLiteral("security-medium"), tr("Privacy"), buildPrivacyPage());
     addPage(QStringLiteral("document-open-recent"), tr("History"), buildHistoryPage());
+    addPage(QStringLiteral("view-statistics"), tr("Usage"), buildUsagePage());
     addPage(QStringLiteral("system-search"), tr("Search & Preview"), buildSearchPreviewPage());
     addPage(QStringLiteral("applications-engineering"), tr("Automation"), buildAutomationPage());
     addPage(QStringLiteral("preferences-desktop-keyboard"), tr("Shortcuts"), buildHotkeysPage());
     addPage(QStringLiteral("drive-harddisk"), tr("Storage"), buildStoragePage());
     addPage(QStringLiteral("utilities-system-monitor"), tr("Diagnostics"), buildPlatformDiagnosticsPage());
     connect(sidebar, &QListWidget::currentRowChanged, stack, &QStackedWidget::setCurrentIndex);
+    // The Usage page is a live snapshot: re-collect on every visit, since
+    // captures may have landed while the dialog stayed open.
+    if (m_usagePanel) {
+        const int usageIndex = m_stack->indexOf(m_usagePanel);
+        connect(sidebar, &QListWidget::currentRowChanged, this,
+                [this, usageIndex](int row) {
+                    if (row == usageIndex)
+                        m_usagePanel->refresh();
+                });
+    }
     sidebar->setCurrentRow(0);
 
     content->addWidget(sidebar);
@@ -943,6 +955,18 @@ QWidget *SettingsDialog::buildHistoryPage()
 
     historyLayout->addStretch(1);
     return makeScrollable(historyPage);
+}
+
+QWidget *SettingsDialog::buildUsagePage()
+{
+    // P2-A dashboard, embedded: the shared read-only panel (counts by day,
+    // app, type and size plus streak — entry text never leaves the database).
+    // No knobs, so no load()/save()/reset wiring; the constructor visits row 0
+    // and the currentRowChanged hook above refreshes on every later visit.
+    // The panel scrolls internally, so unlike the knob pages it is returned
+    // directly instead of through makeScrollable().
+    m_usagePanel = new DashboardPanel(m_ctx.storage(), this);
+    return m_usagePanel;
 }
 
 QWidget *SettingsDialog::buildSearchPreviewPage()
