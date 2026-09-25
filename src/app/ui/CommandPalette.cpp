@@ -739,6 +739,8 @@ void CommandPalette::runCommand(const PaletteCommands::Command &command, const Q
         emit settingsRequested();
     } else if (command.id == QLatin1String("tour")) {
         emit tourRequested();
+    } else if (command.id == QLatin1String("dashboard")) {
+        emit dashboardRequested();
     } else if (command.id == QLatin1String("profile")) {
         emit profileRequested(argument);
     } else if (command.id == QLatin1String("clean")) {

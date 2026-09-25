@@ -53,6 +53,7 @@ signals:
     void togglePauseRequested();
     void settingsRequested();
     void tourRequested();
+    void dashboardRequested();
     void clearHistoryRequested();
     void profileRequested(const QString &profileName);
     // Emitted for every executed command so the window can remember it.

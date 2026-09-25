@@ -239,3 +239,17 @@ add_executable(tst_packaging tst_packaging.cpp)
 target_link_libraries(tst_packaging PRIVATE Qt6::Test)
 target_compile_options(tst_packaging PRIVATE -Wall -Wextra)
 add_test(NAME tst_packaging COMMAND tst_packaging)
+
+# P2-A usage dashboard: aggregates + QPainter fallback dialog, offscreen-safe.
+add_executable(tst_dashboard tst_dashboard.cpp
+    ../src/app/ui/DashboardDialog.cpp
+    ../src/app/ui/DashboardStats.cpp
+    ../src/app/ui/PaletteCommands.cpp
+    ../src/app/ui/UiHelpers.cpp
+    ../src/app/TextAppearance.cpp
+    ../src/app/ColorSchemeIndex.cpp
+    ../src/app/IconThemeIndex.cpp)
+target_include_directories(tst_dashboard PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/app ${CMAKE_CURRENT_SOURCE_DIR}/../src/app/ui ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(tst_dashboard PRIVATE egoboard::core Qt6::Widgets Qt6::Sql Qt6::Test KF6::ConfigCore KF6::ConfigWidgets)
+target_compile_options(tst_dashboard PRIVATE -Wall -Wextra)
+add_test(NAME tst_dashboard COMMAND tst_dashboard)

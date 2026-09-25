@@ -18,6 +18,7 @@
 #include "SnippetDialog.h"
 #include "StorageManager.h"
 #include "CommandPalette.h"
+#include "DashboardDialog.h"
 #include "FirstRunTour.h"
 #include "ShortcutCheatsheet.h"
 #include "TimelineStrip.h"
@@ -526,6 +527,14 @@ void MainWindow::buildUi()
     tourAction->setToolTip(tr("Show the first-run introduction tour"));
     connect(tourAction, &QAction::triggered, this, &MainWindow::openTour);
 
+    // P2-A usage dashboard: secondary action, collapses into More off Wide.
+    QAction *dashboardAction =
+        m_toolbar->addAction(QIcon::fromTheme(QStringLiteral("view-statistics")),
+                             tr("Dashboard"));
+    dashboardAction->setToolTip(
+        tr("Usage dashboard — local-only counts by day, app, type and size"));
+    connect(dashboardAction, &QAction::triggered, this, &MainWindow::openDashboard);
+
     // "More" overflow for Medium/Narrow (U3): secondary actions move here.
     m_moreButton = new QToolButton(m_toolbar);
     m_moreButton->setText(tr("More"));
@@ -535,7 +544,7 @@ void MainWindow::buildUi()
     m_moreButton->setVisible(false);
     m_toolbar->addWidget(m_moreButton);
     m_overflowActions = {m_pinnedOnlyAction, m_sensitiveAction, m_deleteFilteredAction,
-                         m_groupsAction, snipAction, chainAction, tourAction};
+                         m_groupsAction, snipAction, chainAction, tourAction, dashboardAction};
 
     // --- groups dock --------------------------------------------------------
     m_groupsDock = new GroupsDock(m_ctx.bookmarks(), this);
@@ -1602,6 +1611,12 @@ void MainWindow::openTour()
     m_ctx.settings()->setTourSeen(true);
 }
 
+void MainWindow::openDashboard()
+{
+    DashboardDialog dialog(m_ctx.storage(), this);
+    dialog.exec();
+}
+
 void MainWindow::setScreencastActive(bool active)
 {
     if (m_preview)
@@ -1731,6 +1746,7 @@ void MainWindow::openPalette()
         });
         connect(m_palette, &CommandPalette::settingsRequested, this, &MainWindow::openSettings);
         connect(m_palette, &CommandPalette::tourRequested, this, &MainWindow::openTour);
+        connect(m_palette, &CommandPalette::dashboardRequested, this, &MainWindow::openDashboard);
         connect(m_palette, &CommandPalette::profileRequested, this,
                 &MainWindow::applyProfileByName);
         connect(m_palette, &CommandPalette::clearHistoryRequested, this, &MainWindow::clearHistory);

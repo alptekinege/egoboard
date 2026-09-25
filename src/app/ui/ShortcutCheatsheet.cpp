@@ -38,6 +38,7 @@ QList<ShortcutCheatsheet::Section> ShortcutCheatsheet::defaultSections()
         {tr("Command palette"),
          {
              {QStringLiteral(">"), tr("Command mode (>tag, >export, >pause…)")},
+             {QStringLiteral(">dashboard"), tr("Usage dashboard (local aggregates)")},
              {QStringLiteral("Tab"), tr("Complete the suggestion")},
              {QStringLiteral("Enter"), tr("Run / paste")},
              {QStringLiteral("Esc"), tr("Close the palette")},

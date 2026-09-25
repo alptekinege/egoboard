@@ -129,6 +129,7 @@ private:
     void openTransformChain();
     void openCheatsheet(); // U15 shortcut reference (`?`)
     void openTour(); // U15 first-run tour (also on first launch, once)
+    void openDashboard(); // P2-A local usage dashboard (aggregates only)
     // U15 first-launch hook: offers the tour once, then never again.
     void maybeShowFirstRunTour();
     // U15/§7 focus areas: 0 = search, 1 = list, 2 = preview, 3 = groups, 4 = timeline.

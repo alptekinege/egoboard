@@ -136,6 +136,8 @@ add_executable(egoboard
     src/app/ui/SettingsDialog.cpp
     src/app/ui/ExportImportDialogs.cpp
     src/app/ui/CommandPalette.cpp
+    src/app/ui/DashboardDialog.cpp
+    src/app/ui/DashboardStats.cpp
     src/app/ui/PaletteCommands.cpp
     src/app/ui/FirstRunTour.cpp
     src/app/ui/ShortcutCheatsheet.cpp
