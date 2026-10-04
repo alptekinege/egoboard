@@ -191,8 +191,7 @@ bool AutoPaster::xdotoolPaste()
     }
     if (!m_xdotoolAvailable)
         return false;
-    QProcess::startDetached(QStringLiteral("xdotool"),
-                            {QStringLiteral("key"), QStringLiteral("--clearmodifiers"),
-                             QStringLiteral("ctrl+v")});
-    return true;
+    return QProcess::startDetached(QStringLiteral("xdotool"),
+                                   {QStringLiteral("key"), QStringLiteral("--clearmodifiers"),
+                                    QStringLiteral("ctrl+v")});
 }

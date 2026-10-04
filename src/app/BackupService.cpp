@@ -119,8 +119,12 @@ BackupService::BackupService(const QString &databasePath, SettingsManager *setti
 BackupService::~BackupService()
 {
     if (m_thread) {
+        if (m_worker)
+            m_worker->requestCancel();
         m_thread->quit();
-        m_thread->wait(5000);
+        // Export/import checks cancellation between bounded pages. Join before
+        // QObject tears down the worker and its thread-affine SQL connection.
+        m_thread->wait();
     }
 }
 

@@ -404,7 +404,7 @@ QWidget *SettingsDialog::buildGeneralPage()
     trayLayout->addRow(QString(), m_notifications);
 
     m_captureSound = new QCheckBox(tr("Play a sound on new copy"), trayBox);
-    m_captureSound->setToolTip(tr("A short beep when a new clipboard entry is captured (not when the same content is already at the top)."));
+    m_captureSound->setToolTip(tr("Play a short system sound when a new clipboard entry is captured (not when the same content is already at the top)."));
     trayLayout->addRow(QString(), m_captureSound);
 
     m_captureNotification = new QCheckBox(tr("Show a notification on new copy"), trayBox);

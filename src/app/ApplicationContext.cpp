@@ -47,6 +47,7 @@
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QProcess>
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QStandardPaths>
@@ -60,6 +61,19 @@
 namespace {
 constexpr qint64 kVacuumSizeThresholdBytes = 50 * 1024 * 1024;
 constexpr int kDiskCapCheckInterval = 25; // captures between cap enforcements
+
+void playCaptureSound()
+{
+    // QApplication::beep() can be silent on Wayland when the desktop bell is
+    // disabled. Prefer the freedesktop sound theme when libcanberra is present.
+    static const QString canberraPlayer =
+        QStandardPaths::findExecutable(QStringLiteral("canberra-gtk-play"));
+    if (!canberraPlayer.isEmpty()
+        && QProcess::startDetached(canberraPlayer, {QStringLiteral("--id=message-new-instant")})) {
+        return;
+    }
+    QApplication::beep();
+}
 
 // "Paste as → Image → PNG file": writes the stored image to a temporary PNG
 // and returns a Files-type record pointing at it (pasteable in file managers).
@@ -223,7 +237,9 @@ ApplicationContext::~ApplicationContext()
 {
     if (m_vacuumThread) {
         m_vacuumThread->quit();
-        m_vacuumThread->wait(5000);
+        // VACUUM is not interruptible. Do not destroy a running QThread after
+        // an arbitrary timeout; wait until SQLite has released its connection.
+        m_vacuumThread->wait();
     }
     // Tear the GUI down first (it references the managers below), then the
     // helpers that hold their own QSqlDatabase handles, so they are released
@@ -482,7 +498,7 @@ void ApplicationContext::onCaptured(const ClipboardRecord &record)
     // content was already at the top (re-copy of the same payload).
     if (!alreadyAtTop && m_settings && m_window) {
         if (m_settings->captureSoundEnabled())
-            QApplication::beep();
+            playCaptureSound();
         if (m_settings->captureNotificationEnabled() && m_settings->notificationsEnabled()) {
             const QString source = record.sourceApp.isEmpty()
                                        ? tr("Unknown source")
