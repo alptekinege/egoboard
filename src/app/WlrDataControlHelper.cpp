@@ -13,10 +13,12 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QMimeData>
+#include <QTextDocument>
 #include <QUrl>
 
 #include <QtWaylandClient/QWaylandClientExtension>
 #include <qwayland-wlr-data-control-unstable-v1.h>
+#include <qwayland-ext-data-control-v1.h>
 #include <wayland-client.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -55,7 +57,7 @@ QByteArray hashPayloadLocal(ContentType t, const QByteArray &p) {
 }
 
 // Sensitive detection incl. user-defined patterns — must match ClipboardWatcher
-// so the wlr-data-control path enforces the same privacy rules on Wayland.
+// so the data-control paths enforce the same privacy rules on Wayland.
 bool isSensitiveWithCustom(const QString &text, SettingsManager *settings) {
     if (SensitiveDataDetector::isSensitive(text)) return true;
     if (!settings) return false;
@@ -79,8 +81,8 @@ QStringList customKinds(const QString &text, SettingsManager *settings) {
     return out;
 }
 
-// Mirrors ClipboardWatcher::applyRedaction so the wlr-data-control capture
-// path enforces Redact mode identically on Wayland.
+// Mirrors ClipboardWatcher::applyRedaction so the data-control capture
+// paths enforce Redact mode identically on Wayland.
 QStringList redactCustomPatterns(QString *text, SettingsManager *settings) {
     QStringList kinds;
     if (!settings || !text || text->isEmpty()) return kinds;
@@ -145,14 +147,14 @@ QStringList applyRedactionLocal(ClipboardRecord *record, const QString &plainSou
 
 } // namespace
 
-// Manager
+// wlr Manager
 class WlrDataControlHelper::Manager : public QWaylandClientExtensionTemplate<Manager>, public QtWayland::zwlr_data_control_manager_v1 {
     Q_OBJECT
 public:
     explicit Manager() : QWaylandClientExtensionTemplate<Manager>(2) {}
 };
 
-// Offer — collects mimes for one data_offer
+// wlr Offer — collects mimes for one data_offer
 class WlrDataControlHelper::Offer : public QtWayland::zwlr_data_control_offer_v1 {
 public:
     Offer(WlrDataControlHelper *h, struct ::zwlr_data_control_offer_v1 *obj)
@@ -166,7 +168,7 @@ private:
     WlrDataControlHelper *m_helper = nullptr;
 };
 
-// Device — forwards selection events to helper
+// wlr Device — forwards selection events to helper
 class WlrDataControlHelper::Device : public QtWayland::zwlr_data_control_device_v1 {
 public:
     Device(WlrDataControlHelper *h, struct ::zwlr_data_control_device_v1 *dev)
@@ -191,6 +193,52 @@ private:
     WlrDataControlHelper *m_helper = nullptr;
 };
 
+// ext Manager (standardized successor; what current KWin exposes)
+class WlrDataControlHelper::ExtManager : public QWaylandClientExtensionTemplate<ExtManager>, public QtWayland::ext_data_control_manager_v1 {
+    Q_OBJECT
+public:
+    explicit ExtManager() : QWaylandClientExtensionTemplate<ExtManager>(1) {}
+};
+
+// ext Offer
+class WlrDataControlHelper::ExtOffer : public QtWayland::ext_data_control_offer_v1 {
+public:
+    ExtOffer(WlrDataControlHelper *h, struct ::ext_data_control_offer_v1 *obj)
+        : QtWayland::ext_data_control_offer_v1(obj), m_helper(h) {}
+    ~ExtOffer() override { if (isInitialized()) destroy(); }
+protected:
+    void ext_data_control_offer_v1_offer(const QString &mime) override {
+        m_helper->onExtOfferMime(object(), mime);
+    }
+private:
+    WlrDataControlHelper *m_helper = nullptr;
+};
+
+// ext Device
+class WlrDataControlHelper::ExtDevice : public QtWayland::ext_data_control_device_v1 {
+public:
+    ExtDevice(WlrDataControlHelper *h, struct ::ext_data_control_device_v1 *dev)
+        : QtWayland::ext_data_control_device_v1(dev), m_helper(h) {}
+    ~ExtDevice() override { if (isInitialized()) destroy(); }
+protected:
+    void ext_data_control_device_v1_data_offer(struct ::ext_data_control_offer_v1 *id) override {
+        if (m_helper->m_extOffers.contains(id)) return;
+        OfferState st; st.id = id;
+        m_helper->m_extOffers.insert(id, st);
+        auto *offerWrap = new ExtOffer(m_helper, id);
+        m_helper->m_extOfferObjects.insert(id, offerWrap);
+    }
+    void ext_data_control_device_v1_selection(struct ::ext_data_control_offer_v1 *id) override {
+        m_helper->onExtDeviceSelection(id, false);
+    }
+    void ext_data_control_device_v1_finished() override {}
+    void ext_data_control_device_v1_primary_selection(struct ::ext_data_control_offer_v1 *id) override {
+        m_helper->onExtDeviceSelection(id, true);
+    }
+private:
+    WlrDataControlHelper *m_helper = nullptr;
+};
+
 WlrDataControlHelper::WlrDataControlHelper(SettingsManager *settings, IActiveWindowTracker *tracker, QObject *parent)
     : QObject(parent), m_settings(settings), m_tracker(tracker)
 {
@@ -202,6 +250,14 @@ WlrDataControlHelper::WlrDataControlHelper(SettingsManager *settings, IActiveWin
         m_pendingOffer = nullptr;
         handleSelection(offer, primary);
     });
+    m_extReadDebounce.setSingleShot(true);
+    m_extReadDebounce.setInterval(120);
+    connect(&m_extReadDebounce, &QTimer::timeout, this, [this]{
+        void *offer = m_extPendingOffer;
+        bool primary = m_extPendingPrimary;
+        m_extPendingOffer = nullptr;
+        handleExtSelection(offer, primary);
+    });
 }
 
 WlrDataControlHelper::~WlrDataControlHelper() { stop(); }
@@ -209,20 +265,46 @@ WlrDataControlHelper::~WlrDataControlHelper() { stop(); }
 bool WlrDataControlHelper::isWayland() { return QGuiApplication::platformName() == QLatin1String("wayland"); }
 QString WlrDataControlHelper::platformName() { return QGuiApplication::platformName(); }
 bool WlrDataControlHelper::isSupported() { return isWayland(); }
-bool WlrDataControlHelper::isActive() const { return m_manager && m_manager->isActive() && m_device; }
-int WlrDataControlHelper::protocolVersion() const { return m_manager ? static_cast<int>(m_manager->QWaylandClientExtension::version()) : 0; }
+
+bool WlrDataControlHelper::isActive() const
+{
+    const bool wlrActive = m_manager && m_manager->isActive() && m_device;
+    const bool extActive = m_extManager && m_extManager->isActive() && m_extDevice;
+    return wlrActive || extActive;
+}
+
+int WlrDataControlHelper::protocolVersion() const
+{
+    if (m_extManager && m_extManager->isActive() && m_extDevice)
+        return static_cast<int>(m_extManager->QWaylandClientExtension::version());
+    if (m_manager)
+        return static_cast<int>(m_manager->QWaylandClientExtension::version());
+    return 0;
+}
 
 QString WlrDataControlHelper::diagnostics() const {
     const QString plat = platformName();
     const bool wayland = isWayland();
-    const bool active = isActive();
     if (!wayland)
-        return QStringLiteral("wlr-data-control: <b>n/a</b> (Wayland-only, platform <b>%1</b>) · fallback <b>QClipboard</b> polling.").arg(plat.toHtmlEscaped());
-    if (active)
-        return QStringLiteral("wlr-data-control: <b>active ✓</b> (v%1) on <b>%2</b> · observes clipboard without focus.").arg(protocolVersion()).arg(plat.toHtmlEscaped());
-    if (m_manager && !m_manager->isActive())
-        return QStringLiteral("wlr-data-control: <b>inactive</b> — compositor does not expose <code>zwlr_data_control_manager_v1</code> or permission denied (platform <b>%1</b>). Using <b>QClipboard</b> fallback.").arg(plat.toHtmlEscaped());
-    return QStringLiteral("wlr-data-control: <b>inactive</b> (no seat/device yet) on <b>%1</b> · waiting for Wayland registry.").arg(plat.toHtmlEscaped());
+        return QStringLiteral("data-control: <b>n/a</b> (Wayland-only, platform <b>%1</b>) · fallback <b>QClipboard</b>.").arg(plat.toHtmlEscaped());
+    const bool wlrActive = m_manager && m_manager->isActive() && m_device;
+    const bool extActive = m_extManager && m_extManager->isActive() && m_extDevice;
+    if (wlrActive || extActive) {
+        QStringList backends;
+        if (extActive)
+            backends << QStringLiteral("ext-data-control <b>active ✓</b> (v%1)").arg(
+                m_extManager ? static_cast<int>(m_extManager->QWaylandClientExtension::version()) : 1);
+        if (wlrActive)
+            backends << QStringLiteral("wlr-data-control <b>active ✓</b> (v%1)").arg(
+                m_manager ? static_cast<int>(m_manager->QWaylandClientExtension::version()) : 2);
+        return QStringLiteral("data-control: %1 on <b>%2</b> · observes clipboard without focus.")
+            .arg(backends.join(QStringLiteral(" + ")), plat.toHtmlEscaped());
+    }
+    const bool wlrMissing = !m_manager || !m_manager->isActive();
+    const bool extMissing = !m_extManager || !m_extManager->isActive();
+    if (wlrMissing && extMissing)
+        return QStringLiteral("data-control: <b>inactive</b> — compositor exposes neither <code>ext_data_control_manager_v1</code> nor <code>zwlr_data_control_manager_v1</code> (platform <b>%1</b>). Using <b>QClipboard</b> fallback (focused-window only).").arg(plat.toHtmlEscaped());
+    return QStringLiteral("data-control: <b>inactive</b> (no seat/device yet) on <b>%1</b> · waiting for Wayland registry.").arg(plat.toHtmlEscaped());
 }
 
 void WlrDataControlHelper::start() {
@@ -232,34 +314,63 @@ void WlrDataControlHelper::start() {
     m_manager = new Manager();
     m_manager->setParent(this);
     connect(m_manager, &QWaylandClientExtension::activeChanged, this, &WlrDataControlHelper::onManagerActiveChanged);
+    m_extManager = new ExtManager();
+    m_extManager->setParent(this);
+    connect(m_extManager, &QWaylandClientExtension::activeChanged, this, &WlrDataControlHelper::onExtManagerActiveChanged);
     QTimer::singleShot(500, this, &WlrDataControlHelper::onManagerActiveChanged);
+    QTimer::singleShot(500, this, &WlrDataControlHelper::onExtManagerActiveChanged);
 }
 
 void WlrDataControlHelper::stop() {
     destroyDevice();
+    destroyExtDevice();
     if (m_manager) { m_manager->deleteLater(); m_manager = nullptr; }
+    if (m_extManager) { m_extManager->deleteLater(); m_extManager = nullptr; }
     m_started = false;
 }
 
 void WlrDataControlHelper::suppressOwnSets() { m_suppressUntilMs = QDateTime::currentMSecsSinceEpoch() + kSuppressMs; }
 
 void WlrDataControlHelper::onManagerActiveChanged() {
-    if (!m_manager || !m_manager->isActive()) { destroyDevice(); emit activeChanged(false); return; }
+    if (!m_manager || !m_manager->isActive()) { destroyDevice(); emit activeChanged(isActive()); return; }
     tryCreateDevice();
     emit activeChanged(isActive());
+}
+
+void WlrDataControlHelper::onExtManagerActiveChanged() {
+    if (!m_extManager || !m_extManager->isActive()) { destroyExtDevice(); emit activeChanged(isActive()); return; }
+    tryCreateExtDevice();
+    emit activeChanged(isActive());
+}
+
+static struct wl_seat *waylandSeat()
+{
+    auto *native = qGuiApp->nativeInterface<QNativeInterface::QWaylandApplication>();
+    struct wl_seat *seat = nullptr;
+    if (native) { seat = native->seat(); if (!seat) seat = native->lastInputSeat(); }
+    return seat;
 }
 
 void WlrDataControlHelper::tryCreateDevice() {
     if (m_device) return;
     if (!m_manager || !m_manager->isActive()) return;
-    auto *native = qGuiApp->nativeInterface<QNativeInterface::QWaylandApplication>();
-    struct wl_seat *seat = nullptr;
-    if (native) { seat = native->seat(); if (!seat) seat = native->lastInputSeat(); }
+    struct wl_seat *seat = waylandSeat();
     if (!seat) { qDebug() << "WlrDataControlHelper: no wl_seat yet, retry"; QTimer::singleShot(500, this, &WlrDataControlHelper::tryCreateDevice); return; }
     struct ::zwlr_data_control_device_v1 *devRaw = m_manager->get_data_device(seat);
-    if (!devRaw) { qWarning() << "WlrDataControlHelper: get_data_device failed"; return; }
+    if (!devRaw) { qWarning() << "WlrDataControlHelper: wlr get_data_device failed"; return; }
     m_device = new Device(this, devRaw);
-    qDebug() << "WlrDataControlHelper: data device created";
+    qDebug() << "WlrDataControlHelper: wlr data device created";
+}
+
+void WlrDataControlHelper::tryCreateExtDevice() {
+    if (m_extDevice) return;
+    if (!m_extManager || !m_extManager->isActive()) return;
+    struct wl_seat *seat = waylandSeat();
+    if (!seat) { qDebug() << "WlrDataControlHelper: no wl_seat yet, retry (ext)"; QTimer::singleShot(500, this, &WlrDataControlHelper::tryCreateExtDevice); return; }
+    struct ::ext_data_control_device_v1 *devRaw = m_extManager->get_data_device(seat);
+    if (!devRaw) { qWarning() << "WlrDataControlHelper: ext get_data_device failed"; return; }
+    m_extDevice = new ExtDevice(this, devRaw);
+    qDebug() << "WlrDataControlHelper: ext data device created";
 }
 
 void WlrDataControlHelper::destroyDevice() {
@@ -267,6 +378,13 @@ void WlrDataControlHelper::destroyDevice() {
     qDeleteAll(m_offerObjects); m_offerObjects.clear();
     m_offers.clear();
     m_pendingOffer = nullptr;
+}
+
+void WlrDataControlHelper::destroyExtDevice() {
+    if (m_extDevice) { delete m_extDevice; m_extDevice = nullptr; }
+    qDeleteAll(m_extOfferObjects); m_extOfferObjects.clear();
+    m_extOffers.clear();
+    m_extPendingOffer = nullptr;
 }
 
 void WlrDataControlHelper::onDeviceSelection(void *offerId, bool primary) {
@@ -290,142 +408,40 @@ void WlrDataControlHelper::onDeviceSelection(void *offerId, bool primary) {
     m_readDebounce.start();
 }
 
+void WlrDataControlHelper::onExtDeviceSelection(void *offerId, bool primary) {
+    if (primary && !(m_settings && m_settings->monitorPrimarySelection())) return;
+
+    for (auto it = m_extOfferObjects.begin(); it != m_extOfferObjects.end();) {
+        if (it.key() != offerId) {
+            delete it.value();
+            m_extOffers.remove(it.key());
+            it = m_extOfferObjects.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    m_extPendingOffer = offerId;
+    m_extPendingPrimary = primary;
+    m_extReadDebounce.start();
+}
+
 void WlrDataControlHelper::onOfferMime(void *offerId, const QString &mime) {
     auto it = m_offers.find(offerId);
     if (it == m_offers.end()) { OfferState st; st.id = offerId; st.mimes.append(mime); m_offers.insert(offerId, st); }
     else it->mimes.append(mime);
 }
 
-void WlrDataControlHelper::handleSelection(void *offerId, bool primary) {
-    Q_UNUSED(primary)
-    if (!offerId) return;
-    if (m_paused) return; // capture paused (manual or session locked)
-    if (QDateTime::currentMSecsSinceEpoch() < m_suppressUntilMs) return;
+void WlrDataControlHelper::onExtOfferMime(void *offerId, const QString &mime) {
+    auto it = m_extOffers.find(offerId);
+    if (it == m_extOffers.end()) { OfferState st; st.id = offerId; st.mimes.append(mime); m_extOffers.insert(offerId, st); }
+    else it->mimes.append(mime);
+}
 
-    auto it = m_offers.find(offerId);
-    QStringList mimes = (it != m_offers.end()) ? it->mimes : QStringList{};
-    auto offerIt = m_offerObjects.find(offerId);
-    if (offerIt == m_offerObjects.end()) return;
-    Offer *offerWrap = offerIt.value();
-    if (!offerWrap) return;
-
-    auto *native = qGuiApp->nativeInterface<QNativeInterface::QWaylandApplication>();
-    struct wl_display *display = native ? native->display() : nullptr;
-    if (!display) return;
-
-    const qint64 maxBytes = m_settings ? m_settings->maxItemBytes() : kMaxOfferBytes;
-    const qint64 cap = (maxBytes > 0) ? qMin(maxBytes, kMaxOfferBytes) : kMaxOfferBytes;
-
-    const auto typeEnabled = [this](ContentType type) {
-        return !m_settings || m_settings->captureTypeEnabled(type);
-    };
-    // The record this selection would produce follows the same priority as the
-    // build below; if the user disabled that type, stop before reading any
-    // payload (pipe polls block the GUI thread and the record would be dropped).
-    if (!mimes.isEmpty()) {
-        ContentType primary = ContentType::Text;
-        const auto advertises = [&mimes](const char *mime) {
-            for (const QString &m : mimes)
-                if (m == QLatin1String(mime))
-                    return true;
-            return false;
-        };
-        if (advertises("image/png") || advertises("image/jpeg"))
-            primary = ContentType::Image;
-        else if (advertises("text/uri-list"))
-            primary = ContentType::Files;
-        else if (advertises("text/html"))
-            primary = ContentType::RichText;
-        if (!typeEnabled(primary))
-            return;
-    }
-
-    // All mime reads of one selection share a single budget: the pipe poll
-    // blocks the GUI thread, so it must not be multiplied by the number of
-    // advertised mime types.
-    const qint64 readDeadlineMs = QDateTime::currentMSecsSinceEpoch() + kReadBudgetMs;
-    auto readMimeSync = [&](const QString &mimeStr) -> QByteArray {
-        if (QDateTime::currentMSecsSinceEpoch() >= readDeadlineMs) return {};
-        if (!mimes.isEmpty()) {
-            bool found = false;
-            for (const QString &m : std::as_const(mimes))
-                if (m == mimeStr || m.startsWith(mimeStr)) { found = true; break; }
-            if (!found) return {};
-        }
-        int pipefd[2];
-        if (pipe(pipefd) != 0) return {};
-        fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
-        offerWrap->receive(mimeStr, pipefd[1]);
-        close(pipefd[1]);
-        wl_display_flush(display);
-        QByteArray out; out.reserve(4096);
-        while (out.size() < cap) {
-            struct pollfd pfd; pfd.fd = pipefd[0]; pfd.events = POLLIN; pfd.revents = 0;
-            const int ret = poll(&pfd, 1, 80);
-            if (ret > 0 && (pfd.revents & POLLIN)) {
-                char buf[8192];
-                ssize_t n = read(pipefd[0], buf, sizeof(buf));
-                if (n > 0) {
-                    const qint64 rem = cap - out.size();
-                    if (n > rem) n = rem;
-                    out.append(buf, n);
-                    if (out.size() >= cap) break;
-                    continue;
-                } else if (n == 0) break;
-                else if (errno != EAGAIN && errno != EWOULDBLOCK) break;
-            }
-            if (display) wl_display_dispatch_pending(display);
-            if (QDateTime::currentMSecsSinceEpoch() >= readDeadlineMs) break;
-        }
-        close(pipefd[0]);
-        return out;
-    };
-
-    QMimeData *mimeData = new QMimeData;
-    bool hasData = false;
-
-    QByteArray uriData = typeEnabled(ContentType::Files) ? readMimeSync(QStringLiteral("text/uri-list")) : QByteArray();
-    if (!uriData.isEmpty()) {
-        QList<QUrl> urls;
-        const QString text = QString::fromUtf8(uriData);
-        for (const QString &line : text.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
-            const QString t = line.trimmed();
-            if (t.startsWith(QLatin1Char('#'))) continue;
-            QUrl u(t);
-            if (u.isValid()) urls.append(u);
-        }
-        if (!urls.isEmpty()) { mimeData->setUrls(urls); hasData = true; }
-    }
-
-    QByteArray imgPng = typeEnabled(ContentType::Image) ? readMimeSync(QStringLiteral("image/png")) : QByteArray();
-    if (!imgPng.isEmpty()) {
-        QImage img = QImage::fromData(imgPng, "PNG");
-        if (!img.isNull()) { mimeData->setImageData(img); hasData = true; }
-    }
-    if (!hasData && typeEnabled(ContentType::Image)) {
-        QByteArray imgJpeg = readMimeSync(QStringLiteral("image/jpeg"));
-        if (!imgJpeg.isEmpty()) {
-            QImage img = QImage::fromData(imgJpeg, "JPEG");
-            if (!img.isNull()) { mimeData->setImageData(img); hasData = true; }
-        }
-    }
-
-    QByteArray html = typeEnabled(ContentType::RichText) ? readMimeSync(QStringLiteral("text/html")) : QByteArray();
-    if (!html.isEmpty()) { mimeData->setHtml(QString::fromUtf8(html)); hasData = true; }
-
-    QByteArray textData;
-    if (typeEnabled(ContentType::Text)) {
-        textData = readMimeSync(QStringLiteral("text/plain;charset=utf-8"));
-        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("text/plain"));
-        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("UTF8_STRING"));
-        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("TEXT"));
-        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("STRING"));
-    }
-    if (!textData.isEmpty()) { mimeData->setText(QString::fromUtf8(textData)); hasData = true; }
-
-    if (!hasData) { delete mimeData; return; }
-
+void WlrDataControlHelper::emitRecordFromMimeData(QMimeData *mimeData)
+{
     // Privacy check + record build; the capture-type filter runs at the end.
+    if (!mimeData) return;
     const QString text = mimeData->text();
     ClipboardRecord record;
     const qint64 maxStore = m_settings ? m_settings->maxItemBytes() : kMaxOfferBytes;
@@ -459,7 +475,15 @@ void WlrDataControlHelper::handleSelection(void *offerId, bool primary) {
         if (maxStore > 0 && htmlStr.size() > maxStore) htmlStr.truncate(int(maxStore));
         record.type = ContentType::RichText;
         record.textData = htmlStr; record.sizeBytes = htmlStr.toUtf8().size();
-        record.preview = singleLineLocal(mimeData->text());
+        QString plainForPreview = mimeData->text();
+        if (plainForPreview.isEmpty()) {
+            // Plain flavor missing (disabled or unreadable): derive the
+            // preview from the HTML so the entry never shows up blank.
+            QTextDocument document;
+            document.setHtml(htmlStr);
+            plainForPreview = document.toPlainText();
+        }
+        record.preview = singleLineLocal(plainForPreview);
         record.hash = hashPayloadLocal(ContentType::RichText, htmlStr.toUtf8());
     }
     if (record.hash.isEmpty() && mimeData->hasText()) {
@@ -513,6 +537,288 @@ void WlrDataControlHelper::handleSelection(void *offerId, bool primary) {
     record.sourceApp = src.appIdentifier; record.sourceWindow = src.windowTitle;
     if (m_settings && !record.sourceApp.isEmpty() && m_settings->isSourceIgnored(record.sourceApp)) return;
     emit captured(record);
+}
+
+void WlrDataControlHelper::handleSelection(void *offerId, bool primary) {
+    Q_UNUSED(primary)
+    if (!offerId) return;
+    if (m_paused) return; // capture paused (manual or session locked)
+    if (QDateTime::currentMSecsSinceEpoch() < m_suppressUntilMs) return;
+
+    auto it = m_offers.find(offerId);
+    QStringList mimes = (it != m_offers.end()) ? it->mimes : QStringList{};
+    auto offerIt = m_offerObjects.find(offerId);
+    if (offerIt == m_offerObjects.end()) return;
+    Offer *offerWrap = offerIt.value();
+    if (!offerWrap) return;
+
+    auto *native = qGuiApp->nativeInterface<QNativeInterface::QWaylandApplication>();
+    struct wl_display *display = native ? native->display() : nullptr;
+    if (!display) return;
+
+    const qint64 maxBytes = m_settings ? m_settings->maxItemBytes() : kMaxOfferBytes;
+    const qint64 cap = (maxBytes > 0) ? qMin(maxBytes, kMaxOfferBytes) : kMaxOfferBytes;
+
+    const auto typeEnabled = [this](ContentType type) {
+        return !m_settings || m_settings->captureTypeEnabled(type);
+    };
+    // The record this selection would produce follows the same priority as the
+    // build below; if the user disabled that type, stop before reading any
+    // payload (pipe polls block the GUI thread and the record would be dropped).
+    if (!mimes.isEmpty()) {
+        ContentType primaryType = ContentType::Text;
+        const auto advertises = [&mimes](const char *mime) {
+            for (const QString &m : mimes)
+                if (m == QLatin1String(mime))
+                    return true;
+            return false;
+        };
+        if (advertises("image/png") || advertises("image/jpeg"))
+            primaryType = ContentType::Image;
+        else if (advertises("text/uri-list"))
+            primaryType = ContentType::Files;
+        else if (advertises("text/html"))
+            primaryType = ContentType::RichText;
+        if (!typeEnabled(primaryType))
+            return;
+    }
+
+    // All mime reads of one selection share a single budget: the pipe poll
+    // blocks the GUI thread, so it must not be multiplied by the number of
+    // advertised mime types.
+    const qint64 readDeadlineMs = QDateTime::currentMSecsSinceEpoch() + kReadBudgetMs;
+    auto readMimeSync = [&](const QString &mimeStr) -> QByteArray {
+        if (QDateTime::currentMSecsSinceEpoch() >= readDeadlineMs) return {};
+        if (!mimes.isEmpty()) {
+            bool found = false;
+            for (const QString &m : std::as_const(mimes))
+                if (m == mimeStr || m.startsWith(mimeStr)) { found = true; break; }
+            if (!found) return {};
+        }
+        int pipefd[2];
+        if (pipe(pipefd) != 0) return {};
+        fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
+        offerWrap->receive(mimeStr, pipefd[1]);
+        close(pipefd[1]);
+        wl_display_flush(display);
+        QByteArray out; out.reserve(4096);
+        while (out.size() < cap) {
+            struct pollfd pfd; pfd.fd = pipefd[0]; pfd.events = POLLIN; pfd.revents = 0;
+            const int ret = poll(&pfd, 1, 80);
+            if (ret > 0) {
+                if (pfd.revents & POLLIN) {
+                    char buf[8192];
+                    ssize_t n = read(pipefd[0], buf, sizeof(buf));
+                    if (n > 0) {
+                        const qint64 rem = cap - out.size();
+                        if (n > rem) n = rem;
+                        out.append(buf, n);
+                        if (out.size() >= cap) break;
+                        continue;
+                    }
+                    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                        // Spurious wakeup on a non-blocking pipe; keep waiting.
+                    } else {
+                        break; // EOF (0) or hard read error: the writer is done.
+                    }
+                } else if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) {
+                    break; // writer closed and nothing left to read
+                }
+            } else if (ret < 0 && errno != EINTR) {
+                break; // poll error
+            }
+            if (display) wl_display_dispatch_pending(display);
+            if (QDateTime::currentMSecsSinceEpoch() >= readDeadlineMs) break;
+        }
+        close(pipefd[0]);
+        return out;
+    };
+
+    QMimeData *mimeData = new QMimeData;
+    bool hasData = false;
+
+    QByteArray uriData = typeEnabled(ContentType::Files) ? readMimeSync(QStringLiteral("text/uri-list")) : QByteArray();
+    if (!uriData.isEmpty()) {
+        QList<QUrl> urls;
+        const QString text = QString::fromUtf8(uriData);
+        for (const QString &line : text.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+            const QString t = line.trimmed();
+            if (t.startsWith(QLatin1Char('#'))) continue;
+            QUrl u(t);
+            if (u.isValid()) urls.append(u);
+        }
+        if (!urls.isEmpty()) { mimeData->setUrls(urls); hasData = true; }
+    }
+
+    QByteArray imgPng = typeEnabled(ContentType::Image) ? readMimeSync(QStringLiteral("image/png")) : QByteArray();
+    if (!imgPng.isEmpty()) {
+        QImage img = QImage::fromData(imgPng, "PNG");
+        if (!img.isNull()) { mimeData->setImageData(img); hasData = true; }
+    }
+    if (!hasData && typeEnabled(ContentType::Image)) {
+        QByteArray imgJpeg = readMimeSync(QStringLiteral("image/jpeg"));
+        if (!imgJpeg.isEmpty()) {
+            QImage img = QImage::fromData(imgJpeg, "JPEG");
+            if (!img.isNull()) { mimeData->setImageData(img); hasData = true; }
+        }
+    }
+
+    // Plain text is read before HTML: it feeds the preview and the
+    // sensitive-data policy, so a slow/large HTML payload must never starve
+    // it under the shared read budget.
+    QByteArray textData;
+    if (typeEnabled(ContentType::Text)) {
+        textData = readMimeSync(QStringLiteral("text/plain;charset=utf-8"));
+        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("text/plain"));
+        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("UTF8_STRING"));
+        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("TEXT"));
+        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("STRING"));
+    }
+    if (!textData.isEmpty()) { mimeData->setText(QString::fromUtf8(textData)); hasData = true; }
+
+    QByteArray html = typeEnabled(ContentType::RichText) ? readMimeSync(QStringLiteral("text/html")) : QByteArray();
+    if (!html.isEmpty()) { mimeData->setHtml(QString::fromUtf8(html)); hasData = true; }
+
+    if (!hasData) { delete mimeData; return; }
+    emitRecordFromMimeData(mimeData);
+}
+
+void WlrDataControlHelper::handleExtSelection(void *offerId, bool primary) {
+    Q_UNUSED(primary)
+    if (!offerId) return;
+    if (m_paused) return; // capture paused (manual or session locked)
+    if (QDateTime::currentMSecsSinceEpoch() < m_suppressUntilMs) return;
+
+    auto it = m_extOffers.find(offerId);
+    QStringList mimes = (it != m_extOffers.end()) ? it->mimes : QStringList{};
+    auto offerIt = m_extOfferObjects.find(offerId);
+    if (offerIt == m_extOfferObjects.end()) return;
+    ExtOffer *offerWrap = offerIt.value();
+    if (!offerWrap) return;
+
+    auto *native = qGuiApp->nativeInterface<QNativeInterface::QWaylandApplication>();
+    struct wl_display *display = native ? native->display() : nullptr;
+    if (!display) return;
+
+    const qint64 maxBytes = m_settings ? m_settings->maxItemBytes() : kMaxOfferBytes;
+    const qint64 cap = (maxBytes > 0) ? qMin(maxBytes, kMaxOfferBytes) : kMaxOfferBytes;
+
+    const auto typeEnabled = [this](ContentType type) {
+        return !m_settings || m_settings->captureTypeEnabled(type);
+    };
+    if (!mimes.isEmpty()) {
+        ContentType primaryType = ContentType::Text;
+        const auto advertises = [&mimes](const char *mime) {
+            for (const QString &m : mimes)
+                if (m == QLatin1String(mime))
+                    return true;
+            return false;
+        };
+        if (advertises("image/png") || advertises("image/jpeg"))
+            primaryType = ContentType::Image;
+        else if (advertises("text/uri-list"))
+            primaryType = ContentType::Files;
+        else if (advertises("text/html"))
+            primaryType = ContentType::RichText;
+        if (!typeEnabled(primaryType))
+            return;
+    }
+
+    const qint64 readDeadlineMs = QDateTime::currentMSecsSinceEpoch() + kReadBudgetMs;
+    auto readMimeSync = [&](const QString &mimeStr) -> QByteArray {
+        if (QDateTime::currentMSecsSinceEpoch() >= readDeadlineMs) return {};
+        if (!mimes.isEmpty()) {
+            bool found = false;
+            for (const QString &m : std::as_const(mimes))
+                if (m == mimeStr || m.startsWith(mimeStr)) { found = true; break; }
+            if (!found) return {};
+        }
+        int pipefd[2];
+        if (pipe(pipefd) != 0) return {};
+        fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
+        offerWrap->receive(mimeStr, pipefd[1]);
+        close(pipefd[1]);
+        wl_display_flush(display);
+        QByteArray out; out.reserve(4096);
+        while (out.size() < cap) {
+            struct pollfd pfd; pfd.fd = pipefd[0]; pfd.events = POLLIN; pfd.revents = 0;
+            const int ret = poll(&pfd, 1, 80);
+            if (ret > 0) {
+                if (pfd.revents & POLLIN) {
+                    char buf[8192];
+                    ssize_t n = read(pipefd[0], buf, sizeof(buf));
+                    if (n > 0) {
+                        const qint64 rem = cap - out.size();
+                        if (n > rem) n = rem;
+                        out.append(buf, n);
+                        if (out.size() >= cap) break;
+                        continue;
+                    }
+                    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                        // Spurious wakeup on a non-blocking pipe; keep waiting.
+                    } else {
+                        break; // EOF (0) or hard read error: the writer is done.
+                    }
+                } else if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) {
+                    break; // writer closed and nothing left to read
+                }
+            } else if (ret < 0 && errno != EINTR) {
+                break; // poll error
+            }
+            if (display) wl_display_dispatch_pending(display);
+            if (QDateTime::currentMSecsSinceEpoch() >= readDeadlineMs) break;
+        }
+        close(pipefd[0]);
+        return out;
+    };
+
+    QMimeData *mimeData = new QMimeData;
+    bool hasData = false;
+
+    QByteArray uriData = typeEnabled(ContentType::Files) ? readMimeSync(QStringLiteral("text/uri-list")) : QByteArray();
+    if (!uriData.isEmpty()) {
+        QList<QUrl> urls;
+        const QString text = QString::fromUtf8(uriData);
+        for (const QString &line : text.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+            const QString t = line.trimmed();
+            if (t.startsWith(QLatin1Char('#'))) continue;
+            QUrl u(t);
+            if (u.isValid()) urls.append(u);
+        }
+        if (!urls.isEmpty()) { mimeData->setUrls(urls); hasData = true; }
+    }
+
+    QByteArray imgPng = typeEnabled(ContentType::Image) ? readMimeSync(QStringLiteral("image/png")) : QByteArray();
+    if (!imgPng.isEmpty()) {
+        QImage img = QImage::fromData(imgPng, "PNG");
+        if (!img.isNull()) { mimeData->setImageData(img); hasData = true; }
+    }
+    if (!hasData && typeEnabled(ContentType::Image)) {
+        QByteArray imgJpeg = readMimeSync(QStringLiteral("image/jpeg"));
+        if (!imgJpeg.isEmpty()) {
+            QImage img = QImage::fromData(imgJpeg, "JPEG");
+            if (!img.isNull()) { mimeData->setImageData(img); hasData = true; }
+        }
+    }
+
+    // Plain text is read before HTML: it feeds the preview and the
+    // sensitive-data policy, so a slow/large HTML payload must never starve
+    // it under the shared read budget.
+    QByteArray textData;
+    if (typeEnabled(ContentType::Text)) {
+        textData = readMimeSync(QStringLiteral("text/plain;charset=utf-8"));
+        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("text/plain"));
+        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("UTF8_STRING"));
+        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("TEXT"));
+        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("STRING"));
+    }
+    if (!textData.isEmpty()) { mimeData->setText(QString::fromUtf8(textData)); hasData = true; }
+
+    QByteArray html = typeEnabled(ContentType::RichText) ? readMimeSync(QStringLiteral("text/html")) : QByteArray();
+    if (!html.isEmpty()) { mimeData->setHtml(QString::fromUtf8(html)); hasData = true; }
+
+    if (!hasData) { delete mimeData; return; }
+    emitRecordFromMimeData(mimeData);
 }
 
 #include "WlrDataControlHelper.moc"

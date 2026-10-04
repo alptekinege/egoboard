@@ -41,7 +41,7 @@ The `eb ` KRunner trigger searches history with per-match actions (paste/copy/pi
 ## Platform notes
 
 - **X11**: active-window tracking via `_NET_WM_PID`; paste via XTest key injection (`xdotool` fallback).
-- **Wayland**: focus-free capture via `wlr-data-control` where the compositor exposes it (QClipboard polling fallback); paste shows a “press Ctrl+V” notification — or, opt-in, asks the compositor to press it through the desktop portal (Settings ▸ General ▸ Pasting; Plasma prompts for permission on first use; the notification fallback always stays).
+- **Wayland**: focus-free capture via `ext-data-control` (current KWin) / `wlr-data-control` (wlroots compositors) where the compositor exposes either (QClipboard fallback, focused-window only); paste shows a “press Ctrl+V” notification — or, opt-in, asks the compositor to press it through the desktop portal (Settings ▸ General ▸ Pasting; Plasma prompts for permission on first use; the notification fallback always stays).
 - **Screencast**: best-effort PipeWire detection (optional build input) drives the status indicator + preview auto-blur; without it nothing changes.
 - **OCR** needs `tesseract` (+ language data); without it images simply carry no recognized text.
 

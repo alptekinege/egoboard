@@ -162,7 +162,8 @@ target_include_directories(egoboard PRIVATE
 qt_generate_wayland_protocol_client_sources(egoboard
     FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/protocols/wlr-foreign-toplevel-management-unstable-v1.xml
-        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/protocols/wlr-data-control-unstable-v1.xml)
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/protocols/wlr-data-control-unstable-v1.xml
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/protocols/ext-data-control-v1.xml)
 target_include_directories(egoboard PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 
 target_link_libraries(egoboard PRIVATE

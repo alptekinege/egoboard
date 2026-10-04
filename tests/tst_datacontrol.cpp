@@ -50,7 +50,7 @@ void TestDataControl::diagnosticsContainsPlatform()
     const QString plat = WlrDataControlHelper::platformName();
     if (!plat.isEmpty())
         QVERIFY(diag.contains(plat, Qt::CaseInsensitive));
-    QVERIFY(diag.contains(QStringLiteral("wlr-data-control"), Qt::CaseInsensitive));
+    QVERIFY(diag.contains(QStringLiteral("data-control"), Qt::CaseInsensitive));
 }
 
 void TestDataControl::startStopNoCrashOffscreen()

@@ -126,7 +126,9 @@ if(TARGET PkgConfig::WAYLAND_CLIENT)
     target_link_libraries(tst_datacontrol PRIVATE PkgConfig::WAYLAND_CLIENT)
 endif()
 qt_generate_wayland_protocol_client_sources(tst_datacontrol
-    FILES ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/protocols/wlr-data-control-unstable-v1.xml)
+    FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/protocols/wlr-data-control-unstable-v1.xml
+        ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/protocols/ext-data-control-v1.xml)
 target_compile_options(tst_datacontrol PRIVATE -Wall -Wextra)
 add_test(NAME tst_datacontrol COMMAND tst_datacontrol)
 
