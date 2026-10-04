@@ -97,17 +97,12 @@ AboutInfo aboutInfo(const QString &version)
 QListWidget *createSidebar(QWidget *parent)
 {
     auto *sidebar = new QListWidget(parent);
-    sidebar->setViewMode(QListView::IconMode);
+    sidebar->setViewMode(QListView::ListMode);
     sidebar->setFlow(QListView::TopToBottom);
     sidebar->setMovement(QListView::Static);
     sidebar->setWrapping(false);
     sidebar->setResizeMode(QListView::Adjust);
-    // No setUniformItemSizes: that flag is for huge virtualized lists (the
-    // history view). On this 12-row IconMode sidebar it forces every label
-    // into the first row's narrow text rect, eliding all of them.
-    sidebar->setIconSize(QSize(28, 28));
-    sidebar->setGridSize(QSize(146, 64));
-    sidebar->setWordWrap(true);
+    sidebar->setIconSize(QSize(kSidebarIconSize, kSidebarIconSize));
     sidebar->setFixedWidth(kSidebarWideWidth);
     sidebar->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     sidebar->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
@@ -119,19 +114,28 @@ void populateSidebar(QListWidget *sidebar)
 {
     if (!sidebar)
         return;
+    // Last-resort icon when the active theme lacks a page icon: a blank
+    // hole in the list reads as broken, so fall back instead of showing
+    // nothing.
+    const QIcon missingIcon =
+        QIcon::fromTheme(QStringLiteral("preferences-other"));
     for (const SidebarRow &row : sidebarRows()) {
         if (row.header) {
             auto *header = new QListWidgetItem(row.label, sidebar);
-            header->setFlags(Qt::NoItemFlags); // section title: visible, never current
-            header->setTextAlignment(Qt::AlignHCenter);
+            // Enabled but never selectable/current: NoItemFlags would render
+            // the title with the disabled (washed-out) palette.
+            header->setFlags(Qt::ItemIsEnabled);
             QFont headerFont = header->font();
             headerFont.setWeight(QFont::DemiBold);
             header->setFont(headerFont);
             continue;
         }
-        auto *item =
-            new QListWidgetItem(QIcon::fromTheme(row.iconName), row.label, sidebar);
-        item->setTextAlignment(Qt::AlignHCenter);
+        QIcon icon = QIcon::fromTheme(row.iconName);
+        if (icon.isNull())
+            icon = missingIcon;
+        // ListMode rows are icon-left/label-right with the default (left)
+        // alignment — full-width rows on every style.
+        new QListWidgetItem(icon, row.label, sidebar);
     }
 }
 

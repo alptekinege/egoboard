@@ -265,12 +265,18 @@ void UiHelpers::applySidebarMode(QListWidget *sidebar, QBoxLayout *content, bool
         content->setDirection(QBoxLayout::TopToBottom);
         sidebar->setFlow(QListView::LeftToRight);
         sidebar->setWrapping(false);
-        // One strip row tall, plus room for the horizontal scrollbar that
-        // appears when the pages overflow the strip width.
+        // One strip row tall, plus room for the frame and the horizontal
+        // scrollbar that appears when the pages overflow the strip width.
+        // Rows size from the font + icon (ListMode), so ask the view.
+        int rowH = sidebar->sizeHintForRow(0);
+        if (rowH <= 0)
+            rowH = sidebar->iconSize().height() + 2 * DesignTokens::SpaceXs;
+        if (rowH <= 0)
+            rowH = DesignTokens::TouchTargetCompact;
         const int bar = sidebar->style()
             ? sidebar->style()->pixelMetric(QStyle::PM_ScrollBarExtent)
             : 0;
-        sidebar->setFixedHeight(sidebar->gridSize().height() + bar);
+        sidebar->setFixedHeight(rowH + bar + 2 * sidebar->frameWidth());
         sidebar->setMinimumWidth(0);
         sidebar->setMaximumWidth(QWIDGETSIZE_MAX); // release the sidebar clamp
         sidebar->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);

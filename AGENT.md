@@ -188,8 +188,8 @@ The codebase must support both X11 and Wayland Plasma sessions cleanly:
 - **Native Plasma Look**: Do not hardcode custom color stylesheets (`setStyleSheet`) that break dark/light mode switching. Rely on `QPalette` and system Qt styles.
 - **Themed Icons**: Load icons via `QIcon::fromTheme(QStringLiteral("icon-name"))`.
 - **High-Performance Item Delegate**: `EntryDelegate` must keep item layouts lightweight, pre-cache group badge colors, and handle selection/hover rendering via `initStyleOption`.
-- **Virtualized Lists**: Set `m_list->setUniformItemSizes(true)` and `m_list->setLayoutMode(QListView::Batched)` for smooth scrolling over tens of thousands of items. Reserve that flag for huge virtualized views — on small `IconMode` sidebars it elides every label.
-- **Small IconMode Sidebars**: Build them from a shared factory (e.g. `SettingsStructure::createSidebar`/`populateSidebar`) so dialog and tests share one source; set explicit `AlignHCenter` on rows so icons/labels stay centered on every style.
+- **Virtualized Lists**: Set `m_list->setUniformItemSizes(true)` and `m_list->setLayoutMode(QListView::Batched)` for smooth scrolling over tens of thousands of items. Reserve that flag for huge virtualized views — never for the settings sidebar.
+- **Settings Sidebar**: Build it from the shared factory (`SettingsStructure::createSidebar`/`populateSidebar`) so the dialog and the tests share one source — a `ListMode` list with icon-left rows (an `IconMode` icon-on-top grid renders ragged content-width rows under Breeze).
 
 ---
 

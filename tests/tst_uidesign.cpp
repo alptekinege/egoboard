@@ -146,7 +146,8 @@ private slots:
     void imageExportDialogDefaultsToSelection();
     void settingsSidebarPlanGroupsNormalAndAdvanced();
     void settingsSidebarLabelsStayFullyReadable();
-    void settingsSidebarItemsAreCentered();
+    void settingsSidebarItemsAreLeftAligned();
+    void settingsSidebarHeaderIsASectionTitle();
     void settingsSidebarFilterKeepsHeadersWithMatches();
     void aboutInfoCarriesVersionLicenseAndLocalNote();
 };
@@ -826,43 +827,39 @@ void TestUiDesign::settingsNarrowLayoutFollowsToken()
 
 void TestUiDesign::sidebarModeSwitchesDirectionAndFlow()
 {
-    // U14 responsive narrow: the shared helper turns a vertical icon sidebar
+    // U14 responsive narrow: the shared helper turns the vertical sidebar
     // into a horizontal top strip and back, releasing the width clamp in
     // narrow mode and restoring it in wide mode. Idempotent.
     QWidget window;
     auto *content = new QHBoxLayout(&window);
     auto *sidebar = new QListWidget(&window);
-    sidebar->setViewMode(QListView::IconMode);
-    sidebar->setFlow(QListView::TopToBottom);
-    sidebar->setGridSize(QSize(146, 64));
-    sidebar->setFixedWidth(148);
-    sidebar->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    sidebar->setViewMode(QListView::ListMode);
     for (int i = 0; i < 3; ++i)
         new QListWidgetItem(QStringLiteral("Page %1").arg(i), sidebar);
     auto *stack = new QStackedWidget(&window);
     content->addWidget(sidebar);
     content->addWidget(stack, 1);
 
-    UiHelpers::applySidebarMode(sidebar, content, true, 148);
+    UiHelpers::applySidebarMode(sidebar, content, true, 200);
     QCOMPARE(content->direction(), QBoxLayout::TopToBottom);
     QCOMPARE(sidebar->flow(), QListView::LeftToRight);
     QCOMPARE(sidebar->horizontalScrollBarPolicy(), Qt::ScrollBarAsNeeded);
     QCOMPARE(sidebar->verticalScrollBarPolicy(), Qt::ScrollBarAlwaysOff);
-    QVERIFY(sidebar->maximumWidth() > 600); // 148 px clamp released
+    QVERIFY(sidebar->maximumWidth() > 600); // 200 px clamp released
     QVERIFY(sidebar->minimumHeight() > 0); // one strip row tall
 
-    UiHelpers::applySidebarMode(sidebar, content, false, 148);
+    UiHelpers::applySidebarMode(sidebar, content, false, 200);
     QCOMPARE(content->direction(), QBoxLayout::LeftToRight);
     QCOMPARE(sidebar->flow(), QListView::TopToBottom);
     QCOMPARE(sidebar->horizontalScrollBarPolicy(), Qt::ScrollBarAlwaysOff);
-    QCOMPARE(sidebar->minimumWidth(), 148);
-    QCOMPARE(sidebar->maximumWidth(), 148);
+    QCOMPARE(sidebar->minimumWidth(), 200);
+    QCOMPARE(sidebar->maximumWidth(), 200);
 
     // Re-applying the same mode is a no-op (resize churn is harmless).
-    UiHelpers::applySidebarMode(sidebar, content, false, 148);
+    UiHelpers::applySidebarMode(sidebar, content, false, 200);
     QCOMPARE(content->direction(), QBoxLayout::LeftToRight);
     QCOMPARE(sidebar->flow(), QListView::TopToBottom);
-    QCOMPARE(sidebar->maximumWidth(), 148);
+    QCOMPARE(sidebar->maximumWidth(), 200);
 }
 
 namespace {
@@ -1481,40 +1478,64 @@ void TestUiDesign::settingsSidebarPlanGroupsNormalAndAdvanced()
 
 void TestUiDesign::settingsSidebarLabelsStayFullyReadable()
 {
-    // Regression: setUniformItemSizes on this IconMode sidebar forced every
-    // label into the first row's narrow text rect ("Gene…", "Searc…" —
-    // reproduced offscreen under Fusion and Breeze). The factory must leave
-    // it off, and every plan label must fit the cell (wrapping allowed).
+    // Regression: the old IconMode grid rendered ragged content-width rows
+    // hugging the left edge under Breeze instead of a uniform column
+    // (reproduced offscreen). The sidebar is a ListMode list now, and every
+    // page label fits on one line next to its icon at the default font.
     QListWidget *sidebar = SettingsStructure::createSidebar();
     QVERIFY(sidebar);
-    QVERIFY(!sidebar->uniformItemSizes());
-    QCOMPARE(sidebar->viewMode(), QListView::IconMode);
-    QCOMPARE(sidebar->gridSize(), QSize(146, 64));
+    QCOMPARE(sidebar->viewMode(), QListView::ListMode);
     QCOMPARE(sidebar->minimumWidth(), sidebar->maximumWidth());
+    QCOMPARE(sidebar->minimumWidth(), SettingsStructure::kSidebarWideWidth);
     const QFontMetrics metrics(sidebar->font());
-    const int cellWidth = sidebar->gridSize().width();
+    int widest = 0;
     for (const SettingsStructure::SidebarRow &row : SettingsStructure::sidebarRows()) {
-        if (metrics.horizontalAdvance(row.label) <= cellWidth)
-            continue; // fits on one line
-        // Otherwise every whitespace-separated word must fit its own line.
-        for (const QString &word : row.label.split(QLatin1Char(' '))) {
-            QVERIFY2(metrics.horizontalAdvance(word) <= cellWidth, qPrintable(row.label));
-        }
+        if (row.header)
+            continue;
+        widest = qMax(widest, metrics.horizontalAdvance(row.label));
     }
+    const int needed = widest + sidebar->iconSize().width() + 8 + 16;
+    QVERIFY2(needed <= SettingsStructure::kSidebarWideWidth,
+             qPrintable(QString::number(needed)));
+    SettingsStructure::populateSidebar(sidebar);
+    QVERIFY(sidebar->sizeHintForColumn(0) <= SettingsStructure::kSidebarWideWidth);
     sidebar->deleteLater();
 }
 
-void TestUiDesign::settingsSidebarItemsAreCentered()
+void TestUiDesign::settingsSidebarItemsAreLeftAligned()
 {
-    // IconMode centering varies by style — pin it explicitly on every row
-    // (icons follow the centered text block), headers included.
+    // ListMode rows are icon-left/label-right: the default (left) alignment
+    // on every row, headers included — full-width rows on every style.
     QListWidget *sidebar = SettingsStructure::createSidebar();
     SettingsStructure::populateSidebar(sidebar);
     QCOMPARE(sidebar->count(), SettingsStructure::sidebarRows().size());
     for (int r = 0; r < sidebar->count(); ++r) {
         // Note: QListWidgetItem::textAlignment() returns int, not Qt::Alignment.
         const int alignment = sidebar->item(r)->textAlignment();
-        QVERIFY2(alignment & Qt::AlignHCenter, qPrintable(sidebar->item(r)->text()));
+        QVERIFY2(!(alignment & Qt::AlignHCenter), qPrintable(sidebar->item(r)->text()));
+    }
+    sidebar->deleteLater();
+}
+
+void TestUiDesign::settingsSidebarHeaderIsASectionTitle()
+{
+    // The "Advanced" row is a section title, not a page: no icon, bold,
+    // enabled but never selectable — never a washed-out pseudo-page.
+    QListWidget *sidebar = SettingsStructure::createSidebar();
+    SettingsStructure::populateSidebar(sidebar);
+    const QVector<SettingsStructure::SidebarRow> rows = SettingsStructure::sidebarRows();
+    QCOMPARE(sidebar->count(), rows.size());
+    for (int r = 0; r < sidebar->count(); ++r) {
+        QListWidgetItem *item = sidebar->item(r);
+        QVERIFY2(item != nullptr, qPrintable(QString::number(r)));
+        QVERIFY2(item->flags() & Qt::ItemIsEnabled, qPrintable(item->text()));
+        if (rows.at(r).header) {
+            QVERIFY2(!(item->flags() & Qt::ItemIsSelectable), qPrintable(item->text()));
+            QVERIFY2(item->icon().isNull(), qPrintable(item->text()));
+            QCOMPARE(item->font().weight(), QFont::DemiBold);
+        } else {
+            QVERIFY2(item->flags() & Qt::ItemIsSelectable, qPrintable(item->text()));
+        }
     }
     sidebar->deleteLater();
 }

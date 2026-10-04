@@ -29,7 +29,7 @@ class QStackedWidget;
 class QTextBrowser;
 class QVBoxLayout;
 
-// Detailed settings dialog — 11 pages in a vertical icon+label sidebar, grouped
+// Detailed settings dialog — 11 pages in a vertical icon-left list sidebar, grouped
 // into Normal (General / Capture / History / Usage / Shortcuts / Storage),
 // Advanced (Privacy / Search & Preview / Automation / Diagnostics) and About.
 // Every knob is exposed with live diagnostics, all local, no network.

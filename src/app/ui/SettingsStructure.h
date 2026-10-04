@@ -16,8 +16,12 @@ class QWidget;
 namespace SettingsStructure {
 
 // Wide-mode sidebar column width, shared by the factory clamp and the
-// dialog's responsive restore path.
-inline constexpr int kSidebarWideWidth = 148;
+// dialog's responsive restore path. Fits the longest page label
+// ("Search & Preview") next to its icon on one line at the default font.
+inline constexpr int kSidebarWideWidth = 200;
+
+// Page-row icon size (list rows, icon on the left).
+inline constexpr int kSidebarIconSize = 22;
 
 // One sidebar row. Headers are section titles (never selectable, no page);
 // pages carry their index into the dialog's builder order below.
@@ -47,15 +51,17 @@ struct AboutInfo {
     QStringList paragraphs; // short description, license, local-only note
 };
 
-// The settings sidebar itself (empty): icon-on-top/label-below items in a
-// fixed-width column. Single source of truth for the view config — the dialog
-// and the readability tests share it. NOTE: uniform item sizes stay OFF on
-// purpose (see the dialog note): that flag is for huge virtualized lists and
-// elides every label here.
+// The settings sidebar itself (empty): full-width list rows, icon on the
+// left, label on the right. Single source of truth for the view config —
+// the dialog and the readability tests share it. NOTE: this used to be an
+// IconMode icon-on-top grid, but Breeze lays IconMode cells out as narrow
+// content-width rects hugging the left edge (ragged, uneven rows) instead
+// of the intended uniform centered column — reproduced offscreen under
+// Breeze. The list layout renders identical full-width rows on every style.
 QListWidget *createSidebar(QWidget *parent = nullptr);
 // Fills an empty sidebar with every plan row in order (headers + pages).
-// Every row is explicitly center-aligned — IconMode centering otherwise
-// varies by style and leaves icons/labels left-anchored on some setups.
+// Headers are plain section titles (no icon, bold, never selectable);
+// pages carry the theme icon on the left.
 void populateSidebar(QListWidget *sidebar);
 
 // Pure: the version comes from the caller (EGOBOARD_VERSION at runtime,

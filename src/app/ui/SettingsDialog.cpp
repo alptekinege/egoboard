@@ -202,7 +202,7 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
     layout->addLayout(searchRow);
     connect(m_search, &QLineEdit::textChanged, this, &SettingsDialog::applySettingsSearch);
 
-    // Sidebar + page stack: icon-on-top, label-below items stacked vertically
+    // Sidebar + page stack: full-width icon-left list rows stacked vertically
     // (settings sidebar style) instead of a rotated west tab column.
     // m_content flips to a column with a horizontal top strip under the
     // collapse token (U14 responsive narrow layout).
@@ -223,7 +223,7 @@ SettingsDialog::SettingsDialog(ApplicationContext &context, QWidget *parent)
           << buildAboutPage();
     m_sidebarToStack.clear();
     const QVector<SettingsStructure::SidebarRow> plan = SettingsStructure::sidebarRows();
-    SettingsStructure::populateSidebar(sidebar); // centered rows in plan order
+    SettingsStructure::populateSidebar(sidebar); // section rows in plan order
     Q_ASSERT(plan.size() == m_sidebar->count());
     for (const SettingsStructure::SidebarRow &row : plan) {
         if (row.header) {
