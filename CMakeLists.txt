@@ -27,8 +27,15 @@ find_package(KF6WindowSystem 6.0 REQUIRED)
 find_package(KF6XmlGui 6.0 REQUIRED)
 
 # ECM provides FindWaylandScanner (the Wayland::Scanner target required by
-# qt_generate_wayland_protocol_client_sources).
-find_package(ECM REQUIRED NO_MODULE PATHS ${ECM_PATH} /usr/share/ECM)
+# qt_generate_wayland_protocol_client_sources). ECM_PATH is an explicit local
+# override only: the environment is never trusted for module lookup, so a
+# poisoned ECM_PATH cannot inject toolchain modules into the build.
+if(DEFINED ECM_PATH AND NOT ECM_PATH STREQUAL "")
+    message(WARNING "ECM_PATH override in use: ${ECM_PATH} — ensure it is trusted")
+    find_package(ECM REQUIRED NO_MODULE PATHS ${ECM_PATH} NO_DEFAULT_PATH)
+else()
+    find_package(ECM REQUIRED NO_MODULE PATHS /usr/share/ECM NO_DEFAULT_PATH)
+endif()
 list(APPEND CMAKE_MODULE_PATH "${ECM_MODULE_DIR}" "${ECM_FIND_MODULE_DIR}" /usr/share/ECM/find-modules)
 find_package(WaylandScanner REQUIRED)
 
@@ -41,7 +48,7 @@ if(PIPEWIRE_FOUND)
     set(EGOBOARD_HAVE_PIPEWIRE ON)
 endif()
 
-option(EGOBOARD_USE_SQLCIPHER "Enable SQLCipher at-rest encryption (opt-in, KWallet-held key)" OFF)
+option(EGOBOARD_USE_SQLCIPHER "Enable SQLCipher at-rest encryption (opt-in, KWallet-held key)" ON)
 
 find_package(KF6Wallet QUIET)
 if(EGOBOARD_USE_SQLCIPHER AND KF6Wallet_FOUND)
@@ -210,11 +217,17 @@ if(KF6Runner_FOUND)
     add_subdirectory(src/krunner)
 endif()
 
-# --- Warnings -----------------------------------------------------------------
+# --- Warnings + hardening --------------------------------------------------------
 
 foreach(target egoboard_core egoboard)
-    target_compile_options(${target} PRIVATE -Wall -Wextra)
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Werror=format-security
+        -fstack-protector-strong -D_FORTIFY_SOURCE=3)
 endforeach()
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    foreach(target egoboard_core egoboard)
+        target_link_options(${target} PRIVATE LINKER:-z,relro,-z,now)
+    endforeach()
+endif()
 
 # --- Tests --------------------------------------------------------------------
 

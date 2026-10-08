@@ -1831,6 +1831,7 @@ void MainWindow::exportHistoryToFormat(const QString &format)
     ExportImportManager::ExportRequest request;
     request.path = dialog.filePath();
     request.format = dialog.format();
+    request.includeSensitive = dialog.includeSensitive();
     switch (dialog.scope()) {
     case ExportImportDialogs::ExportDialog::Everything:
         request.scope = ExportImportManager::Scope::Everything;
@@ -1856,6 +1857,7 @@ void MainWindow::exportHistoryToFormat(const QString &format)
         cancel.store(true, std::memory_order_relaxed);
     });
     progressDialog.show();
+    int skippedSensitive = 0;
     const bool exported = m_ctx.io()->exportToFile(
         request, &error, &cancel, [&](int done, int total) {
             if (total > 0) {
@@ -1864,10 +1866,17 @@ void MainWindow::exportHistoryToFormat(const QString &format)
             }
             progressDialog.setLabelText(tr("Exporting… %1 of %2 entries").arg(done).arg(total));
             QApplication::processEvents();
-        });
+        }, &skippedSensitive);
     progressDialog.close();
     if (!exported)
         QMessageBox::warning(this, tr("Export failed"), error);
+    else if (skippedSensitive > 0 && !request.includeSensitive)
+        QMessageBox::information(this, tr("Export finished"),
+                                 tr("History exported to %1.\n%2 sensitive %3 skipped.")
+                                     .arg(request.path)
+                                     .arg(skippedSensitive)
+                                     .arg(skippedSensitive == 1 ? tr("entry was")
+                                                                : tr("entries were")));
     else
         QMessageBox::information(this, tr("Export finished"),
                                  tr("History exported to %1.").arg(request.path));

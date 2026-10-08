@@ -25,8 +25,10 @@ void IconThemeManager::apply(const QString &themeId)
 
     // "system" resolves to whatever Plasma has active; when nothing is
     // configured the Plasma default is used, so the UI cannot end up icon-less.
+    // resolvedId() already rejects path-like ids; isValid() ensures the theme
+    // is actually installed before it reaches QIcon.
     const QString resolved = IconThemeIndex::resolvedId(themeId);
-    const QString effective = !resolved.isEmpty() ? resolved : fallback;
+    const QString effective = IconThemeIndex::isValid(resolved) ? resolved : fallback;
     if (!effective.isEmpty())
         QIcon::setThemeName(effective);
 }

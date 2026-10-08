@@ -50,13 +50,27 @@ log_info "Starting Egoboard AppImage packaging for architecture ${BOLD}${ARCH}${
 mkdir -p "${TOOLS_DIR}" "${OUTPUT_DIR}"
 
 APPIMAGETOOL="${TOOLS_DIR}/appimagetool"
+# Pinned (immutable) release — never `continuous` (mutable tag = build-host RCE
+# on tag/account compromise). Bump both vars together on upgrade; publish the
+# hash alongside the release notes.
+APPIMAGETOOL_VERSION="${APPIMAGETOOL_VERSION:-1.9.0}"
+APPIMAGETOOL_SHA256="${APPIMAGETOOL_SHA256:-}"
 if command -v appimagetool >/dev/null 2>&1; then
     APPIMAGETOOL="$(command -v appimagetool)"
 elif [ ! -f "${APPIMAGETOOL}" ]; then
-    log_info "Downloading appimagetool to ${TOOLS_DIR}..."
+    log_info "Downloading appimagetool v${APPIMAGETOOL_VERSION} to ${TOOLS_DIR}..."
     curl -fsSL -o "${APPIMAGETOOL}" \
-        "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${ARCH}.AppImage"
+        "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-${ARCH}.AppImage"
     chmod +x "${APPIMAGETOOL}"
+fi
+if [ -n "${APPIMAGETOOL_SHA256}" ] && [ -f "${APPIMAGETOOL}" ]; then
+    echo "${APPIMAGETOOL_SHA256}  ${APPIMAGETOOL}" | sha256sum -c - \
+        || { log_error "appimagetool checksum mismatch — refusing to run it."; exit 1; }
+elif [ ! -x "${APPIMAGETOOL}" ]; then
+    log_error "appimagetool not found."
+    exit 1
+elif [ -z "${APPIMAGETOOL_SHA256}" ]; then
+    log_warn "APPIMAGETOOL_SHA256 unset — skipping checksum verification (pin it for release builds)."
 fi
 
 # ------------------------------------------------------------------------------

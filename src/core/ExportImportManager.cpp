@@ -10,6 +10,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QStandardPaths>
@@ -48,6 +49,9 @@ bool writeTextFile(const QString &path, const QString &content, QString *error)
             *error = QObject::tr("Write to %1 failed: %2").arg(path, file.errorString());
         return false;
     }
+    file.close();
+    // Exports can hold passwords: never leave them world-readable.
+    QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner);
     return true;
 }
 
@@ -218,7 +222,8 @@ QString ExportImportManager::formatId(ExportFormat format)
 }
 
 bool ExportImportManager::exportToFile(const ExportRequest &request, QString *error,
-                                       std::atomic<bool> *cancel, IoProgress progress)
+                                       std::atomic<bool> *cancel, IoProgress progress,
+                                       int *skippedSensitive)
 {
     const auto isCanceled = [&] { return cancel && cancel->load(std::memory_order_relaxed); };
     if (isCanceled()) {
@@ -315,6 +320,23 @@ bool ExportImportManager::exportToFile(const ExportRequest &request, QString *er
                 progress(entries.size(), qMax(estimatedTotal, entries.size()));
         }
     }
+    // Sensitive policy: user exports leave secrets out unless explicitly
+    // opted in (mirrors the image-export gate). Backups always opt in.
+    // Filtering here keeps memberships consistent too (built from `entries`).
+    int skipped = 0;
+    if (!request.includeSensitive) {
+        QVector<ClipboardRecord> kept;
+        kept.reserve(entries.size());
+        for (const ClipboardRecord &record : entries) {
+            if (record.sensitive)
+                ++skipped;
+            else
+                kept.append(record);
+        }
+        entries = kept;
+    }
+    if (skippedSensitive)
+        *skippedSensitive = skipped;
     // Serialize phase counts on top of the gather phase so progress stays
     // monotonic even when the history changed mid-run.
     const int serializeBase = qMax(estimatedTotal, entries.size());
@@ -475,6 +497,9 @@ bool ExportImportManager::exportToFile(const ExportRequest &request, QString *er
             *error = QObject::tr("Write to %1 failed: %2").arg(request.path, file.errorString());
         return false;
     }
+    file.close();
+    // Full history (incl. secrets) as plaintext: owner-only.
+    QFile::setPermissions(request.path, QFile::ReadOwner | QFile::WriteOwner);
     return true;
 }
 
@@ -663,6 +688,7 @@ ExportImportManager::exportImages(const ImageExportRequest &request,
             return false;
         }
         file.close();
+        QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner);
         ++result.exported;
         result.bytesWritten += payload.size();
         result.files.append(path);
@@ -836,13 +862,26 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode,
     ImportResult result;
     const auto isCanceled = [&] { return cancel && cancel->load(std::memory_order_relaxed); };
     QFile file(path);
+    // Bound the deserialization: a crafted multi-GB file must not OOM the GUI.
+    constexpr qint64 kMaxImportBytes = 100 * 1024 * 1024;
+    constexpr int kMaxImportEntries = 500000;
+    constexpr int kMaxBlobBytes = 10 * 1024 * 1024;
+    if (file.size() > kMaxImportBytes) {
+        result.error = tr("%1 is too large to import (%2 bytes)").arg(path).arg(file.size());
+        return result;
+    }
     if (!file.open(QIODevice::ReadOnly)) {
         result.error = tr("Cannot read %1: %2").arg(path, file.errorString());
         return result;
     }
+    const QByteArray raw = file.read(kMaxImportBytes + 1);
+    if (raw.size() > kMaxImportBytes) {
+        result.error = tr("%1 is too large to import").arg(path);
+        return result;
+    }
 
     QJsonParseError parseError{};
-    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    const QJsonDocument document = QJsonDocument::fromJson(raw, &parseError);
     if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
         result.error = tr("%1 is not a valid Egoboard export file").arg(path);
         return result;
@@ -959,6 +998,12 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode,
     };
 
     const QJsonArray entryArray = root.value(QStringLiteral("entries")).toArray();
+    if (entryArray.size() > kMaxImportEntries) {
+        if (bulk)
+            m_storage->endBulk(false);
+        result.error = tr("%1 holds too many entries (%2)").arg(path).arg(entryArray.size());
+        return result;
+    }
     QHash<QByteArray, qint64> entryIdByHash; // imported hash -> local id
     const int entryTotal = entryArray.size();
     int entryDone = 0;
@@ -979,24 +1024,37 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode,
         const QJsonObject object = value.toObject();
         ClipboardRecord record;
         record.hash = object.value(QStringLiteral("hash")).toString().toLatin1();
+        // Hash is the dedup key (bound, never interpolated): accept the
+        // historical non-hex test vectors too, but bound length so a crafted
+        // file cannot bloat memory. Empty still skips.
+        if (record.hash.isEmpty() || record.hash.size() > 256)
+            continue;
         record.timestamp = qint64(object.value(QStringLiteral("timestamp")).toDouble());
+        if (record.timestamp <= 0)
+            record.timestamp = 1;
         record.type = typeFromTag(object.value(QStringLiteral("type")).toString());
-        record.textData = object.value(QStringLiteral("text")).toString();
-        record.blobData = QByteArray::fromBase64(
-            object.value(QStringLiteral("blob")).toString().toLatin1());
+        record.textData = object.value(QStringLiteral("text")).toString().left(1024 * 1024);
+        const QString blobText = object.value(QStringLiteral("blob")).toString();
+        if (blobText.size() > (kMaxBlobBytes / 3) * 4 + 4)
+            continue; // per-entry blob cap before base64 decode
+        record.blobData = QByteArray::fromBase64(blobText.toLatin1());
+        if (record.blobData.size() > kMaxBlobBytes)
+            continue;
         record.hasBlob = !record.blobData.isEmpty();
-        record.preview = object.value(QStringLiteral("preview")).toString();
+        record.preview = object.value(QStringLiteral("preview")).toString().left(4096);
         record.sizeBytes = qint64(object.value(QStringLiteral("sizeBytes")).toDouble());
         record.pinned = object.value(QStringLiteral("pinned")).toBool(false);
         record.sensitive = object.value(QStringLiteral("sensitive")).toBool(false);
-        record.useCount = object.value(QStringLiteral("useCount")).toInt();
-        record.sourceApp = object.value(QStringLiteral("sourceApp")).toString();
-        record.sourceWindow = object.value(QStringLiteral("sourceWindow")).toString();
-        record.ocrText = object.value(QStringLiteral("ocrText")).toString();
+        record.useCount = qBound(0, object.value(QStringLiteral("useCount")).toInt(), 1000000000);
+        record.sourceApp = object.value(QStringLiteral("sourceApp")).toString().left(256);
+        record.sourceWindow = object.value(QStringLiteral("sourceWindow")).toString().left(512);
+        record.ocrText = object.value(QStringLiteral("ocrText")).toString().left(1024 * 1024);
         QStringList tagNames;
         const QJsonArray tagArray = object.value(QStringLiteral("tags")).toArray();
         for (const QJsonValue &tagValue : tagArray) {
-            const QString tag = tagValue.toString().trimmed();
+            if (tagNames.size() >= 20)
+                break;
+            const QString tag = tagValue.toString().trimmed().left(64);
             if (!tag.isEmpty())
                 tagNames.append(tag);
         }
@@ -1076,9 +1134,12 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode,
     const QJsonArray snippetArray = root.value(QStringLiteral("snippets")).toArray();
     QSet<QString> importedSnippetNames;
     for (const auto &value : snippetArray) {
+        if (importedSnippetNames.size() >= 1000)
+            break; // snippet library cap
         const QJsonObject object = value.toObject();
-        const QString name = object.value(QStringLiteral("name")).toString().trimmed();
-        const QString plainTemplate = object.value(QStringLiteral("template")).toString();
+        const QString name = object.value(QStringLiteral("name")).toString().trimmed().left(128);
+        const QString plainTemplate =
+            object.value(QStringLiteral("template")).toString().left(64 * 1024);
         if (name.isEmpty() || plainTemplate.isEmpty())
             continue;
         const QString key = name.toCaseFolded();
@@ -1116,11 +1177,19 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode,
     const QJsonArray searchArray = root.value(QStringLiteral("savedSearches")).toArray();
     for (const auto &value : searchArray) {
         const QJsonObject object = value.toObject();
-        const QString name = object.value(QStringLiteral("name")).toString().trimmed();
+        const QString name = object.value(QStringLiteral("name")).toString().trimmed().left(128);
         if (name.isEmpty())
             continue;
-        const FilterSpec filter =
+        FilterSpec filter =
             FilterSpec::fromJson(object.value(QStringLiteral("filter")).toObject());
+        // A planted /regex/ would otherwise arm ReDoS on every future fetch.
+        if (!filter.regexText.isEmpty()) {
+            if (filter.regexText.size() > 200)
+                continue;
+            const QRegularExpression re(filter.regexText);
+            if (!re.isValid())
+                continue;
+        }
         if (m_storage->addSavedSearch(name, filter) != 0)
             ++result.savedSearchesImported;
     }
@@ -1444,27 +1513,53 @@ ExportImportManager::BackupResult ExportImportManager::writeBackup(const QString
         result.error = tr("Cannot create the backup folder %1.").arg(folder);
         return result;
     }
+    // Backups hold secrets: the folder must not be world-readable.
+    QFile::setPermissions(folder, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+    if (cancel && cancel->load(std::memory_order_relaxed)) {
+        result.error = tr("Backup canceled before it started — no file was written.");
+        return result;
+    }
 
     // Millisecond precision plus a zero-padded sequence keeps name order
     // chronological even when several backups land in the same millisecond.
+    // NewOnly through the write (no exists-then-truncate window): a predicted
+    // symlink must not clobber an arbitrary user file.
     const QString stamp = QDateTime::currentDateTime().toString(
         QStringLiteral("yyyyMMdd-HHmmss-zzz"));
     QString path;
-    for (int sequence = 1;; ++sequence) {
+    QFile probe;
+    bool reserved = false;
+    for (int sequence = 1; sequence < 10000; ++sequence) {
         path = dir.filePath(QString::fromLatin1(kBackupPrefix) + stamp
                             + QStringLiteral("-%1.json").arg(sequence, 3, 10, QLatin1Char('0')));
-        if (!QFile::exists(path))
+        probe.setFileName(path);
+        if (probe.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
+            reserved = true;
+            break;
+        }
+        if (probe.error() != QFile::FileError::OpenError)
             break;
     }
+    if (!reserved) {
+        result.error = tr("Cannot create a backup file in %1: %2").arg(folder, probe.errorString());
+        return result;
+    }
+    probe.close();
+    // The NewOnly reservation above proved this path is our own inode (not a
+    // planted symlink); exportToFile truncates that same file below.
+    QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner);
 
     ExportRequest request;
     request.scope = Scope::Everything;
     request.path = path;
+    request.includeSensitive = true; // backups restore faithfully; 0600 + owned dir
     QString error;
     if (!exportToFile(request, &error, cancel, progress)) {
         result.error = error;
+        QFile::remove(path); // cancel/failure writes no file
         return result;
     }
+    QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner);
 
     result.ok = true;
     result.path = path;

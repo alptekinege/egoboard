@@ -60,5 +60,4 @@ private:
     QString m_requestPath;
     QTimer m_guard;
     QDBusInterface *m_portal = nullptr; // RemoteDesktop endpoint, owned here
-    int m_tokenSerial = 0;
 };

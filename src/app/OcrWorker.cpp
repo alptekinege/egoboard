@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QImage>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QThreadPool>
 #include <QTemporaryDir>
@@ -24,7 +25,14 @@ bool OcrWorker::isAvailable()
 
 void OcrWorker::setLanguage(const QString &lang)
 {
-    const QString v = lang.trimmed().isEmpty() ? QStringLiteral("eng") : lang.trimmed();
+    QString v = lang.trimmed().isEmpty() ? QStringLiteral("eng") : lang.trimmed();
+    // tesseract -l interprets the value as traineddata names: allow only
+    // script codes (eng, tur, deu+eng, ...) so config/import cannot load an
+    // arbitrary path like ../../tmp/evil.
+    static const QRegularExpression allowed(
+        QStringLiteral("^[A-Za-z_@-]{2,32}(\\+[A-Za-z_@-]{2,32})*$"));
+    if (!allowed.match(v).hasMatch())
+        v = QStringLiteral("eng");
     // Direct assignment is safe because recognize() snapshots these values
     // before dispatching to the thread pool.
     m_language = v;
@@ -74,8 +82,16 @@ void OcrWorker::recognize(qint64 entryId, const QImage &image)
             return;
         }
         QProcess proc;
+        // Absolute binary path (not PATH lookup): the lang value is already
+        // allowlisted above and argv form avoids any shell interpretation.
+        const QString tesseract =
+            QStandardPaths::findExecutable(QStringLiteral("tesseract"));
+        if (tesseract.isEmpty()) {
+            fail(entryId, OcrWorker::tr("tesseract not found"));
+            return;
+        }
         // --psm 6: assume uniform block of text; --oem 1: LSTM only
-        proc.start(QStringLiteral("tesseract"), {pngPath, QStringLiteral("stdout"), QStringLiteral("-l"), lang, QStringLiteral("--psm"), QStringLiteral("6"), QStringLiteral("--oem"), QStringLiteral("1")});
+        proc.start(tesseract, {pngPath, QStringLiteral("stdout"), QStringLiteral("-l"), lang, QStringLiteral("--psm"), QStringLiteral("6"), QStringLiteral("--oem"), QStringLiteral("1")});
         if (!proc.waitForStarted(2000)) {
             fail(entryId, OcrWorker::tr("tesseract failed to start"));
             return;

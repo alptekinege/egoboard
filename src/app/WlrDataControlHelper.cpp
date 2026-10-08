@@ -7,14 +7,19 @@
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDebug>
+#include <QElapsedTimer>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QMimeData>
+#include <QPointer>
 #include <QTextDocument>
 #include <QUrl>
+
+#include <QtConcurrent>
 
 #include <QtWaylandClient/QWaylandClientExtension>
 #include <qwayland-wlr-data-control-unstable-v1.h>
@@ -30,6 +35,111 @@ namespace {
 constexpr qint64 kSuppressMs = 2000;
 constexpr qint64 kMaxOfferBytes = 5 * 1024 * 1024;
 constexpr qint64 kReadBudgetMs = 1200; // total mime-read budget per selection
+constexpr qint64 kMaxImagePixels = 16 * 1024 * 1024;
+
+// Decompression guard: pipe bytes are capped, but the decoded bitmap can be
+// orders of magnitude larger (decompression bomb). Drop oversized images
+// before they reach QMimeData/storage.
+bool imageWithinBudget(const QImage &img)
+{
+    if (img.isNull())
+        return false;
+    return qint64(img.width()) * qint64(img.height()) <= kMaxImagePixels;
+}
+
+// Ordered mime candidates for one selection, mirroring the old priority:
+// uri-list, then images, then plain-text variants (first hit wins), then
+// HTML last so a slow/large HTML payload never starves the policy input.
+// Unknown advertisements (empty list) try everything gated by type flags.
+QStringList orderedMimeCandidates(bool wantFiles, bool wantImage, bool wantText,
+                                  bool wantRich, const QStringList &advertised)
+{
+    const auto advertises = [&advertised](const QString &mime) {
+        if (advertised.isEmpty())
+            return true;
+        for (const QString &m : advertised) {
+            if (m == mime || m.startsWith(mime))
+                return true;
+        }
+        return false;
+    };
+    QStringList out;
+    if (wantFiles && advertises(QStringLiteral("text/uri-list")))
+        out << QStringLiteral("text/uri-list");
+    if (wantImage) {
+        if (advertises(QStringLiteral("image/png")))
+            out << QStringLiteral("image/png");
+        if (advertises(QStringLiteral("image/jpeg")))
+            out << QStringLiteral("image/jpeg");
+    }
+    if (wantText) {
+        static const QStringList textMimes{
+            QStringLiteral("text/plain;charset=utf-8"),
+            QStringLiteral("text/plain"),
+            QStringLiteral("UTF8_STRING"),
+            QStringLiteral("TEXT"),
+            QStringLiteral("STRING"),
+        };
+        for (const QString &mime : textMimes) {
+            if (advertises(mime))
+                out << mime;
+        }
+    }
+    if (wantRich && advertises(QStringLiteral("text/html")))
+        out << QStringLiteral("text/html");
+    return out;
+}
+
+// Worker-thread pipe reader: pure POSIX poll/read, no Wayland calls, so a
+// slow-loris source blocks a pool thread instead of the GUI thread. The
+// shared budget uses a monotonic clock (immune to wall-clock jumps). Each
+// fd is closed here; the caller must not touch them after dispatch.
+QHash<QString, QByteArray> readMimeFdsOffThread(QVector<QPair<QString, int>> jobs,
+                                                qint64 cap, qint64 budgetMs)
+{
+    QHash<QString, QByteArray> out;
+    QElapsedTimer budget;
+    budget.start();
+    for (const auto &job : jobs) {
+        if (budget.elapsed() >= budgetMs)
+            break;
+        const QString mime = job.first;
+        const int fd = job.second;
+        QByteArray data;
+        data.reserve(4096);
+        while (data.size() < cap && budget.elapsed() < budgetMs) {
+            struct pollfd pfd;
+            pfd.fd = fd;
+            pfd.events = POLLIN;
+            pfd.revents = 0;
+            const int ret = poll(&pfd, 1, 80);
+            if (ret > 0) {
+                if (pfd.revents & POLLIN) {
+                    char buf[8192];
+                    const ssize_t n = read(fd, buf, sizeof(buf));
+                    if (n > 0) {
+                        const qint64 rem = cap - data.size();
+                        data.append(buf, n > rem ? rem : n);
+                        if (data.size() >= cap)
+                            break;
+                        continue;
+                    }
+                    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+                        continue; // spurious wakeup on a non-blocking pipe
+                    break; // EOF (0) or hard read error: the writer is done
+                }
+                if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL))
+                    break; // writer closed and nothing left to read
+            } else if (ret < 0 && errno != EINTR) {
+                break; // poll error
+            }
+        }
+        close(fd);
+        if (!data.isEmpty())
+            out.insert(mime, data);
+    }
+    return out;
+}
 
 QString singleLineLocal(const QString &s) {
     QString line = s.simplified();
@@ -61,10 +171,13 @@ QByteArray hashPayloadLocal(ContentType t, const QByteArray &p) {
 bool isSensitiveWithCustom(const QString &text, SettingsManager *settings) {
     if (SensitiveDataDetector::isSensitive(text)) return true;
     if (!settings) return false;
+    const QString subject = text.size() > 20000 ? text.left(20000) : text;
     const auto pats = settings->customSensitivePatterns();
     for (const QString &pat : pats) {
+        if (pat.size() > 200)
+            continue;
         QRegularExpression re(pat, QRegularExpression::CaseInsensitiveOption);
-        if (re.isValid() && re.match(text).hasMatch()) return true;
+        if (re.isValid() && re.match(subject).hasMatch()) return true;
     }
     return false;
 }
@@ -72,10 +185,13 @@ bool isSensitiveWithCustom(const QString &text, SettingsManager *settings) {
 QStringList customKinds(const QString &text, SettingsManager *settings) {
     QStringList out = SensitiveDataDetector::kinds(text);
     if (!settings) return out;
+    const QString subject = text.size() > 20000 ? text.left(20000) : text;
     const auto pats = settings->customSensitivePatterns();
     for (const QString &pat : pats) {
+        if (pat.size() > 200)
+            continue;
         QRegularExpression re(pat, QRegularExpression::CaseInsensitiveOption);
-        if (re.isValid() && re.match(text).hasMatch())
+        if (re.isValid() && re.match(subject).hasMatch())
             out << QStringLiteral("custom:%1").arg(pat.left(16));
     }
     return out;
@@ -88,6 +204,8 @@ QStringList redactCustomPatterns(QString *text, SettingsManager *settings) {
     if (!settings || !text || text->isEmpty()) return kinds;
     const auto pats = settings->customSensitivePatterns();
     for (const QString &pat : pats) {
+        if (pat.size() > 200)
+            continue;
         QRegularExpression re(pat, QRegularExpression::CaseInsensitiveOption);
         if (!re.isValid()) continue;
         QString replaced = *text;
@@ -322,6 +440,7 @@ void WlrDataControlHelper::start() {
 }
 
 void WlrDataControlHelper::stop() {
+    ++m_readGeneration; // drop any in-flight async read on completion
     destroyDevice();
     destroyExtDevice();
     if (m_manager) { m_manager->deleteLater(); m_manager = nullptr; }
@@ -374,15 +493,30 @@ void WlrDataControlHelper::tryCreateExtDevice() {
 }
 
 void WlrDataControlHelper::destroyDevice() {
-    if (m_device) { delete m_device; m_device = nullptr; }
-    qDeleteAll(m_offerObjects); m_offerObjects.clear();
+    // Never delete protocol objects synchronously inside a Wayland dispatch:
+    // defer to the next event-loop turn so in-flight offer/finished events
+    // cannot hit a freed wrapper.
+    if (m_device) {
+        auto *dead = m_device;
+        m_device = nullptr;
+        QTimer::singleShot(0, [dead] { delete dead; });
+    }
+    for (auto *offer : std::as_const(m_offerObjects))
+        QTimer::singleShot(0, [offer] { delete offer; });
+    m_offerObjects.clear();
     m_offers.clear();
     m_pendingOffer = nullptr;
 }
 
 void WlrDataControlHelper::destroyExtDevice() {
-    if (m_extDevice) { delete m_extDevice; m_extDevice = nullptr; }
-    qDeleteAll(m_extOfferObjects); m_extOfferObjects.clear();
+    if (m_extDevice) {
+        auto *dead = m_extDevice;
+        m_extDevice = nullptr;
+        QTimer::singleShot(0, [dead] { delete dead; });
+    }
+    for (auto *offer : std::as_const(m_extOfferObjects))
+        QTimer::singleShot(0, [offer] { delete offer; });
+    m_extOfferObjects.clear();
     m_extOffers.clear();
     m_extPendingOffer = nullptr;
 }
@@ -390,13 +524,16 @@ void WlrDataControlHelper::destroyExtDevice() {
 void WlrDataControlHelper::onDeviceSelection(void *offerId, bool primary) {
     if (primary && !(m_settings && m_settings->monitorPrimarySelection())) return;
 
-    // A new selection invalidates every earlier offer; destroying them here
-    // (and dropping their wrappers) keeps the offer maps from growing on
-    // every copy.
+    // A new selection invalidates every earlier offer; defer-destroy them
+    // (never delete inside the protocol callback: the compositor may still
+    // deliver events for them) and drop their wrappers from the maps.
     for (auto it = m_offerObjects.begin(); it != m_offerObjects.end();) {
         if (it.key() != offerId) {
-            delete it.value();
+            auto *dead = it.value();
+            QTimer::singleShot(0, [dead] { delete dead; });
             m_offers.remove(it.key());
+            if (m_pendingOffer == it.key())
+                m_pendingOffer = nullptr;
             it = m_offerObjects.erase(it);
         } else {
             ++it;
@@ -413,8 +550,11 @@ void WlrDataControlHelper::onExtDeviceSelection(void *offerId, bool primary) {
 
     for (auto it = m_extOfferObjects.begin(); it != m_extOfferObjects.end();) {
         if (it.key() != offerId) {
-            delete it.value();
+            auto *dead = it.value();
+            QTimer::singleShot(0, [dead] { delete dead; });
             m_extOffers.remove(it.key());
+            if (m_extPendingOffer == it.key())
+                m_extPendingOffer = nullptr;
             it = m_extOfferObjects.erase(it);
         } else {
             ++it;
@@ -449,12 +589,20 @@ void WlrDataControlHelper::emitRecordFromMimeData(QMimeData *mimeData)
     if (mimeData->hasImage()) {
         QImage img = qvariant_cast<QImage>(mimeData->imageData());
         if (!img.isNull()) {
-            QByteArray png; QBuffer buf(&png); buf.open(QIODevice::WriteOnly); img.save(&buf, "PNG");
-            record.type = ContentType::Image;
-            record.sizeBytes = png.size();
-            if (maxStore <= 0 || png.size() <= maxStore) { record.blobData = png; record.hasBlob = true; record.preview = QStringLiteral("Image %1×%2 · %3").arg(img.width()).arg(img.height()).arg(png.size() < 1024 ? QStringLiteral("%1 B").arg(png.size()) : QStringLiteral("%1 kB").arg(png.size()/1024.0,0,'f',1)); }
-            else record.preview = QStringLiteral("Image %1×%2 · not stored").arg(img.width()).arg(img.height());
-            record.hash = hashPayloadLocal(ContentType::Image, png);
+            constexpr qint64 kMaxPixels = 16 * 1024 * 1024;
+            const qint64 pixels = qint64(img.width()) * qint64(img.height());
+            if (pixels <= 0 || pixels > kMaxPixels) {
+                record.type = ContentType::Image;
+                record.preview = QStringLiteral("Image %1×%2 · not stored").arg(img.width()).arg(img.height());
+                record.hash = hashPayloadLocal(ContentType::Image, QByteArray::number(pixels));
+            } else {
+                QByteArray png; QBuffer buf(&png); buf.open(QIODevice::WriteOnly); img.save(&buf, "PNG");
+                record.type = ContentType::Image;
+                record.sizeBytes = png.size();
+                if (maxStore <= 0 || png.size() <= maxStore) { record.blobData = png; record.hasBlob = true; record.preview = QStringLiteral("Image %1×%2 · %3").arg(img.width()).arg(img.height()).arg(png.size() < 1024 ? QStringLiteral("%1 B").arg(png.size()) : QStringLiteral("%1 kB").arg(png.size()/1024.0,0,'f',1)); }
+                else record.preview = QStringLiteral("Image %1×%2 · not stored").arg(img.width()).arg(img.height());
+                record.hash = hashPayloadLocal(ContentType::Image, png);
+            }
         }
     } else if (mimeData->hasUrls()) {
         const auto urls = mimeData->urls();
@@ -472,7 +620,9 @@ void WlrDataControlHelper::emitRecordFromMimeData(QMimeData *mimeData)
     }
     if (record.hash.isEmpty() && mimeData->hasHtml()) {
         QString htmlStr = mimeData->html();
-        if (maxStore > 0 && htmlStr.size() > maxStore) htmlStr.truncate(int(maxStore));
+        const qint64 safeStore = qBound<qint64>(0, maxStore, kMaxOfferBytes);
+        if (safeStore > 0 && qint64(htmlStr.size()) > safeStore)
+            htmlStr.truncate(qsizetype(safeStore));
         record.type = ContentType::RichText;
         record.textData = htmlStr; record.sizeBytes = htmlStr.toUtf8().size();
         QString plainForPreview = mimeData->text();
@@ -500,7 +650,8 @@ void WlrDataControlHelper::emitRecordFromMimeData(QMimeData *mimeData)
                 record.hash = hashPayloadLocal(ContentType::Files, record.textData.toUtf8());
             } else {
                 record.type = ContentType::Text;
-                if (maxStore > 0 && textLocal.size() > maxStore) { textLocal.truncate(int(maxStore)); record.preview = singleLineLocal(textLocal)+QStringLiteral(" …"); } else record.preview = singleLineLocal(textLocal);
+                const qint64 safeStore = qBound<qint64>(0, maxStore, kMaxOfferBytes);
+                if (safeStore > 0 && qint64(textLocal.size()) > safeStore) { textLocal.truncate(qsizetype(safeStore)); record.preview = singleLineLocal(textLocal)+QStringLiteral(" …"); } else record.preview = singleLineLocal(textLocal);
                 record.textData = textLocal; record.sizeBytes = textLocal.toUtf8().size();
                 record.hash = hashPayloadLocal(ContentType::Text, textLocal.toUtf8());
             }
@@ -539,6 +690,133 @@ void WlrDataControlHelper::emitRecordFromMimeData(QMimeData *mimeData)
     emit captured(record);
 }
 
+void WlrDataControlHelper::fetchMimesAsync(
+    const QStringList &candidates, const QStringList &advertised, qint64 cap,
+    bool wantFiles, bool wantImage, bool wantText, bool wantRich,
+    const std::function<void(const QString &, int)> &receive)
+{
+    Q_UNUSED(advertised);
+    // Pipes + receive() stay on the GUI thread (Wayland objects are not
+    // thread-safe); only the blocking poll/read loop leaves it.
+    QVector<QPair<QString, int>> jobs;
+    jobs.reserve(candidates.size());
+    for (const QString &mime : candidates) {
+        int pipefd[2];
+        if (pipe(pipefd) != 0)
+            continue;
+        fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
+        receive(mime, pipefd[1]);
+        close(pipefd[1]);
+        jobs.append({mime, pipefd[0]});
+    }
+    if (jobs.isEmpty())
+        return;
+    const int generation = ++m_readGeneration;
+    QPointer<WlrDataControlHelper> guard(this);
+    auto *watcher = new QFutureWatcher<QHash<QString, QByteArray>>(this);
+    connect(watcher, &QFutureWatcher<QHash<QString, QByteArray>>::finished, this,
+            [this, guard, watcher, cap, wantFiles, wantImage,
+             wantText, wantRich, generation]() {
+                watcher->deleteLater();
+                if (!guard || generation != m_readGeneration)
+                    return; // superseded by a newer selection, or stopped
+                if (m_paused)
+                    return;
+                if (QDateTime::currentMSecsSinceEpoch() < m_suppressUntilMs)
+                    return; // a paste-back landed while reading
+                buildMimeFromBlobs(watcher->result(), wantFiles, wantImage, wantText,
+                                   wantRich, generation);
+            });
+    watcher->setFuture(QtConcurrent::run(readMimeFdsOffThread, std::move(jobs), cap,
+                                         kReadBudgetMs));
+}
+
+void WlrDataControlHelper::buildMimeFromBlobs(const QHash<QString, QByteArray> &blobs,
+                                              bool wantFiles, bool wantImage,
+                                              bool wantText, bool wantRich,
+                                              int generation)
+{
+    if (generation != m_readGeneration)
+        return;
+    auto *mimeData = new QMimeData;
+    bool hasData = false;
+
+    if (wantFiles) {
+        const QByteArray uriData = blobs.value(QStringLiteral("text/uri-list"));
+        if (!uriData.isEmpty()) {
+            QList<QUrl> urls;
+            const QString text = QString::fromUtf8(uriData);
+            for (const QString &line : text.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+                const QString t = line.trimmed();
+                if (t.startsWith(QLatin1Char('#')))
+                    continue;
+                QUrl u(t);
+                if (u.isValid())
+                    urls.append(u);
+            }
+            if (!urls.isEmpty()) {
+                mimeData->setUrls(urls);
+                hasData = true;
+            }
+        }
+    }
+
+    if (wantImage) {
+        const QByteArray imgPng = blobs.value(QStringLiteral("image/png"));
+        if (!imgPng.isEmpty()) {
+            const QImage img = QImage::fromData(imgPng, "PNG");
+            if (imageWithinBudget(img)) {
+                mimeData->setImageData(img);
+                hasData = true;
+            }
+        }
+        if (!hasData) {
+            const QByteArray imgJpeg = blobs.value(QStringLiteral("image/jpeg"));
+            if (!imgJpeg.isEmpty()) {
+                const QImage img = QImage::fromData(imgJpeg, "JPEG");
+                if (imageWithinBudget(img)) {
+                    mimeData->setImageData(img);
+                    hasData = true;
+                }
+            }
+        }
+    }
+
+    // Plain text before HTML: it feeds the preview and the sensitive-data
+    // policy, so a slow/large HTML payload must never starve it.
+    if (wantText) {
+        static const QStringList textMimes{
+            QStringLiteral("text/plain;charset=utf-8"),
+            QStringLiteral("text/plain"),
+            QStringLiteral("UTF8_STRING"),
+            QStringLiteral("TEXT"),
+            QStringLiteral("STRING"),
+        };
+        for (const QString &mime : textMimes) {
+            const QByteArray raw = blobs.value(mime);
+            if (!raw.isEmpty()) {
+                mimeData->setText(QString::fromUtf8(raw));
+                hasData = true;
+                break;
+            }
+        }
+    }
+
+    if (wantRich) {
+        const QByteArray html = blobs.value(QStringLiteral("text/html"));
+        if (!html.isEmpty()) {
+            mimeData->setHtml(QString::fromUtf8(html));
+            hasData = true;
+        }
+    }
+
+    if (!hasData) {
+        delete mimeData;
+        return;
+    }
+    emitRecordFromMimeData(mimeData);
+}
+
 void WlrDataControlHelper::handleSelection(void *offerId, bool primary) {
     Q_UNUSED(primary)
     if (!offerId) return;
@@ -559,12 +837,16 @@ void WlrDataControlHelper::handleSelection(void *offerId, bool primary) {
     const qint64 maxBytes = m_settings ? m_settings->maxItemBytes() : kMaxOfferBytes;
     const qint64 cap = (maxBytes > 0) ? qMin(maxBytes, kMaxOfferBytes) : kMaxOfferBytes;
 
-    const auto typeEnabled = [this](ContentType type) {
-        return !m_settings || m_settings->captureTypeEnabled(type);
-    };
-    // The record this selection would produce follows the same priority as the
-    // build below; if the user disabled that type, stop before reading any
-    // payload (pipe polls block the GUI thread and the record would be dropped).
+    // Snapshot type flags on the GUI thread: SettingsManager is only ever
+    // touched here, never on the reader worker.
+    const bool wantFiles = !m_settings || m_settings->captureTypeEnabled(ContentType::Files);
+    const bool wantImage = !m_settings || m_settings->captureTypeEnabled(ContentType::Image);
+    const bool wantText = !m_settings || m_settings->captureTypeEnabled(ContentType::Text);
+    const bool wantRich =
+        !m_settings || m_settings->captureTypeEnabled(ContentType::RichText);
+    // The record this selection would produce follows the same priority as
+    // the build below; if the user disabled that type, stop before issuing
+    // any receive() (the record would be dropped anyway).
     if (!mimes.isEmpty()) {
         ContentType primaryType = ContentType::Text;
         const auto advertises = [&mimes](const char *mime) {
@@ -579,108 +861,23 @@ void WlrDataControlHelper::handleSelection(void *offerId, bool primary) {
             primaryType = ContentType::Files;
         else if (advertises("text/html"))
             primaryType = ContentType::RichText;
-        if (!typeEnabled(primaryType))
+        const bool primaryEnabled = !m_settings || m_settings->captureTypeEnabled(primaryType);
+        if (!primaryEnabled)
             return;
     }
 
-    // All mime reads of one selection share a single budget: the pipe poll
-    // blocks the GUI thread, so it must not be multiplied by the number of
-    // advertised mime types.
-    const qint64 readDeadlineMs = QDateTime::currentMSecsSinceEpoch() + kReadBudgetMs;
-    auto readMimeSync = [&](const QString &mimeStr) -> QByteArray {
-        if (QDateTime::currentMSecsSinceEpoch() >= readDeadlineMs) return {};
-        if (!mimes.isEmpty()) {
-            bool found = false;
-            for (const QString &m : std::as_const(mimes))
-                if (m == mimeStr || m.startsWith(mimeStr)) { found = true; break; }
-            if (!found) return {};
-        }
-        int pipefd[2];
-        if (pipe(pipefd) != 0) return {};
-        fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
-        offerWrap->receive(mimeStr, pipefd[1]);
-        close(pipefd[1]);
-        wl_display_flush(display);
-        QByteArray out; out.reserve(4096);
-        while (out.size() < cap) {
-            struct pollfd pfd; pfd.fd = pipefd[0]; pfd.events = POLLIN; pfd.revents = 0;
-            const int ret = poll(&pfd, 1, 80);
-            if (ret > 0) {
-                if (pfd.revents & POLLIN) {
-                    char buf[8192];
-                    ssize_t n = read(pipefd[0], buf, sizeof(buf));
-                    if (n > 0) {
-                        const qint64 rem = cap - out.size();
-                        if (n > rem) n = rem;
-                        out.append(buf, n);
-                        if (out.size() >= cap) break;
-                        continue;
-                    }
-                    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                        // Spurious wakeup on a non-blocking pipe; keep waiting.
-                    } else {
-                        break; // EOF (0) or hard read error: the writer is done.
-                    }
-                } else if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) {
-                    break; // writer closed and nothing left to read
-                }
-            } else if (ret < 0 && errno != EINTR) {
-                break; // poll error
-            }
-            if (display) wl_display_dispatch_pending(display);
-            if (QDateTime::currentMSecsSinceEpoch() >= readDeadlineMs) break;
-        }
-        close(pipefd[0]);
-        return out;
-    };
-
-    QMimeData *mimeData = new QMimeData;
-    bool hasData = false;
-
-    QByteArray uriData = typeEnabled(ContentType::Files) ? readMimeSync(QStringLiteral("text/uri-list")) : QByteArray();
-    if (!uriData.isEmpty()) {
-        QList<QUrl> urls;
-        const QString text = QString::fromUtf8(uriData);
-        for (const QString &line : text.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
-            const QString t = line.trimmed();
-            if (t.startsWith(QLatin1Char('#'))) continue;
-            QUrl u(t);
-            if (u.isValid()) urls.append(u);
-        }
-        if (!urls.isEmpty()) { mimeData->setUrls(urls); hasData = true; }
-    }
-
-    QByteArray imgPng = typeEnabled(ContentType::Image) ? readMimeSync(QStringLiteral("image/png")) : QByteArray();
-    if (!imgPng.isEmpty()) {
-        QImage img = QImage::fromData(imgPng, "PNG");
-        if (!img.isNull()) { mimeData->setImageData(img); hasData = true; }
-    }
-    if (!hasData && typeEnabled(ContentType::Image)) {
-        QByteArray imgJpeg = readMimeSync(QStringLiteral("image/jpeg"));
-        if (!imgJpeg.isEmpty()) {
-            QImage img = QImage::fromData(imgJpeg, "JPEG");
-            if (!img.isNull()) { mimeData->setImageData(img); hasData = true; }
-        }
-    }
-
-    // Plain text is read before HTML: it feeds the preview and the
-    // sensitive-data policy, so a slow/large HTML payload must never starve
-    // it under the shared read budget.
-    QByteArray textData;
-    if (typeEnabled(ContentType::Text)) {
-        textData = readMimeSync(QStringLiteral("text/plain;charset=utf-8"));
-        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("text/plain"));
-        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("UTF8_STRING"));
-        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("TEXT"));
-        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("STRING"));
-    }
-    if (!textData.isEmpty()) { mimeData->setText(QString::fromUtf8(textData)); hasData = true; }
-
-    QByteArray html = typeEnabled(ContentType::RichText) ? readMimeSync(QStringLiteral("text/html")) : QByteArray();
-    if (!html.isEmpty()) { mimeData->setHtml(QString::fromUtf8(html)); hasData = true; }
-
-    if (!hasData) { delete mimeData; return; }
-    emitRecordFromMimeData(mimeData);
+    const QStringList candidates =
+        orderedMimeCandidates(wantFiles, wantImage, wantText, wantRich, mimes);
+    if (candidates.isEmpty())
+        return;
+    // Pipes + receive() run here on the GUI thread; the blocking poll/read
+    // loop runs on a worker thread, so a slow-loris source cannot freeze
+    // the UI for the whole read budget.
+    fetchMimesAsync(candidates, mimes, cap, wantFiles, wantImage, wantText, wantRich,
+                    [offerWrap](const QString &mime, int writeFd) {
+                        offerWrap->receive(mime, writeFd);
+                    });
+    wl_display_flush(display);
 }
 
 void WlrDataControlHelper::handleExtSelection(void *offerId, bool primary) {
@@ -703,9 +900,13 @@ void WlrDataControlHelper::handleExtSelection(void *offerId, bool primary) {
     const qint64 maxBytes = m_settings ? m_settings->maxItemBytes() : kMaxOfferBytes;
     const qint64 cap = (maxBytes > 0) ? qMin(maxBytes, kMaxOfferBytes) : kMaxOfferBytes;
 
-    const auto typeEnabled = [this](ContentType type) {
-        return !m_settings || m_settings->captureTypeEnabled(type);
-    };
+    // Snapshot type flags on the GUI thread: SettingsManager is only ever
+    // touched here, never on the reader worker.
+    const bool wantFiles = !m_settings || m_settings->captureTypeEnabled(ContentType::Files);
+    const bool wantImage = !m_settings || m_settings->captureTypeEnabled(ContentType::Image);
+    const bool wantText = !m_settings || m_settings->captureTypeEnabled(ContentType::Text);
+    const bool wantRich =
+        !m_settings || m_settings->captureTypeEnabled(ContentType::RichText);
     if (!mimes.isEmpty()) {
         ContentType primaryType = ContentType::Text;
         const auto advertises = [&mimes](const char *mime) {
@@ -720,105 +921,23 @@ void WlrDataControlHelper::handleExtSelection(void *offerId, bool primary) {
             primaryType = ContentType::Files;
         else if (advertises("text/html"))
             primaryType = ContentType::RichText;
-        if (!typeEnabled(primaryType))
+        const bool primaryEnabled = !m_settings || m_settings->captureTypeEnabled(primaryType);
+        if (!primaryEnabled)
             return;
     }
 
-    const qint64 readDeadlineMs = QDateTime::currentMSecsSinceEpoch() + kReadBudgetMs;
-    auto readMimeSync = [&](const QString &mimeStr) -> QByteArray {
-        if (QDateTime::currentMSecsSinceEpoch() >= readDeadlineMs) return {};
-        if (!mimes.isEmpty()) {
-            bool found = false;
-            for (const QString &m : std::as_const(mimes))
-                if (m == mimeStr || m.startsWith(mimeStr)) { found = true; break; }
-            if (!found) return {};
-        }
-        int pipefd[2];
-        if (pipe(pipefd) != 0) return {};
-        fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
-        offerWrap->receive(mimeStr, pipefd[1]);
-        close(pipefd[1]);
-        wl_display_flush(display);
-        QByteArray out; out.reserve(4096);
-        while (out.size() < cap) {
-            struct pollfd pfd; pfd.fd = pipefd[0]; pfd.events = POLLIN; pfd.revents = 0;
-            const int ret = poll(&pfd, 1, 80);
-            if (ret > 0) {
-                if (pfd.revents & POLLIN) {
-                    char buf[8192];
-                    ssize_t n = read(pipefd[0], buf, sizeof(buf));
-                    if (n > 0) {
-                        const qint64 rem = cap - out.size();
-                        if (n > rem) n = rem;
-                        out.append(buf, n);
-                        if (out.size() >= cap) break;
-                        continue;
-                    }
-                    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                        // Spurious wakeup on a non-blocking pipe; keep waiting.
-                    } else {
-                        break; // EOF (0) or hard read error: the writer is done.
-                    }
-                } else if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) {
-                    break; // writer closed and nothing left to read
-                }
-            } else if (ret < 0 && errno != EINTR) {
-                break; // poll error
-            }
-            if (display) wl_display_dispatch_pending(display);
-            if (QDateTime::currentMSecsSinceEpoch() >= readDeadlineMs) break;
-        }
-        close(pipefd[0]);
-        return out;
-    };
-
-    QMimeData *mimeData = new QMimeData;
-    bool hasData = false;
-
-    QByteArray uriData = typeEnabled(ContentType::Files) ? readMimeSync(QStringLiteral("text/uri-list")) : QByteArray();
-    if (!uriData.isEmpty()) {
-        QList<QUrl> urls;
-        const QString text = QString::fromUtf8(uriData);
-        for (const QString &line : text.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
-            const QString t = line.trimmed();
-            if (t.startsWith(QLatin1Char('#'))) continue;
-            QUrl u(t);
-            if (u.isValid()) urls.append(u);
-        }
-        if (!urls.isEmpty()) { mimeData->setUrls(urls); hasData = true; }
-    }
-
-    QByteArray imgPng = typeEnabled(ContentType::Image) ? readMimeSync(QStringLiteral("image/png")) : QByteArray();
-    if (!imgPng.isEmpty()) {
-        QImage img = QImage::fromData(imgPng, "PNG");
-        if (!img.isNull()) { mimeData->setImageData(img); hasData = true; }
-    }
-    if (!hasData && typeEnabled(ContentType::Image)) {
-        QByteArray imgJpeg = readMimeSync(QStringLiteral("image/jpeg"));
-        if (!imgJpeg.isEmpty()) {
-            QImage img = QImage::fromData(imgJpeg, "JPEG");
-            if (!img.isNull()) { mimeData->setImageData(img); hasData = true; }
-        }
-    }
-
-    // Plain text is read before HTML: it feeds the preview and the
-    // sensitive-data policy, so a slow/large HTML payload must never starve
-    // it under the shared read budget.
-    QByteArray textData;
-    if (typeEnabled(ContentType::Text)) {
-        textData = readMimeSync(QStringLiteral("text/plain;charset=utf-8"));
-        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("text/plain"));
-        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("UTF8_STRING"));
-        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("TEXT"));
-        if (textData.isEmpty()) textData = readMimeSync(QStringLiteral("STRING"));
-    }
-    if (!textData.isEmpty()) { mimeData->setText(QString::fromUtf8(textData)); hasData = true; }
-
-    QByteArray html = typeEnabled(ContentType::RichText) ? readMimeSync(QStringLiteral("text/html")) : QByteArray();
-    if (!html.isEmpty()) { mimeData->setHtml(QString::fromUtf8(html)); hasData = true; }
-
-    if (!hasData) { delete mimeData; return; }
-    emitRecordFromMimeData(mimeData);
+    const QStringList candidates =
+        orderedMimeCandidates(wantFiles, wantImage, wantText, wantRich, mimes);
+    if (candidates.isEmpty())
+        return;
+    // Pipes + receive() run here on the GUI thread; the blocking poll/read
+    // loop runs on a worker thread, so a slow-loris source cannot freeze
+    // the UI for the whole read budget.
+    fetchMimesAsync(candidates, mimes, cap, wantFiles, wantImage, wantText, wantRich,
+                    [offerWrap](const QString &mime, int writeFd) {
+                        offerWrap->receive(mime, writeFd);
+                    });
+    wl_display_flush(display);
 }
 
 #include "WlrDataControlHelper.moc"

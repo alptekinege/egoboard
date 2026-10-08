@@ -2,6 +2,7 @@
 
 #include "EntryRow.h"
 
+#include <QDBusContext>
 #include <QObject>
 #include <QStringList>
 
@@ -17,9 +18,11 @@ class IClipboardStorage;
  *   Paste(id) / Copy(id)          → put an entry on the clipboard (Copy does not
  *                                   simulate a paste keystroke)
  *   Pin(id, pinned) / Delete(id)  → KRunner's per-match actions
- * Local only, no network.
+ * Local only, no network. Callers on the session bus must run as the same
+ * UID as this process; other UIDs are denied. Sensitive entries are never
+ * disclosed over D-Bus (skipped in Search, empty Preview).
  */
-class EgoboardDbusAdaptor : public QObject {
+class EgoboardDbusAdaptor : public QObject, protected QDBusContext {
     Q_OBJECT
     Q_CLASSINFO("D-Bus Interface", "org.egoboard.Egoboard")
 public:
@@ -56,6 +59,9 @@ public slots:
 
 private:
     bool entryExists(qint64 id) const;
+    // Same-UID peer check for session-bus callers. Direct (non-D-Bus)
+    // in-process calls are allowed (tests, local wiring).
+    bool isCallerAuthorized() const;
 
     IClipboardStorage *m_storage = nullptr;
 };

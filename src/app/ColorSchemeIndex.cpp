@@ -46,9 +46,19 @@ bool isPlainSchemeId(const QString &id)
 
 QString displayNameOfFile(const QString &path, const QString &fallback)
 {
-    return KSharedConfig::openConfig(path)
-        ->group(QStringLiteral("General"))
-        .readEntry(QStringLiteral("Name"), fallback);
+    if (QFileInfo(path).isSymLink())
+        return fallback;
+    if (QFileInfo(path).size() > 256 * 1024)
+        return fallback; // unbounded INI parse is a DoS vector
+    QString name = KSharedConfig::openConfig(path)
+                       ->group(QStringLiteral("General"))
+                       .readEntry(QStringLiteral("Name"), fallback);
+    name = name.trimmed().left(80);
+    name.removeIf([](QChar c) {
+        const ushort u = c.unicode();
+        return u < 0x20 || u == 0x7F || c == QChar(0x202E) || c == QChar(0x200B);
+    });
+    return name.isEmpty() ? fallback : name;
 }
 } // namespace
 
@@ -60,9 +70,12 @@ QVector<ColorSchemeIndex::Entry> ColorSchemeIndex::scan()
     const QStringList directories = schemeDirectories();
     for (const QString &directory : directories) {
         const QDir dir(directory);
-        const QStringList files = dir.entryList({QStringLiteral("*.colors")}, QDir::Files);
+        const QStringList files =
+            dir.entryList({QStringLiteral("*.colors")}, QDir::Files | QDir::NoSymLinks);
         for (const QString &file : files) {
             const QString path = dir.absoluteFilePath(file);
+            if (QFileInfo(path).isSymLink())
+                continue; // must not escape the color-schemes dirs
             const QString id = QFileInfo(path).completeBaseName();
             if (seenIds.contains(id))
                 continue; // a scheme earlier in the search path wins
@@ -97,8 +110,16 @@ QString ColorSchemeIndex::filePath(const QString &id)
     const QStringList directories = schemeDirectories();
     for (const QString &directory : directories) {
         const QString path = QDir(directory).filePath(fileName);
-        if (QFileInfo::exists(path))
-            return path;
+        const QFileInfo info(path);
+        if (info.isSymLink() || !QFileInfo::exists(path))
+            continue;
+        // Canonical prefix check: the file must resolve inside its scheme dir.
+        const QString canonDir = QFileInfo(directory).canonicalFilePath();
+        const QString canonFile = info.canonicalFilePath();
+        if (!canonDir.isEmpty() && !canonFile.isEmpty()
+            && !canonFile.startsWith(canonDir + QLatin1Char('/')))
+            continue;
+        return path;
     }
     return QString();
 }

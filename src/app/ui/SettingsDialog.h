@@ -61,6 +61,10 @@ private:
     // encrypt it (generating a KWallet key when needed) or decrypt it in place.
     // On failure the checkbox is reverted and the setting is left unchanged.
     void applyEncryptionSetting();
+    // Rekeys an already-encrypted database to a fresh KWallet-held key. The
+    // old key stays in the wallet until the rekey succeeds, so failure keeps
+    // the history readable with the previous key.
+    void rotateEncryptionKey();
     // Live preview of the theme combos: applies without saving, so the user sees
     // the palette/icon theme before committing; Cancel puts the stored pair back.
     void previewThemes();
@@ -185,6 +189,7 @@ private:
     QLabel *m_encryptionStatus = nullptr;
     QPushButton *m_encryptionSetupBtn = nullptr;
     QPushButton *m_encryptionRemoveBtn = nullptr;
+    QPushButton *m_encryptionRotateBtn = nullptr;
 
     // Storage page: automatic backups.
     QCheckBox *m_backupEnabled = nullptr;

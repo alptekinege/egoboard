@@ -18,6 +18,14 @@ constexpr QLatin1String kIndexFileName("index.theme");
 constexpr QLatin1String kPlasmaDefaultId("breeze");
 constexpr QLatin1String kFreedesktopFallbackId("hicolor");
 
+// Ids name a directory under the icon roots, so anything path-like is
+// refused: the id arrives from the config file and must never escape them.
+bool isPlainIconId(const QString &id)
+{
+    return !id.isEmpty() && !id.contains(QLatin1Char('/'))
+        && !id.contains(QLatin1Char('\\')) && !id.startsWith(QLatin1Char('.'));
+}
+
 // The icon theme metadata group inside a theme's index.theme.
 KConfigGroup themeGroup(const QString &directory)
 {
@@ -29,7 +37,18 @@ KConfigGroup themeGroup(const QString &directory)
 // index.theme as well, but only a cursors entry, so they are skipped.
 bool isIconTheme(const QString &directory)
 {
-    if (!QFileInfo::exists(QDir(directory).absoluteFilePath(kIndexFileName)))
+    const QFileInfo dirInfo(directory);
+    if (dirInfo.isSymLink())
+        return false; // theme dirs must not escape via symlink
+    const QString indexPath = QDir(directory).absoluteFilePath(kIndexFileName);
+    const QFileInfo indexInfo(indexPath);
+    if (indexInfo.isSymLink() || !QFileInfo::exists(indexPath))
+        return false;
+    // Canonical prefix check: the index must resolve inside the theme dir.
+    const QString canonDir = dirInfo.canonicalFilePath();
+    const QString canonIndex = indexInfo.canonicalFilePath();
+    if (!canonDir.isEmpty() && !canonIndex.isEmpty()
+        && !canonIndex.startsWith(canonDir + QLatin1Char('/')))
         return false;
     return !themeGroup(directory).readEntry(QStringLiteral("Directories"), QString()).isEmpty();
 }
@@ -37,7 +56,7 @@ bool isIconTheme(const QString &directory)
 // Directory of the first installed theme with this id, empty when there is none.
 QString themeDirectory(const QString &id)
 {
-    if (id.isEmpty() || id.contains(QLatin1Char('/')) || id.startsWith(QLatin1Char('.')))
+    if (!isPlainIconId(id))
         return QString(); // ids come from the config file and name a directory
 
     const QStringList roots = IconThemeIndex::iconDirectories();
@@ -82,15 +101,26 @@ QVector<IconThemeIndex::Entry> IconThemeIndex::scan()
     const QStringList directories = iconDirectories();
     for (const QString &root : directories) {
         const QDir dir(root);
-        const QStringList subdirs = dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        const QStringList subdirs =
+            dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
         for (const QString &id : subdirs) {
-            if (seenIds.contains(id))
+            if (!isPlainIconId(id) || seenIds.contains(id))
                 continue; // a theme earlier in the search path wins
             const QString path = dir.absoluteFilePath(id);
             if (!isIconTheme(path))
                 continue;
             seenIds.insert(id);
-            entries.append({id, themeGroup(path).readEntry(QStringLiteral("Name"), id)});
+            QString name = themeGroup(path).readEntry(QStringLiteral("Name"), id);
+            // Sanitize display names: planted index.theme files must not spoof
+            // the list with control chars, RTL overrides or huge blobs.
+            name = name.trimmed().left(80);
+            name.removeIf([](QChar c) {
+                const ushort u = c.unicode();
+                return u < 0x20 || u == 0x7F || c == QChar(0x202E) || c == QChar(0x200B);
+            });
+            if (name.isEmpty())
+                name = id;
+            entries.append({id, name});
         }
     }
 
@@ -104,10 +134,11 @@ QVector<IconThemeIndex::Entry> IconThemeIndex::scan()
 QString IconThemeIndex::resolvedId(const QString &id)
 {
     if (id != kSystemId)
-        return id;
-    return KSharedConfig::openConfig(QStringLiteral("kdeglobals"))
-        ->group(QStringLiteral("Icons"))
-        .readEntry(QStringLiteral("Theme"), QString());
+        return isPlainIconId(id) ? id : QString();
+    const QString system = KSharedConfig::openConfig(QStringLiteral("kdeglobals"))
+                               ->group(QStringLiteral("Icons"))
+                               .readEntry(QStringLiteral("Theme"), QString());
+    return isPlainIconId(system) ? system : QString();
 }
 
 QString IconThemeIndex::fallbackId()

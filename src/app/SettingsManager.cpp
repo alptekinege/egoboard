@@ -598,10 +598,22 @@ QStringList SettingsManager::customSensitivePatterns() const
 
 void SettingsManager::setCustomSensitivePatterns(const QStringList &patterns)
 {
+    // Validate on save so a planted config/import cannot arm ReDoS on the
+    // capture path: length cap + must compile.
+    constexpr int kMaxPatternChars = 200;
+    constexpr int kMaxPatternCount = 32;
     QStringList cleaned;
     for (QString p : patterns) {
         p = p.trimmed();
-        if (!p.isEmpty()) cleaned << p;
+        if (p.isEmpty() || p.size() > kMaxPatternChars)
+            continue;
+        const QRegularExpression re(p, QRegularExpression::CaseInsensitiveOption);
+        if (!re.isValid())
+            continue;
+        if (!cleaned.contains(p))
+            cleaned << p;
+        if (cleaned.size() >= kMaxPatternCount)
+            break;
     }
     m_config->group(kGroupHistory).writeEntry("CustomSensitivePatterns", cleaned);
     save();

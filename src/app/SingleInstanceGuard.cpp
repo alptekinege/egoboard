@@ -1,6 +1,7 @@
 #include "SingleInstanceGuard.h"
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QLocalSocket>
 
@@ -16,7 +17,9 @@ SingleInstanceGuard::~SingleInstanceGuard() = default;
 
 bool SingleInstanceGuard::tryLock()
 {
-    QDir().mkpath(QFileInfo(m_lockFilePath).absolutePath());
+    const QString lockDir = QFileInfo(m_lockFilePath).absolutePath();
+    QDir().mkpath(lockDir);
+    QFile::setPermissions(lockDir, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
     m_lockFile = std::make_unique<QLockFile>(m_lockFilePath);
     // A lock is stale when its process is gone (checked via PID) or, as a
     // fallback when liveness cannot be determined, when it is older than this.
@@ -29,6 +32,8 @@ bool SingleInstanceGuard::tryLock()
 
     QLocalServer::removeServer(m_serverName);
     m_server = new QLocalServer(this);
+    // Owner-only socket: another UID on /tmp must not squat or signal us.
+    m_server->setSocketOptions(QLocalServer::UserAccessOption);
     if (!m_server->listen(m_serverName)) {
         qWarning("egoboard: cannot listen on local server %s: %s", qPrintable(m_serverName),
                  qPrintable(m_server->errorString()));
@@ -47,6 +52,9 @@ bool SingleInstanceGuard::tryLock()
                 return;
             connect(client, &QLocalSocket::disconnected, client, &QLocalSocket::deleteLater);
             connect(client, &QLocalSocket::readyRead, this, [this, client] {
+                // Bounded read: the protocol is a single "show" line.
+                if (client->bytesAvailable() > 64)
+                    return;
                 if (client->readAll().startsWith("show"))
                     emit showRequested();
             });

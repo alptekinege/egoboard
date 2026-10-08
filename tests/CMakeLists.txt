@@ -121,7 +121,7 @@ target_include_directories(tst_datacontrol PRIVATE ${CMAKE_BINARY_DIR} ${CMAKE_C
 if(KF6Config_FOUND)
     target_link_libraries(tst_datacontrol PRIVATE KF6::ConfigCore)
 endif()
-target_link_libraries(tst_datacontrol PRIVATE egoboard::core Qt6::Gui Qt6::WaylandClient Qt6::Test)
+target_link_libraries(tst_datacontrol PRIVATE egoboard::core Qt6::Gui Qt6::WaylandClient Qt6::Concurrent Qt6::Test)
 if(TARGET PkgConfig::WAYLAND_CLIENT)
     target_link_libraries(tst_datacontrol PRIVATE PkgConfig::WAYLAND_CLIENT)
 endif()

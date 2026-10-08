@@ -11,6 +11,28 @@
 namespace {
 constexpr auto kEntryMime = "application/x-egoboard-entry-ids";
 constexpr auto kGroupMime = "application/x-egoboard-group-ids";
+// Drag payloads come from any app: bound the allocation before QDataStream
+// can act on its length prefix (crafted FFFFFFFF -> multi-GB QList).
+constexpr int kMaxDragBytes = 64 * 1024;
+constexpr int kMaxDragIds = 1024;
+
+bool decodeIdList(const QByteArray &encoded, QList<qint64> *out)
+{
+    if (!out || encoded.isEmpty() || encoded.size() > kMaxDragBytes)
+        return false;
+    QDataStream stream(encoded);
+    stream.setVersion(QDataStream::Qt_6_0);
+    QList<qint64> ids;
+    stream >> ids;
+    if (stream.status() != QDataStream::Ok || ids.size() > kMaxDragIds)
+        return false;
+    for (const qint64 id : ids) {
+        if (id <= 0)
+            return false;
+    }
+    *out = ids;
+    return true;
+}
 } // namespace
 
 struct GroupTreeModel::Node {
@@ -189,10 +211,10 @@ int GroupTreeModel::entryCount(const QMimeData *data)
 {
     if (!data || !data->hasFormat(QString::fromLatin1(kEntryMime)))
         return 0;
-    QDataStream stream(data->data(QString::fromLatin1(kEntryMime)));
     QList<qint64> ids;
-    stream >> ids;
-    return stream.status() == QDataStream::Ok ? ids.size() : 0;
+    if (!decodeIdList(data->data(QString::fromLatin1(kEntryMime)), &ids))
+        return 0;
+    return ids.size();
 }
 
 QMimeData *GroupTreeModel::mimeData(const QModelIndexList &indexes) const
@@ -233,9 +255,9 @@ bool GroupTreeModel::dropMimeData(const QMimeData *data, Qt::DropAction action, 
 
     if (data->hasFormat(QString::fromLatin1(kEntryMime))) {
         QByteArray encoded = data->data(QString::fromLatin1(kEntryMime));
-        QDataStream stream(&encoded, QIODevice::ReadOnly);
         QList<qint64> entryIds;
-        stream >> entryIds;
+        if (!decodeIdList(encoded, &entryIds))
+            return false;
         if (entryIds.isEmpty() || targetGroupId == 0)
             return false; // entries must land on a concrete group
         emit entriesDropped(entryIds, targetGroupId);
@@ -244,9 +266,9 @@ bool GroupTreeModel::dropMimeData(const QMimeData *data, Qt::DropAction action, 
 
     if (data->hasFormat(QString::fromLatin1(kGroupMime))) {
         QByteArray encoded = data->data(QString::fromLatin1(kGroupMime));
-        QDataStream stream(&encoded, QIODevice::ReadOnly);
         QList<qint64> groupIds;
-        stream >> groupIds;
+        if (!decodeIdList(encoded, &groupIds))
+            return false;
         bool moved = false;
         for (const qint64 id : groupIds)
             moved = m_bookmarks->moveGroup(id, targetGroupId) || moved;

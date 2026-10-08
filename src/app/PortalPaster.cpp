@@ -7,6 +7,7 @@
 #include <QDBusObjectPath>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
+#include <QUuid>
 
 namespace {
 constexpr auto kPortalPath = "/org/freedesktop/portal/desktop";
@@ -78,10 +79,14 @@ void PortalPaster::ensureSession()
     m_step = Step::Creating;
     m_guard.start(kSessionTimeoutMs);
     QVariantMap options;
+    // Unpredictable per-request tokens (spec requires unique handle_tokens;
+    // sequential egoboard-N leaks session count and is guessable).
     options.insert(QStringLiteral("handle_token"),
-                   QStringLiteral("egoboard-%1").arg(++m_tokenSerial));
+                   QStringLiteral("egoboard-%1").arg(
+                       QUuid::createUuid().toString(QUuid::WithoutBraces)));
     options.insert(QStringLiteral("session_handle_token"),
-                   QStringLiteral("egoboard-%1").arg(++m_tokenSerial));
+                   QStringLiteral("egoboard-%1").arg(
+                       QUuid::createUuid().toString(QUuid::WithoutBraces)));
     callRemoteDesktop(QStringLiteral("CreateSession"), {options});
 }
 
@@ -114,7 +119,8 @@ bool PortalPaster::paste()
     for (const KeyPress &press : ctrlVPlan()) {
         QVariantMap options;
         options.insert(QStringLiteral("handle_token"),
-                       QStringLiteral("egoboard-%1").arg(++m_tokenSerial));
+                       QStringLiteral("egoboard-%1").arg(
+                           QUuid::createUuid().toString(QUuid::WithoutBraces)));
         // Fire-and-forget through the live session only: no reply to wait on,
         // so a dead session degrades to a no-op instead of a second paste.
         m_portal->asyncCall(QStringLiteral("NotifyKeyboardKeysym"),
@@ -193,7 +199,8 @@ void PortalPaster::onPortalResponse(uint response, const QVariantMap &results)
         m_step = Step::Selecting;
         QVariantMap options;
         options.insert(QStringLiteral("handle_token"),
-                       QStringLiteral("egoboard-%1").arg(++m_tokenSerial));
+                       QStringLiteral("egoboard-%1").arg(
+                           QUuid::createUuid().toString(QUuid::WithoutBraces)));
         options.insert(QStringLiteral("types"), kDeviceKeyboard);
         callRemoteDesktop(QStringLiteral("SelectDevices"),
                           {QVariant::fromValue(QDBusObjectPath(m_sessionPath)), options});
@@ -203,7 +210,8 @@ void PortalPaster::onPortalResponse(uint response, const QVariantMap &results)
         m_step = Step::Starting;
         QVariantMap options;
         options.insert(QStringLiteral("handle_token"),
-                       QStringLiteral("egoboard-%1").arg(++m_tokenSerial));
+                       QStringLiteral("egoboard-%1").arg(
+                           QUuid::createUuid().toString(QUuid::WithoutBraces)));
         options.insert(QStringLiteral("persist_mode"), kPersistUntilRevoked);
         callRemoteDesktop(QStringLiteral("Start"),
                           {QVariant::fromValue(QDBusObjectPath(m_sessionPath)), options});

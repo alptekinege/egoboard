@@ -48,6 +48,8 @@ private slots:
     void skipsEntriesWithoutStoredBlob();
     void excludesSensitiveImagesByDefault();
     void includesSensitiveImagesWhenOptedIn();
+    void excludesSensitiveEntriesByDefault();
+    void includesSensitiveEntriesWhenOptedIn();
     void neverOverwritesAndUsesCollisionSafeNames();
     void cancelLeavesNoManifest();
     void manifestOmitsPayloadTextUnlessOptedIn();
@@ -967,6 +969,68 @@ void TestExportImport::includesSensitiveImagesWhenOptedIn()
     }
     QVERIFY(sawTags);
     QVERIFY(sawOcr);
+}
+
+void TestExportImport::excludesSensitiveEntriesByDefault()
+{
+    seed(m_storage, m_bookmarks);
+    ClipboardRecord secret;
+    secret.hash = QByteArrayLiteral("hash-secret");
+    secret.type = ContentType::Text;
+    secret.textData = QStringLiteral("hunter2-token");
+    secret.preview = secret.textData;
+    secret.timestamp = 2000;
+    secret.sizeBytes = secret.textData.size();
+    secret.sensitive = true;
+    QVERIFY(m_storage->insertOrUpdate(secret) != 0);
+
+    ExportImportManager::ExportRequest request;
+    request.scope = ExportImportManager::Scope::Everything;
+    request.path = m_dir.filePath(QStringLiteral("nosensitive.json"));
+    QString error;
+    int skipped = -1;
+    QVERIFY2(m_io->exportToFile(request, &error, nullptr, {}, &skipped), qPrintable(error));
+    QCOMPARE(skipped, 1);
+
+    QFile file(request.path);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    QVERIFY(document.isObject());
+    const QJsonArray entries = document.object().value(QStringLiteral("entries")).toArray();
+    QCOMPARE(entries.size(), 3);
+    for (const auto &value : entries)
+        QVERIFY(!value.toObject().value(QStringLiteral("text")).toString().contains(
+            QStringLiteral("hunter2")));
+}
+
+void TestExportImport::includesSensitiveEntriesWhenOptedIn()
+{
+    seed(m_storage, m_bookmarks);
+    ClipboardRecord secret;
+    secret.hash = QByteArrayLiteral("hash-secret");
+    secret.type = ContentType::Text;
+    secret.textData = QStringLiteral("hunter2-token");
+    secret.preview = secret.textData;
+    secret.timestamp = 2000;
+    secret.sizeBytes = secret.textData.size();
+    secret.sensitive = true;
+    QVERIFY(m_storage->insertOrUpdate(secret) != 0);
+
+    ExportImportManager::ExportRequest request;
+    request.scope = ExportImportManager::Scope::Everything;
+    request.path = m_dir.filePath(QStringLiteral("withsensitive.json"));
+    request.includeSensitive = true;
+    QString error;
+    int skipped = -1;
+    QVERIFY2(m_io->exportToFile(request, &error, nullptr, {}, &skipped), qPrintable(error));
+    QCOMPARE(skipped, 0);
+
+    QFile file(request.path);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    QVERIFY(document.isObject());
+    const QJsonArray entries = document.object().value(QStringLiteral("entries")).toArray();
+    QCOMPARE(entries.size(), 4);
 }
 
 void TestExportImport::neverOverwritesAndUsesCollisionSafeNames()

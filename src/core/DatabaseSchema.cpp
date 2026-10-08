@@ -8,9 +8,15 @@ namespace DatabaseSchema {
 static bool columnExists(QSqlDatabase &db, const QString &table, const QString &column)
 {
     QSqlQuery q(db);
+    // Identifiers cannot be bound; only the internal "entries" table is ever
+    // queried. Quote defensively so a future caller cannot inject SQL here.
+    if (table != QLatin1String("entries"))
+        return false;
+    const QString quoted = QStringLiteral("\"%1\"").arg(
+        QString(table).replace(QLatin1Char('"'), QStringLiteral("\"\"")));
     // Use PRAGMA table_info which is stable; pragma_table_info table-valued function
     // does not reliably support bound parameters for the table name in all SQLite builds.
-    if (!q.exec(QStringLiteral("PRAGMA table_info(%1)").arg(table))) return false;
+    if (!q.exec(QStringLiteral("PRAGMA table_info(%1)").arg(quoted))) return false;
     while (q.next()) {
         if (q.value(1).toString().compare(column, Qt::CaseInsensitive) == 0) return true;
     }
@@ -160,11 +166,13 @@ QString cipherVersion(QSqlDatabase &db)
     return {};
 }
 
-static QString escapeKey(const QString &key)
+static QString keyBlobLiteral(const QString &key)
 {
-    QString out = key;
-    out.replace(QStringLiteral("'"), QStringLiteral("''"));
-    return out;
+    // PRAGMA key/rekey parameters cannot be bound, so avoid string quoting
+    // entirely: pass the UTF-8 bytes as a hex blob literal x'...'. Hex has no
+    // quoting/escaping surface (no '', ;, --, NUL-truncation ambiguity).
+    return QStringLiteral("x'%1'").arg(
+        QString::fromLatin1(key.toUtf8().toHex()));
 }
 
 bool setKey(QSqlDatabase &db, const QString &key)
@@ -172,7 +180,7 @@ bool setKey(QSqlDatabase &db, const QString &key)
     if (key.isEmpty())
         return false;
     QSqlQuery q(db);
-    const QString sql = QStringLiteral("PRAGMA key = '%1'").arg(escapeKey(key));
+    const QString sql = QStringLiteral("PRAGMA key = %1").arg(keyBlobLiteral(key));
     if (!q.exec(sql)) {
         qWarning("egoboard: PRAGMA key failed: %s", qPrintable(q.lastError().text()));
         return false;
@@ -185,9 +193,9 @@ bool rekey(QSqlDatabase &db, const QString &newKey)
     QSqlQuery q(db);
     QString sql;
     if (newKey.isEmpty())
-        sql = QStringLiteral("PRAGMA rekey = ''");
+        sql = QStringLiteral("PRAGMA rekey = x''");
     else
-        sql = QStringLiteral("PRAGMA rekey = '%1'").arg(escapeKey(newKey));
+        sql = QStringLiteral("PRAGMA rekey = %1").arg(keyBlobLiteral(newKey));
     if (!q.exec(sql)) {
         qWarning("egoboard: PRAGMA rekey failed: %s", qPrintable(q.lastError().text()));
         return false;
@@ -213,6 +221,8 @@ bool ensure(QSqlDatabase &db)
         QStringLiteral("PRAGMA journal_mode=WAL"),
         QStringLiteral("PRAGMA synchronous=NORMAL"),
         QStringLiteral("PRAGMA foreign_keys=ON"),
+        // Deleted secrets must not linger in the freelist for forensic reads.
+        QStringLiteral("PRAGMA secure_delete=ON"),
         QStringLiteral(
             "CREATE TABLE IF NOT EXISTS entries ("
             " id INTEGER PRIMARY KEY AUTOINCREMENT,"

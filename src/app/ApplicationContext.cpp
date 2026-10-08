@@ -51,6 +51,7 @@
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QStandardPaths>
+#include <QTemporaryFile>
 #include <QTextDocument>
 #include <QThreadPool>
 #include <QTimer>
@@ -85,10 +86,19 @@ ClipboardRecord imageAsPngFileRecord(const ClipboardRecord &image)
         return {};
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
     QDir().mkpath(dir);
-    const QString path = dir + QStringLiteral("/egoboard-%1.png")
-                             .arg(QDateTime::currentMSecsSinceEpoch());
-    if (!img.save(path, "PNG"))
+    // Unpredictable + owner-only + O_EXCL: no symlink hijack, no world read.
+    QTemporaryFile temp(dir + QStringLiteral("/egoboard-XXXXXX.png"));
+    temp.setAutoRemove(false);
+    if (!temp.open())
         return {};
+    QFile::setPermissions(temp.fileName(), QFile::ReadOwner | QFile::WriteOwner);
+    const QString path = temp.fileName();
+    temp.close();
+    if (!img.save(path, "PNG")) {
+        QFile::remove(path);
+        return {};
+    }
+    QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner);
     ClipboardRecord file;
     file.type = ContentType::Files;
     file.textData = QString::fromUtf8(
@@ -103,7 +113,10 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
     : QObject(parent)
     , m_fullGui(fullGui)
 {
-    QDir().mkpath(QFileInfo(databasePath).absolutePath());
+    const QString dbDir = QFileInfo(databasePath).absolutePath();
+    QDir().mkpath(dbDir);
+    // History holds secrets: the directory must not be world-readable.
+    QFile::setPermissions(dbDir, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
     m_settings = new SettingsManager(this);
     m_storage = new StorageManager(databasePath, this);
     m_bookmarks = new BookmarkManager(m_storage->database(), this);
@@ -150,7 +163,18 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
         // Make the on-disk state match the setting: unlock a locked database,
         // or encrypt a plaintext one in place (e.g. enabled in a config copy).
         QString key;
-        const EncryptionManager::Status status = m_encryption->readKey(&key);
+        EncryptionManager::Status status = m_encryption->readKey(&key);
+        if ((status == EncryptionManager::Status::EntryMissing || key.isEmpty())
+            && m_storage->isSqlCipherAvailable()) {
+            // First enable with no stored key (fresh install, migrated config):
+            // provision one so the database does not stay plaintext behind an
+            // enabled setting. Failure keeps the old warn-only path below.
+            const QString fresh = EncryptionManager::generateKey();
+            if (m_encryption->writeKey(fresh) == EncryptionManager::Status::Ok) {
+                key = fresh;
+                status = EncryptionManager::Status::Ok;
+            }
+        }
         if (status != EncryptionManager::Status::Ok || key.isEmpty()) {
             reportProblem(QObject::tr(
                               "Encryption is enabled but the history database cannot be unlocked: %1.")

@@ -80,6 +80,9 @@ private:
         void zwlr_foreign_toplevel_handle_v1_state(wl_array *state) override
         {
             activated = false;
+            // A hostile compositor must not crash us with a null/short array.
+            if (!state || !state->data || state->size % sizeof(uint32_t) != 0)
+                return;
             const auto *flags = static_cast<const uint32_t *>(state->data);
             const size_t count = state->size / sizeof(uint32_t);
             for (size_t i = 0; i < count; ++i) {

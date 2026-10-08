@@ -121,10 +121,12 @@ QString EncryptionManager::generateKey()
 {
     // QRandomGenerator::system() draws from the OS CSPRNG (getrandom /
     // /dev/urandom); global() is a fast, non-cryptographic PRNG and must not
-    // be used for key material.
+    // be used for key material. Fill byte-wise: QByteArray has no alignment
+    // guarantee, so quint32* punning would be UB.
     QByteArray bytes(32, 0);
-    QRandomGenerator::system()->generate(reinterpret_cast<quint32 *>(bytes.data()),
-                                         reinterpret_cast<quint32 *>(bytes.data() + bytes.size()));
+    auto *rng = QRandomGenerator::system();
+    for (int i = 0; i < bytes.size(); ++i)
+        bytes[i] = char(rng->generate() & 0xFF);
     return QString::fromLatin1(bytes.toBase64());
 }
 

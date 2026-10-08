@@ -14,6 +14,8 @@
 #include <QTextStream>
 #include <QTimer>
 
+#include <unistd.h>
+
 #include "Version.h"
 
 #include "Version.h"
@@ -147,7 +149,7 @@ int main(int argc, char *argv[])
     SingleInstanceGuard guard(
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
             + QStringLiteral("/instance.lock"),
-        QStringLiteral("egoboard-%1").arg(qgetenv("USER").constData()));
+        QStringLiteral("egoboard-%1").arg(::getuid()));
     if (!smoke && !bench && !crashReport && !readReport && !guard.tryLock()) {
         // Already running: bring the existing instance up and exit quietly.
         guard.sendShow();

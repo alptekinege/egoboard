@@ -802,8 +802,11 @@ QWidget *SettingsDialog::buildPrivacyPage()
     auto *encRow = new QHBoxLayout();
     m_encryptionSetupBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("security-medium")), tr("Generate / store key"), encryptBox);
     m_encryptionRemoveBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-delete")), tr("Remove key"), encryptBox);
+    m_encryptionRotateBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("view-refresh")), tr("Rotate key"), encryptBox);
+    m_encryptionRotateBtn->setToolTip(tr("Re-encrypts the database with a fresh key (old key is kept until the rekey succeeds). Requires an encrypted database."));
     encRow->addWidget(m_encryptionSetupBtn);
     encRow->addWidget(m_encryptionRemoveBtn);
+    encRow->addWidget(m_encryptionRotateBtn);
     encRow->addStretch(1);
     encryptLayout->addLayout(encRow);
     encryptLayout->addWidget(makeHint(tr("Key loss = data loss. The app never writes the key to egoboardrc. Build without SQLCipher keeps history as before."), encryptBox));
@@ -837,6 +840,8 @@ QWidget *SettingsDialog::buildPrivacyPage()
             QMessageBox::warning(this, tr("Encryption"), tr("Could not remove key: %1").arg(enc.walletStatusText()));
         refreshDiagnostics();
     });
+    connect(m_encryptionRotateBtn, &QPushButton::clicked, this,
+            &SettingsDialog::rotateEncryptionKey);
     historyLayout->addWidget(encryptBox);
 
     auto *privacyResetRow = new QHBoxLayout();
@@ -1575,6 +1580,7 @@ QWidget *SettingsDialog::buildStoragePage()
         ExportImportManager::ExportRequest request;
         request.path = dialog.filePath();
         request.format = dialog.format();
+        request.includeSensitive = dialog.includeSensitive();
         switch (dialog.scope()) {
         case ExportImportDialogs::ExportDialog::Everything:
             request.scope = ExportImportManager::Scope::Everything;
@@ -1588,13 +1594,22 @@ QWidget *SettingsDialog::buildStoragePage()
             break;
         }
         QString error;
+        int skippedSensitive = 0;
         const bool exported = runIoWithProgress(
             this, tr("Exporting…"),
             [&](std::atomic<bool> *cancel, ExportImportManager::IoProgress progress) {
-                return m_ctx.io()->exportToFile(request, &error, cancel, progress);
+                return m_ctx.io()->exportToFile(request, &error, cancel, progress,
+                                                &skippedSensitive);
             });
         if (!exported)
             QMessageBox::warning(this, tr("Export failed"), error);
+        else if (skippedSensitive > 0 && !request.includeSensitive)
+            QMessageBox::information(this, tr("Export finished"),
+                                     tr("History exported to %1.\n%2 sensitive %3 skipped.")
+                                         .arg(request.path)
+                                         .arg(skippedSensitive)
+                                         .arg(skippedSensitive == 1 ? tr("entry was")
+                                                                    : tr("entries were")));
         else
             QMessageBox::information(this, tr("Export finished"),
                                      tr("History exported to %1.").arg(request.path));
@@ -2939,6 +2954,59 @@ void SettingsDialog::applyEncryptionSetting()
     m_ctx.settings()->setEncryptionEnabled(true);
     QMessageBox::information(this, tr("Encryption"),
                              tr("The history database is now encrypted; the key is stored in KWallet."));
+}
+
+void SettingsDialog::rotateEncryptionKey()
+{
+    if (!m_ctx.storage()->isEncrypted() && !m_ctx.storage()->requiresEncryptionKey()) {
+        QMessageBox::information(this, tr("Encryption"),
+                                 tr("Nothing to rotate: the database is not encrypted. "
+                                    "Tick the checkbox and press Apply first."));
+        return;
+    }
+    if (QMessageBox::question(this, tr("Encryption"),
+                              tr("Re-encrypt the database with a fresh key? "
+                                 "The old key is kept until the rekey succeeds."))
+        != QMessageBox::Yes)
+        return;
+    EncryptionManager enc;
+    QString current;
+    if (enc.readKey(&current) != EncryptionManager::Status::Ok || current.isEmpty()) {
+        QMessageBox::warning(this, tr("Encryption"),
+                             tr("The current key could not be read from KWallet: %1")
+                                 .arg(enc.walletStatusText()));
+        return;
+    }
+    // Unlock first when the file is locked (key not applied yet in this
+    // session), mirroring the decrypt path in applyEncryptionSetting().
+    if (m_ctx.storage()->requiresEncryptionKey()
+        && (!m_ctx.storage()->setEncryptionKey(current)
+            || !m_ctx.storage()->verifyEncryptionKey())) {
+        QMessageBox::warning(this, tr("Encryption"),
+                             tr("The database could not be unlocked with the stored key; "
+                                "rotation aborted."));
+        return;
+    }
+    const QString fresh = EncryptionManager::generateKey();
+    if (!m_ctx.storage()->changeEncryptionKey(fresh)) {
+        QMessageBox::warning(this, tr("Encryption"),
+                             tr("The database could not be re-encrypted. A SQLCipher-enabled build is "
+                                "required (-DEGOBOARD_USE_SQLCIPHER=ON with the sqlcipher package)."));
+        return;
+    }
+    if (enc.writeKey(fresh) != EncryptionManager::Status::Ok) {
+        // The database now uses `fresh` but the wallet still holds the old key:
+        // say so plainly instead of leaving the user locked out silently.
+        QMessageBox::warning(this, tr("Encryption"),
+                             tr("Re-encryption succeeded but the new key could not be stored: %1. "
+                                "The history is readable in this session only — export a backup now.")
+                                 .arg(enc.walletStatusText()));
+        refreshDiagnostics();
+        return;
+    }
+    QMessageBox::information(this, tr("Encryption"),
+                             tr("The database key was rotated; the new key is stored in KWallet."));
+    refreshDiagnostics();
 }
 
 void SettingsDialog::previewThemes()

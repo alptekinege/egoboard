@@ -14,6 +14,8 @@
 #include <QMimeData>
 #include <QRegularExpression>
 
+#include <climits>
+
 namespace {
 
 constexpr int kMaxPathCount = 64; // beyond this, treat as plain text
@@ -76,10 +78,15 @@ bool isSensitiveWithCustom(const QString &text, SettingsManager *settings)
 {
     if (SensitiveDataDetector::isSensitive(text)) return true;
     if (!settings) return false;
+    // Bound the work: legacy configs may hold overlong patterns; match at
+    // most 20k chars per pattern (same budget as StorageManager regex scan).
+    const QString subject = text.size() > 20000 ? text.left(20000) : text;
     const auto pats = settings->customSensitivePatterns();
     for (const QString &pat : pats) {
+        if (pat.size() > 200)
+            continue;
         QRegularExpression re(pat, QRegularExpression::CaseInsensitiveOption);
-        if (re.isValid() && re.match(text).hasMatch()) return true;
+        if (re.isValid() && re.match(subject).hasMatch()) return true;
     }
     return false;
 }
@@ -88,10 +95,13 @@ QStringList customKinds(const QString &text, SettingsManager *settings)
 {
     QStringList out = SensitiveDataDetector::kinds(text);
     if (!settings) return out;
+    const QString subject = text.size() > 20000 ? text.left(20000) : text;
     const auto pats = settings->customSensitivePatterns();
     for (const QString &pat : pats) {
+        if (pat.size() > 200)
+            continue;
         QRegularExpression re(pat, QRegularExpression::CaseInsensitiveOption);
-        if (re.isValid() && re.match(text).hasMatch()) out << QStringLiteral("custom:%1").arg(pat.left(16));
+        if (re.isValid() && re.match(subject).hasMatch()) out << QStringLiteral("custom:%1").arg(pat.left(16));
     }
     return out;
 }
@@ -105,6 +115,8 @@ QStringList redactCustomPatterns(QString *text, SettingsManager *settings)
         return kinds;
     const auto pats = settings->customSensitivePatterns();
     for (const QString &pat : pats) {
+        if (pat.size() > 200)
+            continue;
         QRegularExpression re(pat, QRegularExpression::CaseInsensitiveOption);
         if (!re.isValid())
             continue;
@@ -295,6 +307,18 @@ ClipboardRecord ClipboardWatcher::buildRecord(const QMimeData *mimeData) const
         const QImage image = qvariant_cast<QImage>(mimeData->imageData());
         if (image.isNull())
             return record;
+        // Bound decompression: a malicious clipboard can advertise a huge
+        // image whose bitmap dwarfs the byte cap.
+        constexpr qint64 kMaxPixels = 16 * 1024 * 1024;
+        const qint64 pixels = qint64(image.width()) * qint64(image.height());
+        if (pixels <= 0 || pixels > kMaxPixels) {
+            record.type = ContentType::Image;
+            record.preview = QStringLiteral("Image %1×%2 · not stored (too large)")
+                                 .arg(image.width())
+                                 .arg(image.height());
+            record.hash = hashPayload(ContentType::Image, QByteArray::number(pixels));
+            return record;
+        }
         QByteArray png;
         QBuffer buffer(&png);
         buffer.open(QIODevice::WriteOnly);
@@ -360,7 +384,7 @@ ClipboardRecord ClipboardWatcher::buildRecord(const QMimeData *mimeData) const
         QString html = mimeData->html();
         bool truncated = false;
         if (maxBytes > 0 && qint64(html.size()) > maxBytes) {
-            html.truncate(int(maxBytes));
+            html.truncate(qsizetype(qMin(maxBytes, qint64(INT_MAX))));
             truncated = true;
         }
         record.textData = html;
@@ -404,7 +428,7 @@ ClipboardRecord ClipboardWatcher::buildRecord(const QMimeData *mimeData) const
 
         record.type = ContentType::Text;
         if (maxBytes > 0 && qint64(text.size()) > maxBytes) {
-            text.truncate(int(maxBytes));
+            text.truncate(qsizetype(qMin(maxBytes, qint64(INT_MAX))));
             record.preview = singleLine(text) + QStringLiteral(" …");
         } else {
             record.preview = singleLine(text);

@@ -147,6 +147,11 @@ ExportDialog::ExportDialog(BookmarkManager *bookmarks, QWidget *parent)
     formatRow->addWidget(m_formatCombo, 1);
     layout->addLayout(formatRow);
 
+    m_sensitiveCheck = new QCheckBox(tr("Include entries flagged sensitive"), this);
+    m_sensitiveCheck->setToolTip(tr("When unchecked (default), sensitive entries are skipped "
+                                    "and reported instead of written."));
+    layout->addWidget(m_sensitiveCheck);
+
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -207,6 +212,11 @@ qint64 ExportDialog::groupId() const
 ExportImportManager::ExportFormat ExportDialog::format() const
 {
     return static_cast<ExportImportManager::ExportFormat>(m_formatCombo->currentData().toInt());
+}
+
+bool ExportDialog::includeSensitive() const
+{
+    return m_sensitiveCheck && m_sensitiveCheck->isChecked();
 }
 
 ImportDialog::ImportDialog(QWidget *parent)

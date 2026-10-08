@@ -63,6 +63,21 @@ bool fileLooksEncrypted(const QString &path)
     return header.size() == 16 && !header.startsWith(QByteArrayLiteral("SQLite format 3"));
 }
 
+// History holds passwords/tokens: the database and its WAL sidecars must
+// stay owner-only regardless of the process umask (typically 022 -> 0644).
+void lockDownDatabaseFiles(const QString &databasePath)
+{
+    const QStringList files{
+        databasePath,
+        databasePath + QStringLiteral("-wal"),
+        databasePath + QStringLiteral("-shm"),
+    };
+    for (const QString &path : files) {
+        if (QFile::exists(path))
+            QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner);
+    }
+}
+
 } // namespace
 
 StorageManager::StorageManager(const QString &databasePath, QObject *parent)
@@ -79,6 +94,7 @@ StorageManager::StorageManager(const QString &databasePath, QObject *parent)
                  qPrintable(m_db.lastError().text()));
         return;
     }
+    lockDownDatabaseFiles(databasePath);
     if (fileLooksEncrypted(databasePath)) {
         // The schema cannot be touched before the key is applied; setEncryptionKey()
         // runs it once the database is readable.
@@ -87,6 +103,7 @@ StorageManager::StorageManager(const QString &databasePath, QObject *parent)
     DatabaseSchema::ensure(m_db);
     // Drop trash left over by crashed sessions past the retention bound.
     purgeTrash(QDateTime::currentMSecsSinceEpoch() - kTrashRetentionMs);
+    lockDownDatabaseFiles(databasePath); // WAL sidecars appear after ensure()
 }
 
 StorageManager::~StorageManager()
@@ -272,6 +289,8 @@ QVector<ClipboardRecord> StorageManager::fetchPageRegex(const FilterSpec &filter
                                                         const PageCursor &cursor, int limit,
                                                         bool *hasMore) const
 {
+    if (filter.regexText.size() > 200)
+        return {};
     QRegularExpression regex(filter.regexText);
     if (!regex.isValid())
         return {};
@@ -1310,7 +1329,10 @@ bool StorageManager::setEncryptionKey(const QString &key)
     }
     m_encrypted = true;
     // Schema setup was skipped while the file was locked; do it now that it reads.
-    return DatabaseSchema::ensure(m_db);
+    const bool ok = DatabaseSchema::ensure(m_db);
+    if (ok)
+        lockDownDatabaseFiles(m_path);
+    return ok;
 }
 
 bool StorageManager::changeEncryptionKey(const QString &newKey)

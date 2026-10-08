@@ -365,6 +365,8 @@ SearchEngine::ParsedQuery SearchEngine::parseQuery(const QString &input, const F
             const QRegularExpression re(pattern);
             if (pattern.isEmpty()) {
                 parsed.problems << QStringLiteral("Empty /regex/ pattern");
+            } else if (pattern.size() > 200) {
+                parsed.problems << QStringLiteral("Regex too long (max 200 chars)");
             } else if (!re.isValid()) {
                 parsed.problems << QStringLiteral("Invalid regex: %1").arg(re.errorString());
             } else if (!parsed.filter.regexText.isEmpty()) {

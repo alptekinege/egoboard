@@ -4,6 +4,8 @@
 #include <QHash>
 #include <QStringList>
 
+#include <functional>
+
 #include "ClipboardRecord.h"
 
 class IActiveWindowTracker;
@@ -57,6 +59,17 @@ private:
     void onExtOfferMime(void *offerId, const QString &mime);
     void handleSelection(void *offerId, bool primary);
     void handleExtSelection(void *offerId, bool primary);
+    // Async mime fetch: pipes are created + receive() is issued on the GUI
+    // thread (Wayland objects are not thread-safe), then the blocking
+    // poll/read loop runs on a worker thread. The completion rebuilds the
+    // QMimeData on the GUI thread and feeds emitRecordFromMimeData().
+    // `receive` issues one receive() call for (mime, writeFd).
+    void fetchMimesAsync(const QStringList &candidates, const QStringList &advertised,
+                         qint64 cap, bool wantFiles, bool wantImage, bool wantText,
+                         bool wantRich,
+                         const std::function<void(const QString &, int)> &receive);
+    void buildMimeFromBlobs(const QHash<QString, QByteArray> &blobs, bool wantFiles,
+                            bool wantImage, bool wantText, bool wantRich, int generation);
     // Shared second half of both selection handlers: builds the record from
     // an already-filled QMimeData, applies the sensitive-data policy and
     // emits captured(). Takes ownership of mimeData.
@@ -101,6 +114,10 @@ private:
     qint64 m_suppressUntilMs = 0;
     bool m_started = false;
     bool m_paused = false;
+    // Invalidates in-flight async reads: a completion whose generation no
+    // longer matches is dropped (a newer selection superseded it, or stop()
+    // was called). Bumped on every dispatch and on stop().
+    int m_readGeneration = 0;
     friend class Device;
     friend class Offer;
     friend class ExtDevice;

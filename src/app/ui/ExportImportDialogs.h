@@ -54,6 +54,8 @@ public:
     Scope scope() const;
     ExportImportManager::ExportFormat format() const;
     qint64 groupId() const;
+    // Unchecked by default: sensitive entries are skipped and reported.
+    bool includeSensitive() const;
     // Preselects a format (used by the palette's ">export markdown").
     void setFormat(ExportImportManager::ExportFormat format);
 
@@ -66,6 +68,7 @@ private:
     QRadioButton *m_groupRadio = nullptr;
     QComboBox *m_groupCombo = nullptr;
     QComboBox *m_formatCombo = nullptr;
+    QCheckBox *m_sensitiveCheck = nullptr;
 };
 
 // Image-only export (U17): dumps the stored PNG blobs of a scope into a

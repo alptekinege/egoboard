@@ -53,6 +53,10 @@ public:
         ExportFormat format = ExportFormat::Json;
         qint64 groupId = 0; // for Scope::GroupSubtree
         QString path;
+        // Explicit sensitive policy (shown in the dialog before export):
+        // false skips sensitive entries and reports them, true exports them.
+        // Backups always opt in (restore fidelity); user exports default out.
+        bool includeSensitive = false;
     };
 
     struct ImportResult {
@@ -145,9 +149,11 @@ public:
     // granularity and `progress` reports (done, total). Cancel before the
     // first byte means no file is written; cancel during import rolls the
     // bulk transaction back so nothing was imported. All defaulted, so
-    // existing callers are unchanged.
+    // existing callers are unchanged. `skippedSensitive` (when non-null)
+    // receives how many sensitive entries were left out by policy.
     bool exportToFile(const ExportRequest &request, QString *error = nullptr,
-                      std::atomic<bool> *cancel = nullptr, IoProgress progress = {});
+                      std::atomic<bool> *cancel = nullptr, IoProgress progress = {},
+                      int *skippedSensitive = nullptr);
     ImportResult importFromFile(const QString &path, ImportMode mode,
                                 std::atomic<bool> *cancel = nullptr, IoProgress progress = {});
 
