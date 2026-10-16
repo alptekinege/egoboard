@@ -49,12 +49,24 @@ if(PIPEWIRE_FOUND)
 endif()
 
 option(EGOBOARD_USE_SQLCIPHER "Enable SQLCipher at-rest encryption (opt-in, KWallet-held key)" ON)
+option(EGOBOARD_ENABLE_ZIP_BACKUPS "Enable single-file ZIP backups when libzip is available" ON)
+find_package(SQLite3 QUIET)
+if(SQLite3_FOUND)
+    set(EGOBOARD_HAVE_SQLITE_BACKUP ON)
+endif()
+
+if(EGOBOARD_ENABLE_ZIP_BACKUPS)
+    pkg_check_modules(LIBZIP QUIET IMPORTED_TARGET libzip)
+    if(LIBZIP_FOUND AND EGOBOARD_HAVE_SQLITE_BACKUP)
+        set(EGOBOARD_HAVE_ZIP_BACKUPS ON)
+    endif()
+endif()
 
 find_package(KF6Wallet QUIET)
 if(EGOBOARD_USE_SQLCIPHER AND KF6Wallet_FOUND)
     find_package(PkgConfig QUIET)
     if(PKG_CONFIG_FOUND)
-        pkg_check_modules(SQLCIPHER QUIET sqlcipher)
+        pkg_check_modules(SQLCIPHER QUIET IMPORTED_TARGET sqlcipher)
         if(SQLCIPHER_FOUND)
             set(EGOBOARD_HAVE_SQLCIPHER ON)
         endif()
@@ -124,6 +136,7 @@ add_executable(egoboard
     src/app/PortalPaster.cpp
     src/app/ScreencastWatcher.cpp
     src/app/BackupService.cpp
+    src/app/BackupArchive.cpp
     src/app/HotkeyManager.cpp
     src/app/TrayController.cpp
     src/app/ScriptActionManager.cpp
@@ -206,6 +219,20 @@ if(EGOBOARD_HAVE_SQLCIPHER)
     if(TARGET PkgConfig::SQLCIPHER)
         target_link_libraries(egoboard PRIVATE PkgConfig::SQLCIPHER)
     endif()
+endif()
+
+if(EGOBOARD_HAVE_SQLITE_BACKUP)
+    target_compile_definitions(egoboard PRIVATE EGOBOARD_HAVE_SQLITE_BACKUP=1)
+    if(EGOBOARD_HAVE_SQLCIPHER AND TARGET PkgConfig::SQLCIPHER)
+        target_link_libraries(egoboard PRIVATE PkgConfig::SQLCIPHER)
+    else()
+        target_link_libraries(egoboard PRIVATE SQLite3::SQLite3)
+    endif()
+endif()
+
+if(EGOBOARD_HAVE_ZIP_BACKUPS)
+    target_compile_definitions(egoboard PRIVATE EGOBOARD_HAVE_ZIP_BACKUPS=1)
+    target_link_libraries(egoboard PRIVATE PkgConfig::LIBZIP)
 endif()
 
 if(EGOBOARD_HAVE_PIPEWIRE)

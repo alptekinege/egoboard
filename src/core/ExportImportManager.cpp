@@ -91,8 +91,21 @@ QString markdownFence(const QString &text)
 QStringList backupFiles(const QString &folder)
 {
     QDir dir(folder);
-    const QStringList names = dir.entryList(
-        {QString::fromLatin1(kBackupPrefix) + QStringLiteral("*.json")}, QDir::Files, QDir::Name);
+    QStringList names;
+    const QString prefix = QString::fromLatin1(kBackupPrefix);
+    for (const QString &name : dir.entryList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot,
+                                             QDir::Name)) {
+        if (!name.startsWith(prefix))
+            continue;
+        const QFileInfo info(dir.filePath(name));
+        if (info.isSymLink())
+            continue;
+        if ((info.isFile() && (info.suffix() == QLatin1String("json")
+                               || info.suffix().compare(QLatin1String("zip"),
+                                                        Qt::CaseInsensitive) == 0))
+            || (info.isDir() && info.suffix() == QLatin1String("backup")))
+            names.append(name);
+    }
     QStringList paths;
     paths.reserve(names.size());
     for (const QString &name : names)
@@ -1493,7 +1506,10 @@ int ExportImportManager::pruneBackups(const QString &folder, int keep)
         return 0;
     int removed = 0;
     for (int i = 0; i < files.size() - keep; ++i) {
-        if (QFile::remove(files.at(i)))
+        const QFileInfo info(files.at(i));
+        const bool deleted = info.isDir() ? QDir(files.at(i)).removeRecursively()
+                                          : QFile::remove(files.at(i));
+        if (deleted)
             ++removed;
     }
     return removed;

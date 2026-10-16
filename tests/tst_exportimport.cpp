@@ -77,6 +77,7 @@ private slots:
     void badSavedSearchFilterStillImports();
     void staticHelpersReportKnownIds();
     void backupPruningEdgeCases();
+    void backupListingIncludesZipAndBundleDirectories();
     void exportPathEdgeCases();
     void klipperTimestampFallbackAndBlankSkip();
 
@@ -1875,6 +1876,35 @@ void TestExportImport::backupPruningEdgeCases()
     QCOMPARE(ExportImportManager::listBackups(folder).size(), 1);
 
     QVERIFY(ExportImportManager::listBackups(m_dir.filePath(QStringLiteral("absent"))).isEmpty());
+}
+
+void TestExportImport::backupListingIncludesZipAndBundleDirectories()
+{
+    const QString folder = m_dir.filePath(QStringLiteral("backup-formats"));
+    QVERIFY(QDir().mkpath(folder));
+    const QString legacy = QDir(folder).filePath(
+        QStringLiteral("egoboard-backup-20200101-000000-001.json"));
+    const QString zip = QDir(folder).filePath(
+        QStringLiteral("egoboard-backup-20200102-000000-001.zip"));
+    const QString bundle = QDir(folder).filePath(
+        QStringLiteral("egoboard-backup-20200103-000000-001.backup"));
+    for (const QString &path : {legacy, zip}) {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write(QByteArrayLiteral("fixture")), qint64(7));
+    }
+    QVERIFY(QDir().mkpath(bundle));
+    QFile bundlePayload(QDir(bundle).filePath(QStringLiteral("history.json")));
+    QVERIFY(bundlePayload.open(QIODevice::WriteOnly));
+    QCOMPARE(bundlePayload.write(QByteArrayLiteral("fixture")), qint64(7));
+    bundlePayload.close();
+
+    const QStringList newestFirst = ExportImportManager::listBackups(folder);
+    QCOMPARE(newestFirst.size(), 3);
+    QCOMPARE(newestFirst.first(), bundle);
+    QCOMPARE(ExportImportManager::pruneBackups(folder, 1), 2);
+    QCOMPARE(ExportImportManager::listBackups(folder), QStringList{bundle});
+    QVERIFY(QFileInfo::exists(bundlePayload.fileName()));
 }
 
 void TestExportImport::exportPathEdgeCases()

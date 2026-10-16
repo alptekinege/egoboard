@@ -1188,8 +1188,8 @@ QWidget *SettingsDialog::buildStoragePage()
 
     auto *backupBox = new QGroupBox(tr("Automatic backups"), page);
     auto *backupLayout = new QVBoxLayout(backupBox);
-    m_backupEnabled = new QCheckBox(tr("Write a daily JSON backup"), backupBox);
-    m_backupEnabled->setToolTip(tr("Exports the whole history (including OCR text, tags, groups, snippets and saved searches) into the backup folder once a day."));
+    m_backupEnabled = new QCheckBox(tr("Write a daily backup"), backupBox);
+    m_backupEnabled->setToolTip(tr("Backs up the full history, including OCR text, tags, groups, snippets, saved searches, and sensitive entries."));
     backupLayout->addWidget(m_backupEnabled);
 
     auto *folderRow = new QHBoxLayout();
@@ -1221,7 +1221,13 @@ QWidget *SettingsDialog::buildStoragePage()
     keepRow->addStretch(1);
     // Works even when the daily schedule is off.
     m_backupNowBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-save")),
-                                     tr("Back up now"), backupBox);
+                                     BackupService::zipBackupsAvailable()
+                                         ? tr("Back up now (.zip)")
+                                         : tr("Back up now (multi-file)"),
+                                     backupBox);
+    m_backupNowBtn->setToolTip(BackupService::zipBackupsAvailable()
+        ? tr("Create one ZIP containing the database, settings, and integrity manifest.")
+        : tr("ZIP support is unavailable; create an atomic multi-file backup folder."));
     keepRow->addWidget(m_backupNowBtn);
     auto *restoreBackupBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("document-revert")),
                                              tr("Restore…"), backupBox);
@@ -1243,7 +1249,18 @@ QWidget *SettingsDialog::buildStoragePage()
         const QString path = dialog.selectedPath();
         if (path.isEmpty())
             return;
-        if (!service->restoreNow(path, dialog.mode())) {
+        if (dialog.mode() == ExportImportManager::ImportMode::Overwrite) {
+            const QString restoreDetails = dialog.restoreSettings()
+                ? tr("This replaces the current history and settings with the selected backup. "
+                     "This cannot be undone.")
+                : tr("This replaces the current history with the selected backup. This cannot be undone.");
+            if (QMessageBox::question(this, tr("Replace current data?"), restoreDetails,
+                                      QMessageBox::Yes | QMessageBox::Cancel,
+                                      QMessageBox::Cancel)
+                != QMessageBox::Yes)
+                return;
+        }
+        if (!service->restoreNow(path, dialog.mode(), dialog.restoreSettings())) {
             QMessageBox::information(this, tr("Restore"), tr("A backup or restore is already running."));
             return;
         }
@@ -1396,7 +1413,12 @@ QWidget *SettingsDialog::buildStoragePage()
 
     m_backupStatus = makeStatusPanel(QString(), backupBox);
     backupLayout->addWidget(m_backupStatus);
-    backupLayout->addWidget(makeHint(tr("Backups are plain JSON files — restore one with Import JSON… below. The export runs on a worker thread, so the window stays responsive."), backupBox));
+    const QString backupPrivacyText = BackupService::zipBackupsAvailable()
+        ? tr("ZIP backups contain the full local database, settings, and a manifest. Sensitive entries are included. SQLCipher encryption stays on the database; the KWallet key is never included.")
+        : BackupService::databaseSnapshotAvailable()
+            ? tr("ZIP support is unavailable; backups use separate database and settings files in a private folder. Sensitive entries are included. SQLCipher encryption stays on the database; the KWallet key is never included.")
+            : tr("ZIP support is unavailable; backups use separate history and settings JSON files in a private folder. Sensitive entries are included, so history JSON can be read without KWallet. The KWallet key is never included.");
+    backupLayout->addWidget(makeHint(backupPrivacyText, backupBox));
 
     connect(m_backupNowBtn, &QPushButton::clicked, this, [this] {
         BackupService *service = m_ctx.backupService();
@@ -1427,6 +1449,9 @@ QWidget *SettingsDialog::buildStoragePage()
                     closeIoProgress();
                     m_backupNowBtn->setEnabled(true);
                     if (ok) {
+                        load();
+                        previewThemes();
+                        refreshDiagnostics();
                         m_backupStatus->setText(
                             tr("Restored %1 — %2 added, %3 merged, %4 skipped.")
                                 .arg(QFileInfo(path).fileName())
@@ -1445,7 +1470,7 @@ QWidget *SettingsDialog::buildStoragePage()
                             m_ioProgress->setValue(done);
                         }
                         m_ioProgress->setLabelText(
-                            tr("Backup… %1 of %2 entries").arg(done).arg(total));
+                            tr("Creating backup… %1 of %2 work units").arg(done).arg(total));
                     }
                 });
         connect(service, &BackupService::restoreProgress, this,
@@ -1456,7 +1481,7 @@ QWidget *SettingsDialog::buildStoragePage()
                             m_ioProgress->setValue(done);
                         }
                         m_ioProgress->setLabelText(
-                            tr("Restoring… %1 of %2 entries").arg(done).arg(total));
+                            tr("Restoring… %1 of %2 work units").arg(done).arg(total));
                     }
                 });
     }
@@ -2407,6 +2432,13 @@ void SettingsDialog::refreshDiagnostics()
             diag += QStringLiteral("FTS rows: %1\n").arg(q.value(0).toLongLong());
         diag += QStringLiteral("OCR: %1 lang=%2 maxChars=%3\n").arg(OcrWorker::isAvailable()?QStringLiteral("available"):QStringLiteral("missing"), m_ctx.settings()->ocrLanguage()).arg(m_ctx.settings()->ocrMaxChars());
         diag += QStringLiteral("Encryption: %1 enabled=%2 sqlcipher=%3 cipher=%4\n").arg(EncryptionManager{}.walletStatusText(), m_ctx.settings()->encryptionEnabled() ? QStringLiteral("yes") : QStringLiteral("no"), m_ctx.storage()->isSqlCipherAvailable() ? QStringLiteral("yes") : QStringLiteral("no"), m_ctx.storage()->cipherVersion());
+        diag += QStringLiteral("Backups: zip=%1 databaseSnapshot=%2 fallback=%3\n")
+                    .arg(BackupService::zipBackupsAvailable() ? QStringLiteral("available")
+                                                              : QStringLiteral("unavailable"),
+                         BackupService::databaseSnapshotAvailable() ? QStringLiteral("available")
+                                                                     : QStringLiteral("unavailable"),
+                         BackupService::databaseSnapshotAvailable() ? QStringLiteral("SQLite bundle")
+                                                                     : QStringLiteral("history JSON"));
         diag += QStringLiteral("Preview: codeHighlight=%1 linkify=%2 colorSwatches=%3\n").arg(m_ctx.settings()->previewCodeHighlight() ? QStringLiteral("on") : QStringLiteral("off")).arg(m_ctx.settings()->previewLinkify() ? QStringLiteral("on") : QStringLiteral("off")).arg(m_ctx.settings()->previewColorSwatches() ? QStringLiteral("on") : QStringLiteral("off"));
         // Which theme is stored, which file it comes from, and which icon theme
         // Qt actually has active (the fallback covers icons a theme lacks).

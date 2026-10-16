@@ -98,6 +98,14 @@ assert_true "Application icon exists at root" "[ -f '${EXTRACTED_DIR}/egoboard.s
 assert_true ".DirIcon link/file exists" "[ -e '${EXTRACTED_DIR}/.DirIcon' ]"
 assert_true "Main binary exists and is executable" "[ -x '${EXTRACTED_DIR}/usr/bin/egoboard' ]"
 
+ZIP_NEEDED="$(readelf -d "${EXTRACTED_DIR}/usr/bin/egoboard" 2>/dev/null | grep -oE 'libzip[^]]+' | head -n 1 || true)"
+if [ -n "${ZIP_NEEDED}" ]; then
+    assert_true "libzip dependency is bundled for ZIP backups" \
+        "[ -n \"\$(find '${EXTRACTED_DIR}/usr/lib' -maxdepth 1 -name 'libzip.so*' -print -quit)\" ]"
+else
+    log_pass "ZIP backup fallback build has no libzip runtime dependency"
+fi
+
 # ------------------------------------------------------------------------------
 # 3. Inspect Essential Qt 6 & KF6 Bundled Plugins
 # ------------------------------------------------------------------------------

@@ -41,6 +41,9 @@ Optional build/feature dependencies:
 - `pipewire` (`libpipewire-0.3`) — best-effort screencast detection for the
   sharing indicator + preview auto-blur (compiled in automatically when
   found; without it sharing is simply never reported).
+- `libzip` — enables single-file `.zip` backups when found together with the
+  SQLite development library. Without it, the app writes the same database,
+  settings, and manifest as an atomic `.backup` folder.
 
 ## Build and test
 
@@ -85,3 +88,8 @@ QT_QPA_PLATFORM=offscreen ./build/egoboard --smoke
 ```bash
 ./scripts/build-appimage.sh
 ```
+
+Set `EGOBOARD_APPIMAGE_BUILD_DIR`, `EGOBOARD_APPIMAGE_APPDIR`, or
+`EGOBOARD_APPIMAGE_OUTPUT_DIR` to keep intermediate files and the output outside
+the repository. For offline builds, set `EGOBOARD_APPIMAGE_RUNTIME_FILE` to a
+local AppImage Type-2 runtime; otherwise `appimagetool` may download one.

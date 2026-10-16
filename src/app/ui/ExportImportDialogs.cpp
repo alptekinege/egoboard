@@ -310,8 +310,26 @@ RestoreBackupDialog::RestoreBackupDialog(const QStringList &backupPaths, QWidget
     modeLayout->addWidget(m_overwriteRadio);
     modeLayout->addWidget(m_mergeRadio);
     layout->addWidget(modeBox);
-    layout->addWidget(new QLabel(tr("Replacing cannot be undone; the current history is not "
-                                    "backed up automatically before a restore."),
+    m_settingsCheck = new QCheckBox(tr("Also restore settings from this backup"), this);
+    m_settingsCheck->setAccessibleName(tr("Restore settings from backup"));
+    m_settingsCheck->setChecked(true);
+    layout->addWidget(m_settingsCheck);
+    const auto updateSettingsAvailability = [this] {
+        const QString path = selectedPath();
+        const QString suffix = QFileInfo(path).suffix().toLower();
+        const bool hasSettings = suffix == QLatin1String("zip")
+            || suffix == QLatin1String("backup");
+        m_settingsCheck->setEnabled(hasSettings && m_overwriteRadio->isChecked());
+        if (!hasSettings)
+            m_settingsCheck->setChecked(false);
+    };
+    connect(m_list, &QListWidget::currentRowChanged, this,
+            [updateSettingsAvailability] { updateSettingsAvailability(); });
+    connect(m_overwriteRadio, &QRadioButton::toggled, this,
+            [updateSettingsAvailability] { updateSettingsAvailability(); });
+    updateSettingsAvailability();
+    layout->addWidget(new QLabel(tr("Replacing cannot be undone. The current history and settings "
+                                    "are not backed up automatically before a restore."),
                                  this));
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
@@ -330,6 +348,12 @@ ExportImportManager::ImportMode RestoreBackupDialog::mode() const
 {
     return m_overwriteRadio->isChecked() ? ExportImportManager::ImportMode::Overwrite
                                          : ExportImportManager::ImportMode::Merge;
+}
+
+bool RestoreBackupDialog::restoreSettings() const
+{
+    return m_settingsCheck && m_settingsCheck->isChecked()
+        && m_overwriteRadio->isChecked();
 }
 
 ImageExportDialog::ImageExportDialog(BookmarkManager *bookmarks, const QList<qint64> &selectedIds,

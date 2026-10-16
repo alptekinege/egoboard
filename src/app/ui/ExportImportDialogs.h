@@ -135,11 +135,13 @@ public:
 
     QString selectedPath() const;
     ExportImportManager::ImportMode mode() const;
+    bool restoreSettings() const;
 
 private:
     QListWidget *m_list = nullptr;
     QRadioButton *m_overwriteRadio = nullptr;
     QRadioButton *m_mergeRadio = nullptr;
+    QCheckBox *m_settingsCheck = nullptr;
 };
 
 } // namespace ExportImportDialogs

@@ -15,7 +15,7 @@ class SettingsManager;
 class SnippetManager;
 class StorageManager;
 
-// Performs one JSON backup — or a restore — with its own database connection
+// Performs one database/settings backup — or a restore — with its own connection
 // on a worker thread (the GUI connection belongs to the GUI thread), mirroring
 // VacuumWorker.
 class BackupWorker : public QObject {
@@ -26,10 +26,11 @@ public:
     ~BackupWorker() override;
 
     // Schedules a backup on the worker's thread; safe to call from the GUI.
-    void requestRun(const QString &folder, int keep, const QString &encryptionKey);
+    void requestRun(const QString &folder, int keep, const QByteArray &settingsJson,
+                    const QString &encryptionKey);
     // Schedules a restore of a backup file; safe to call from the GUI.
     void requestRestore(const QString &path, ExportImportManager::ImportMode mode,
-                        const QString &encryptionKey);
+                        const QString &encryptionKey, bool restoreSettings);
     // U11 (G9): cooperative cancel for the in-flight run; safe from any
     // thread (the worker polls the flag at bounded-page granularity).
     void requestCancel();
@@ -37,15 +38,16 @@ public:
 signals:
     void finished(bool ok, const QString &path, const QString &error);
     void restoreFinished(bool ok, const QString &path, const QString &error, int imported,
-                         int merged, int skipped);
-    // (done, total) entries so far, emitted from the worker thread.
+                         int merged, int skipped, const QByteArray &settingsJson);
+    // Progress work units, emitted from the worker thread.
     void backupProgress(int done, int total);
     void restoreProgress(int done, int total);
 
 private:
-    void run(const QString &folder, int keep, const QString &encryptionKey);
+    void run(const QString &folder, int keep, const QByteArray &settingsJson,
+             const QString &encryptionKey);
     void restore(const QString &path, ExportImportManager::ImportMode mode,
-                 const QString &encryptionKey);
+                 const QString &encryptionKey, bool restoreSettings);
     // Opens the worker-side connection on first use; false on failure.
     bool ensureStorage(const QString &encryptionKey);
 
@@ -59,7 +61,7 @@ private:
 };
 
 // Automatic backups: runs daily (and once at startup when overdue), writes
-// egoboard-backup-*.json into the configured folder and prunes old files.
+// egoboard-backup-* packages into the configured folder and prunes old files.
 // Also restores a backup file on request.
 class BackupService : public QObject {
     Q_OBJECT
@@ -72,13 +74,16 @@ public:
     // Runs a backup now; false when one is already running or none is possible.
     bool runNow();
     // Restores a backup file (on the worker thread); false when busy.
-    bool restoreNow(const QString &path, ExportImportManager::ImportMode mode);
+    bool restoreNow(const QString &path, ExportImportManager::ImportMode mode,
+                    bool restoreSettings = false);
     // U11 (G9): cancels the in-flight backup/restore; the run reports back
     // through finished/restoreFinished with a canceled error.
     void cancel();
     bool isRunning() const { return m_running; }
     // Effective folder (configured value, else the default under Documents).
     QString folder() const;
+    static bool zipBackupsAvailable();
+    static bool databaseSnapshotAvailable();
     // Supplies the SQLCipher key for encrypted databases (read from KWallet).
     void setKeyProvider(std::function<QString()> provider) { m_keyProvider = std::move(provider); }
 

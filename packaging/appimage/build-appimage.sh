@@ -9,9 +9,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-BUILD_DIR="${ROOT_DIR}/build-appimage"
-APPDIR="${BUILD_DIR}/AppDir"
-OUTPUT_DIR="${ROOT_DIR}/dist"
+BUILD_DIR="${EGOBOARD_APPIMAGE_BUILD_DIR:-${ROOT_DIR}/build-appimage}"
+APPDIR="${EGOBOARD_APPIMAGE_APPDIR:-${BUILD_DIR}/AppDir}"
+OUTPUT_DIR="${EGOBOARD_APPIMAGE_OUTPUT_DIR:-${ROOT_DIR}/dist}"
 TOOLS_DIR="${ROOT_DIR}/packaging/appimage/tools"
 
 VERSION="0.2"
@@ -284,7 +284,16 @@ log_info "Assembling AppImage with appimagetool..."
 export ARCH
 export APPIMAGE_EXTRACT_AND_RUN=1
 
-"${APPIMAGETOOL}" --no-appstream "${APPDIR}" "${OUTPUT_APPIMAGE}"
+if [ -n "${EGOBOARD_APPIMAGE_RUNTIME_FILE:-}" ]; then
+    if [ ! -f "${EGOBOARD_APPIMAGE_RUNTIME_FILE}" ]; then
+        log_error "AppImage runtime file not found: ${EGOBOARD_APPIMAGE_RUNTIME_FILE}"
+        exit 1
+    fi
+    "${APPIMAGETOOL}" --no-appstream --runtime-file "${EGOBOARD_APPIMAGE_RUNTIME_FILE}" \
+        "${APPDIR}" "${OUTPUT_APPIMAGE}"
+else
+    "${APPIMAGETOOL}" --no-appstream "${APPDIR}" "${OUTPUT_APPIMAGE}"
+fi
 
 chmod +x "${OUTPUT_APPIMAGE}"
 

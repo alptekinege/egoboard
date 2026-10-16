@@ -27,6 +27,10 @@ QT_QPA_PLATFORM=offscreen ./build/egoboard --bench=100000  # budgets must hold
   installed binary, never a bare command name).
 - Dashboard (P2-A): open Settings ▸ Usage and via `>dashboard` — activity/type/top-apps/size sections render, charts take
   keyboard focus (arrows/Home/End), and an empty profile shows the empty state.
+- Backups (P2-B): create a ZIP in Settings ▸ Storage, restore it after the
+  separate replace confirmation, and verify history/settings return. Cancel a
+  large backup and confirm no partial package remains; a damaged archive must
+  be rejected before current history changes.
 
 ## 3. Plasma Wayland session
 
@@ -40,6 +44,9 @@ QT_QPA_PLATFORM=offscreen ./build/egoboard --bench=100000  # budgets must hold
 - `eb query` in KRunner lists grouped matches with working actions.
 - Dashboard (P2-A): same as on X11 — Settings ▸ Usage and `>dashboard` open the
   local aggregates; charts are keyboard-focusable; no entry text is shown.
+- Backups (P2-B): repeat ZIP creation, cancel, validation, and restore in the
+  Plasma Wayland session; confirm KWallet remains the only place holding the
+  SQLCipher key.
 
 ## 4. Optional-feature matrix
 
@@ -53,6 +60,8 @@ QT_QPA_PLATFORM=offscreen ./build/egoboard --bench=100000  # budgets must hold
 | `tesseract` | Images carry no OCR text; preview names the install hint |
 | Portal service | Portal paste degrades to the notification; status line says so |
 | QtCharts | Not required: the dashboard paints with the built-in QPainter fallback; no behavior change |
+| `libzip` | ZIP is unavailable; Settings writes an atomic multi-file `.backup` folder with the SQLite snapshot and settings |
+| SQLite development library | ZIP is disabled; fallback uses history/settings JSON files and reports that format in Settings ▸ Diagnostics |
 
 ## 5. Packaging
 
@@ -60,5 +69,7 @@ QT_QPA_PLATFORM=offscreen ./build/egoboard --bench=100000  # budgets must hold
   `tst_packaging`), installed with icon + autostart handling intact.
 - AppImage: `./scripts/build-appimage.sh`, then
   `./scripts/validate-appimage.sh` (or `packaging/appimage/validate-appimage.sh`).
+  When built with libzip, validation also checks that libzip is bundled; without
+  it the AppImage uses the multi-file backup fallback.
 - Settings ▸ Diagnostics report on the release build shows sane versions,
   pragmas, and subsystem states.
