@@ -1464,24 +1464,30 @@ QWidget *SettingsDialog::buildStoragePage()
                 });
         connect(service, &BackupService::backupProgress, this,
                 [this](int done, int total) {
-                    if (m_ioProgress) {
-                        if (total > 0) {
-                            m_ioProgress->setMaximum(total);
-                            m_ioProgress->setValue(done);
-                        }
-                        m_ioProgress->setLabelText(
-                            tr("Creating backup… %1 of %2 work units").arg(done).arg(total));
+                    const QPointer<QProgressDialog> progress = m_ioProgress;
+                    if (!progress)
+                        return;
+                    progress->setLabelText(
+                        tr("Creating backup… %1 of %2 work units").arg(done).arg(total));
+                    if (total > 0) {
+                        progress->setMaximum(total);
+                        // setValue() may process events, allowing finished() to
+                        // close the dialog reentrantly. Keep it as the final use.
+                        progress->setValue(done);
                     }
                 });
         connect(service, &BackupService::restoreProgress, this,
                 [this](int done, int total) {
-                    if (m_ioProgress) {
-                        if (total > 0) {
-                            m_ioProgress->setMaximum(total);
-                            m_ioProgress->setValue(done);
-                        }
-                        m_ioProgress->setLabelText(
-                            tr("Restoring… %1 of %2 work units").arg(done).arg(total));
+                    const QPointer<QProgressDialog> progress = m_ioProgress;
+                    if (!progress)
+                        return;
+                    progress->setLabelText(
+                        tr("Restoring… %1 of %2 work units").arg(done).arg(total));
+                    if (total > 0) {
+                        progress->setMaximum(total);
+                        // setValue() may process events, allowing finished() to
+                        // close the dialog reentrantly. Keep it as the final use.
+                        progress->setValue(done);
                     }
                 });
     }
@@ -1730,6 +1736,11 @@ void SettingsDialog::showIoProgress(const QString &label)
     auto *dialog = new QProgressDialog(label, tr("Cancel"), 0, 0, this);
     dialog->setWindowModality(Qt::WindowModal);
     dialog->setMinimumDuration(0);
+    // The worker reports progress in separate phases with independent totals
+    // (snapshot, hashing, and archive writing). Reaching one phase's maximum
+    // must not auto-close/reset the dialog before the service reports done.
+    dialog->setAutoClose(false);
+    dialog->setAutoReset(false);
     connect(dialog, &QProgressDialog::canceled, this, [this] {
         if (BackupService *service = m_ctx.backupService())
             service->cancel();
