@@ -6,9 +6,6 @@
 #include <QMimeData>
 #include <QSet>
 
-#include <algorithm>
-#include <functional>
-
 namespace {
 constexpr auto kEntryMime = "application/x-egoboard-entry-ids";
 }
@@ -84,15 +81,15 @@ void ClipboardListModel::onEntriesRemoved(const QList<qint64> &ids)
         return;
     QSet<qint64> unique(ids.cbegin(), ids.cend());
     QList<int> rows;
-    rows.reserve(unique.size());
-    for (const qint64 id : unique) {
-        const int row = rowForId(id);
-        if (row >= 0)
+    rows.reserve(qMin(unique.size(), m_rows.size()));
+    // Visit the loaded window once. Looking up every removed id with
+    // rowForId() would rescan the same rows for large bulk deletions.
+    for (int row = m_rows.size() - 1; row >= 0; --row) {
+        if (unique.contains(m_rows.at(row).id))
             rows.append(row);
     }
     if (rows.isEmpty())
         return;
-    std::sort(rows.begin(), rows.end(), std::greater<int>()); // descending
     // Remove contiguous runs bottom-up so the earlier indices stay valid.
     int i = 0;
     while (i < rows.size()) {
