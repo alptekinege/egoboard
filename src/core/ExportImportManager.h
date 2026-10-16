@@ -5,8 +5,10 @@
 #include "SnippetManager.h"
 #include "StorageManager.h"
 
+#include <QMap>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 
 #include <atomic>
 #include <functional>
@@ -183,6 +185,28 @@ public:
 
     // Where Klipper keeps its history on this system (may not exist).
     static QString defaultKlipperPath();
+
+    // --- CopyQ `.cpq` import (P2-C) -------------------------------------------
+    // Read-only importer for unencrypted CopyQ exports, researched against
+    // upstream CopyQ (`src/gui/mainwindow.cpp` exportDataV4/importDataV4 and
+    // `src/item/serialize.cpp`): the file is a QDataStream with a QByteArray
+    // header (`CopyQ v1`..`CopyQ v5`, outer version Qt_4_7), then per-tab
+    // QVariantMaps whose `data` holds the QDataStream item bytes (row count
+    // + per-item `-2` marker + MIME map with compressed-MIME ids). Encrypted
+    // `CopyQ v5` (password-derived QCA key, inner version Qt_5_15) and any
+    // unknown header are refused with a precise message instead of a
+    // speculative parse. No new dependencies (QtCore-only); the running CopyQ
+    // instance is never touched (plain file read). Imported text is re-flagged
+    // via SensitiveDataDetector; sourceApp is `copyq`, sourceWindow the tab.
+    struct CopyQPreview {
+        QStringList tabs;
+        QMap<QString, int> itemsPerTab;
+        int totalItems = 0;
+    };
+    static bool previewCopyQFile(const QString &path, CopyQPreview *preview, QString *error);
+    ImportResult importCopyQFile(const QString &path, ImportMode mode,
+                                std::atomic<bool> *cancel = nullptr,
+                                IoProgress progress = {});
 
     // --- automatic backups ---------------------------------------------------
     struct BackupResult {

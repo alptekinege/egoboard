@@ -5,6 +5,7 @@
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
 #include <QRegularExpressionMatchIterator>
+#include <QVector>
 
 #include <algorithm>
 
@@ -63,9 +64,21 @@ QList<SensitiveDataDetector::Finding> SensitiveDataDetector::scan(const QString 
     if (text.isEmpty())
         return findings;
 
-    for (const Rule &rule : kRules) {
-        QRegularExpression re(QString::fromLatin1(rule.pattern),
-                              QRegularExpression::CaseInsensitiveOption);
+    // Compiled once: bulk imports (e.g. CopyQ 10k) call this per row and must
+    // not recompile 9 patterns per entry. Same patterns/options as before.
+    static const QVector<QRegularExpression> kCompiled = [] {
+        QVector<QRegularExpression> list;
+        list.reserve(int(sizeof(kRules) / sizeof(kRules[0])));
+        for (const Rule &rule : kRules) {
+            list.append(QRegularExpression(QString::fromLatin1(rule.pattern),
+                                           QRegularExpression::CaseInsensitiveOption));
+        }
+        return list;
+    }();
+
+    for (int r = 0; r < int(sizeof(kRules) / sizeof(kRules[0])); ++r) {
+        const Rule &rule = kRules[r];
+        const QRegularExpression &re = kCompiled.at(r);
         QRegularExpressionMatchIterator it = re.globalMatch(text);
         while (it.hasNext()) {
             const QRegularExpressionMatch match = it.next();

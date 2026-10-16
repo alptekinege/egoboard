@@ -278,6 +278,66 @@ ExportImportManager::ImportMode ImportDialog::mode() const
     return ExportImportManager::ImportMode::Merge;
 }
 
+CopyQImportDialog::CopyQImportDialog(const QString &filePath,
+                                     const ExportImportManager::CopyQPreview &preview,
+                                     QWidget *parent)
+    : QDialog(parent)
+{
+    setWindowTitle(tr("Import CopyQ export"));
+
+    auto *layout = new QVBoxLayout(this);
+    layout->addWidget(new QLabel(tr("File: %1").arg(QFileInfo(filePath).fileName()), this));
+
+    auto *list = new QListWidget(this);
+    list->setSelectionMode(QAbstractItemView::NoSelection);
+    list->setAlternatingRowColors(true);
+    for (const QString &tab : preview.tabs) {
+        const int count = preview.itemsPerTab.value(tab, 0);
+        auto *item = new QListWidgetItem(
+            tr("%1 — %n item(s)", nullptr, count).arg(tab), list);
+        item->setToolTip(tr("%1 items in the CopyQ tab “%2”.").arg(count).arg(tab));
+    }
+    if (list->count() == 0)
+        list->addItem(tr("No tabs found."));
+    layout->addWidget(list, 1);
+    auto *total = new QLabel(tr("%n item(s) in %1 tab(s).", nullptr, preview.totalItems)
+                                 .arg(preview.tabs.size()),
+                             this);
+    layout->addWidget(total);
+
+    auto *modeBox = new QGroupBox(tr("Conflict handling"), this);
+    auto *modeLayout = new QVBoxLayout(modeBox);
+    m_mergeRadio = new QRadioButton(
+        tr("Merge — keep the newer copy of duplicates"), modeBox);
+    m_mergeRadio->setChecked(true);
+    m_overwriteRadio = new QRadioButton(
+        tr("Overwrite — replace the current history (groups are kept)"), modeBox);
+    m_skipRadio = new QRadioButton(tr("Skip — only add entries not in the local history"),
+                                   modeBox);
+    modeLayout->addWidget(m_mergeRadio);
+    modeLayout->addWidget(m_overwriteRadio);
+    modeLayout->addWidget(m_skipRadio);
+    layout->addWidget(modeBox);
+    layout->addWidget(new QLabel(tr("Imports stay on this device. Sensitive-looking entries are "
+                                    "flagged; encrypted CopyQ exports must be re-exported "
+                                    "without a password first."),
+                                 this));
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    layout->addWidget(buttons);
+}
+
+ExportImportManager::ImportMode CopyQImportDialog::mode() const
+{
+    if (m_overwriteRadio->isChecked())
+        return ExportImportManager::ImportMode::Overwrite;
+    if (m_skipRadio->isChecked())
+        return ExportImportManager::ImportMode::SkipDuplicates;
+    return ExportImportManager::ImportMode::Merge;
+}
+
 RestoreBackupDialog::RestoreBackupDialog(const QStringList &backupPaths, QWidget *parent)
     : QDialog(parent)
 {

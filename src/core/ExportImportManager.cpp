@@ -1,8 +1,10 @@
 #include "ExportImportManager.h"
 
 #include "ContentType.h"
+#include "SensitiveDataDetector.h"
 
 #include <QCryptographicHash>
+#include <QDataStream>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -14,6 +16,7 @@
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QStandardPaths>
+#include <QUrl>
 
 #include <algorithm>
 #include <atomic>
@@ -209,6 +212,487 @@ QString imageScopeName(ExportImportManager::ImageExportRequest::Scope scope)
 }
 
 } // namespace
+
+// --- CopyQ `.cpq` parsing (P2-C) ------------------------------------------------
+// Mirrors upstream CopyQ `src/item/serialize.cpp` (decompressMime/idToMime,
+// deserializeDataV2 + the deprecated v1 branch) and
+// `src/gui/mainwindow.cpp` (exportDataV4/importDataV4 header + tab layout).
+// QtCore-only: plain file read, no new dependency, never touches a running
+// CopyQ instance. Encrypted v5 (password-derived QCA key) is refused with a
+// precise note instead of a speculative parse.
+namespace CopyQImport {
+
+constexpr int kMaxItems = 100000; // upstream MAX_ITEMS
+constexpr int kMaxTabs = 1000;
+constexpr int kMaxFormatsPerItem = 256;
+constexpr qint64 kMaxPayloadBytes = 32LL * 1024 * 1024;
+constexpr qint64 kMaxFileBytes = 512LL * 1024 * 1024;
+constexpr int kMaxTextChars = 1024 * 1024;
+constexpr int kMaxBlobBytes = 10 * 1024 * 1024;
+
+struct Tab {
+    QString name;
+    QVector<QVariantMap> items;
+};
+
+QString decompressMime(const QString &compressed, bool *ok)
+{
+    if (ok)
+        *ok = false;
+    if (compressed.isEmpty())
+        return {};
+    bool hexOk = false;
+    const int id = QStringView(compressed).mid(0, 1).toInt(&hexOk, 16);
+    if (!hexOk)
+        return {};
+    if (id == 0) {
+        if (ok)
+            *ok = true;
+        return compressed.mid(1);
+    }
+    QString prefix;
+    switch (id) {
+    case 1: prefix = QStringLiteral("application/x-copyq-owner-window-title"); break;
+    case 2: prefix = QStringLiteral("application/x-copyq-item-notes"); break;
+    case 3: prefix = QStringLiteral("application/x-copyq-"); break;
+    case 4: prefix = QStringLiteral("text/plain"); break;
+    case 5: prefix = QStringLiteral("text/html"); break;
+    case 6: prefix = QStringLiteral("text/uri-list"); break;
+    case 7: prefix = QStringLiteral("image/"); break;
+    case 8: prefix = QStringLiteral("text/"); break;
+    case 9: prefix = QStringLiteral("application/"); break;
+    case 10: prefix = QStringLiteral("audio/"); break;
+    case 11: prefix = QStringLiteral("video/"); break;
+    default: return {};
+    }
+    if (ok)
+        *ok = true;
+    return prefix + compressed.mid(1);
+}
+
+bool readItemV2Body(QDataStream *stream, QVariantMap *data, QString *error)
+{
+    qint32 mapSize = 0;
+    *stream >> mapSize;
+    if (stream->status() != QDataStream::Ok) {
+        if (error)
+            *error = QObject::tr("Corrupt CopyQ export: cannot read the item format count.");
+        return false;
+    }
+    if (mapSize < 0 || mapSize > kMaxFormatsPerItem) {
+        if (error)
+            *error = QObject::tr("Corrupt CopyQ export: invalid format count %1.").arg(mapSize);
+        stream->setStatus(QDataStream::ReadCorruptData);
+        return false;
+    }
+    for (qint32 i = 0; i < mapSize; ++i) {
+        QString compressed;
+        *stream >> compressed;
+        bool mimeOk = false;
+        const QString mime = decompressMime(compressed, &mimeOk);
+        if (stream->status() != QDataStream::Ok || !mimeOk) {
+            if (error)
+                *error = QObject::tr("Corrupt CopyQ export: invalid MIME type.");
+            stream->setStatus(QDataStream::ReadCorruptData);
+            return false;
+        }
+        bool compressFlag = false;
+        *stream >> compressFlag;
+        QByteArray payload;
+        *stream >> payload;
+        if (stream->status() != QDataStream::Ok) {
+            if (error)
+                *error = QObject::tr("Corrupt CopyQ export: cannot read item data.");
+            return false;
+        }
+        if (payload.size() > kMaxPayloadBytes) {
+            if (error)
+                *error = QObject::tr("Corrupt CopyQ export: item payload exceeds the size limit.");
+            stream->setStatus(QDataStream::ReadCorruptData);
+            return false;
+        }
+        if (compressFlag) {
+            const QByteArray uncompressed = qUncompress(payload);
+            if (uncompressed.isEmpty()) {
+                if (error)
+                    *error = QObject::tr("Corrupt CopyQ export: cannot decompress item data.");
+                stream->setStatus(QDataStream::ReadCorruptData);
+                return false;
+            }
+            payload = uncompressed;
+        }
+        // Large CopyQ items may reference an external `.dat` file instead of
+        // carrying bytes (`FILE:` prefix holds the exporter's absolute path,
+        // not portable content): skip the format, keep any inline sibling.
+        if (mime.startsWith(QLatin1String("FILE:")))
+            continue;
+        data->insert(mime, payload);
+    }
+    return stream->status() == QDataStream::Ok;
+}
+
+bool readOneItem(QDataStream *stream, QVariantMap *data, QString *error)
+{
+    qint32 marker = 0;
+    *stream >> marker;
+    if (stream->status() != QDataStream::Ok) {
+        if (error)
+            *error = QObject::tr("Corrupt CopyQ export: cannot read item.");
+        return false;
+    }
+    if (marker == -3) {
+        if (error)
+            *error = QObject::tr("This CopyQ export is encrypted (CopyQ v5, password-protected); "
+                                 "export it from CopyQ without a password and import the "
+                                 "unencrypted file.");
+        stream->setStatus(QDataStream::ReadCorruptData);
+        return false;
+    }
+    if (marker == -2)
+        return readItemV2Body(stream, data, error);
+    if (marker < 0) {
+        if (error)
+            *error = QObject::tr("Corrupt CopyQ export: unsupported item version %1.").arg(marker);
+        stream->setStatus(QDataStream::ReadCorruptData);
+        return false;
+    }
+    // Deprecated v1 item: marker is the MIME count, mimes are literal and
+    // payloads are qCompressed.
+    if (marker > kMaxFormatsPerItem) {
+        if (error)
+            *error = QObject::tr("Corrupt CopyQ export: invalid format count %1.").arg(marker);
+        stream->setStatus(QDataStream::ReadCorruptData);
+        return false;
+    }
+    for (qint32 i = 0; i < marker; ++i) {
+        QString mime;
+        *stream >> mime;
+        QByteArray payload;
+        *stream >> payload;
+        if (stream->status() != QDataStream::Ok) {
+            if (error)
+                *error = QObject::tr("Corrupt CopyQ export: cannot read item data.");
+            return false;
+        }
+        if (!payload.isEmpty()) {
+            const QByteArray uncompressed = qUncompress(payload);
+            if (uncompressed.isEmpty()) {
+                if (error)
+                    *error = QObject::tr("Corrupt CopyQ export: cannot decompress item data.");
+                stream->setStatus(QDataStream::ReadCorruptData);
+                return false;
+            }
+            payload = uncompressed;
+        }
+        if (mime.startsWith(QLatin1String("FILE:")))
+            continue;
+        data->insert(mime, payload);
+    }
+    return stream->status() == QDataStream::Ok;
+}
+
+bool readTabBytes(const QByteArray &tabBytes, QVector<QVariantMap> *items, QString *error)
+{
+    QDataStream tabIn(tabBytes);
+    tabIn.setVersion(QDataStream::Qt_4_7);
+    qint32 rowCount = 0;
+    tabIn >> rowCount;
+    if (tabIn.status() != QDataStream::Ok) {
+        if (error)
+            *error = QObject::tr("Corrupt CopyQ export: cannot read tab contents.");
+        return false;
+    }
+    if (rowCount < 0 || rowCount > kMaxItems) {
+        if (error)
+            *error = QObject::tr("Corrupt CopyQ export: invalid item count %1.").arg(rowCount);
+        return false;
+    }
+    items->reserve(items->size() + rowCount);
+    for (qint32 i = 0; i < rowCount; ++i) {
+        QVariantMap data;
+        if (!readOneItem(&tabIn, &data, error))
+            return false;
+        items->append(data);
+    }
+    return tabIn.status() == QDataStream::Ok;
+}
+
+bool readTabs(const QString &path, QVector<Tab> *tabs, QString *error)
+{
+    const QFileInfo info(path);
+    if (info.isSymLink()) {
+        if (error)
+            *error = QObject::tr("A CopyQ export cannot be imported through a symbolic link.");
+        return false;
+    }
+    if (!info.isFile() || info.size() <= 0 || info.size() > kMaxFileBytes) {
+        if (error) {
+            *error = !info.exists()
+                ? QObject::tr("CopyQ export not found: %1.").arg(path)
+                : QObject::tr("The CopyQ file %1 is not a regular file or is too large.").arg(path);
+        }
+        return false;
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = QObject::tr("Cannot read %1: %2.").arg(path, file.errorString());
+        return false;
+    }
+    QDataStream in(&file);
+    in.setVersion(QDataStream::Qt_4_7);
+    QByteArray header;
+    in >> header;
+    if (in.status() != QDataStream::Ok) {
+        if (error)
+            *error = QObject::tr("%1 is not a CopyQ export (cannot read its header).").arg(path);
+        return false;
+    }
+    if (header.startsWith("CopyQ v5")) {
+        if (error)
+            *error = QObject::tr("This CopyQ export is encrypted (CopyQ v5, password-protected); "
+                                 "export it from CopyQ without a password and import the "
+                                 "unencrypted file.");
+        return false;
+    }
+    if (header.startsWith("CopyQ v4")) {
+        QVariantMap settings;
+        in >> settings;
+        if (in.status() != QDataStream::Ok) {
+            if (error)
+                *error = QObject::tr("Corrupt CopyQ export: cannot read its settings.");
+            return false;
+        }
+        int total = 0;
+        while (!in.atEnd()) {
+            QVariantMap tabMap;
+            in >> tabMap;
+            if (in.status() != QDataStream::Ok) {
+                if (error)
+                    *error = QObject::tr("Corrupt CopyQ export: cannot read a tab.");
+                return false;
+            }
+            const QString name = tabMap.value(QStringLiteral("name")).toString();
+            if (name.isEmpty()) {
+                if (error)
+                    *error = QObject::tr("Corrupt CopyQ export: a tab has no name.");
+                return false;
+            }
+            if (tabs->size() >= kMaxTabs) {
+                if (error)
+                    *error = QObject::tr("The CopyQ export holds too many tabs.");
+                return false;
+            }
+            Tab tab;
+            tab.name = name.left(256);
+            if (!readTabBytes(tabMap.value(QStringLiteral("data")).toByteArray(), &tab.items,
+                              error))
+                return false;
+            total += tab.items.size();
+            if (total > kMaxItems) {
+                if (error)
+                    *error = QObject::tr("The CopyQ export holds too many entries.");
+                return false;
+            }
+            tabs->append(tab);
+        }
+        return in.status() == QDataStream::Ok;
+    }
+    if (header.startsWith("CopyQ v3")) {
+        QVariantMap settings;
+        in >> settings;
+        if (in.status() != QDataStream::Ok) {
+            if (error)
+                *error = QObject::tr("Corrupt CopyQ export: cannot read its settings.");
+            return false;
+        }
+        const QVariantList tabList = settings.value(QStringLiteral("tabs")).toList();
+        if (tabList.size() > kMaxTabs) {
+            if (error)
+                *error = QObject::tr("The CopyQ export holds too many tabs.");
+            return false;
+        }
+        int total = 0;
+        for (const QVariant &entry : tabList) {
+            const QVariantMap tabMap = entry.toMap();
+            const QString name = tabMap.value(QStringLiteral("name")).toString();
+            if (name.isEmpty()) {
+                if (error)
+                    *error = QObject::tr("Corrupt CopyQ export: a tab has no name.");
+                return false;
+            }
+            Tab tab;
+            tab.name = name.left(256);
+            if (!readTabBytes(tabMap.value(QStringLiteral("data")).toByteArray(), &tab.items,
+                              error))
+                return false;
+            total += tab.items.size();
+            if (total > kMaxItems) {
+                if (error)
+                    *error = QObject::tr("The CopyQ export holds too many entries.");
+                return false;
+            }
+            tabs->append(tab);
+        }
+        return in.status() == QDataStream::Ok;
+    }
+    if (header.startsWith("CopyQ v2") || header.startsWith("CopyQ v1")) {
+        QString tabName;
+        in >> tabName;
+        if (in.status() != QDataStream::Ok || tabName.isEmpty()) {
+            if (error)
+                *error = QObject::tr("Corrupt CopyQ export: cannot read its tab.");
+            return false;
+        }
+        // The rest of the stream is the model body: row count + items.
+        // Rewind it through a buffer so the row reader sees the versioned
+        // stream from the current position.
+        Tab tab;
+        tab.name = tabName.left(256);
+        // Read remaining bytes and parse as tab body.
+        const QByteArray rest = file.readAll();
+        if (in.status() != QDataStream::Ok) {
+            if (error)
+                *error = QObject::tr("Corrupt CopyQ export: cannot read tab contents.");
+            return false;
+        }
+        QDataStream tabIn(rest);
+        tabIn.setVersion(QDataStream::Qt_4_7);
+        qint32 rowCount = 0;
+        tabIn >> rowCount;
+        if (tabIn.status() != QDataStream::Ok || rowCount < 0 || rowCount > kMaxItems) {
+            if (error)
+                *error = QObject::tr("Corrupt CopyQ export: invalid item count.");
+            return false;
+        }
+        for (qint32 i = 0; i < rowCount; ++i) {
+            QVariantMap data;
+            if (!readOneItem(&tabIn, &data, error))
+                return false;
+            tab.items.append(data);
+        }
+        tabs->append(tab);
+        return true;
+    }
+    if (error) {
+        const QString head = QString::fromLatin1(header.left(32));
+        *error = QObject::tr("%1 is not a supported CopyQ export (header %2; expected "
+                             "CopyQ v1..v4 unencrypted, v5 is password-encrypted).")
+                     .arg(path, head.isEmpty() ? QObject::tr("unknown") : head);
+    }
+    return false;
+}
+
+QByteArray hashFor(ContentType type, const QByteArray &payload)
+{
+    return QCryptographicHash::hash(QByteArray(contentTypeTag(type)) + '\0' + payload,
+                                    QCryptographicHash::Sha256)
+        .toHex();
+}
+
+bool toRecord(const QVariantMap &data, ClipboardRecord *record, QString *skipReason)
+{
+    const auto utf8Text = [](const QVariant &value) {
+        return QString::fromUtf8(value.toByteArray());
+    };
+    QString text;
+    if (data.contains(QStringLiteral("text/plain;charset=utf-8")))
+        text = utf8Text(data.value(QStringLiteral("text/plain;charset=utf-8")));
+    else if (data.contains(QStringLiteral("text/plain")))
+        text = utf8Text(data.value(QStringLiteral("text/plain")));
+    if (!text.trimmed().isEmpty()) {
+        text = text.left(kMaxTextChars);
+        record->type = ContentType::Text;
+        record->textData = text;
+        record->preview = singleLinePreview(text);
+        record->sizeBytes = text.toUtf8().size();
+        record->hash = hashFor(ContentType::Text, text.toUtf8());
+        return true;
+    }
+    if (data.contains(QStringLiteral("text/html"))) {
+        QString html = utf8Text(data.value(QStringLiteral("text/html")));
+        if (!html.trimmed().isEmpty()) {
+            html = html.left(kMaxTextChars);
+            record->type = ContentType::RichText;
+            record->textData = html;
+            record->preview = singleLinePreview(html);
+            record->sizeBytes = html.toUtf8().size();
+            record->hash = hashFor(ContentType::RichText, html.toUtf8());
+            return true;
+        }
+    }
+    if (data.contains(QStringLiteral("text/uri-list"))) {
+        const QString raw = utf8Text(data.value(QStringLiteral("text/uri-list")));
+        QStringList paths;
+        for (const QString &line : raw.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+            const QString trimmed = line.trimmed();
+            if (trimmed.isEmpty() || trimmed.startsWith(QLatin1Char('#')))
+                continue;
+            const QUrl url(trimmed);
+            const QString local = url.isLocalFile() ? url.toLocalFile() : trimmed;
+            if (!local.isEmpty())
+                paths.append(local);
+            if (paths.size() >= 64)
+                break;
+        }
+        if (!paths.isEmpty()) {
+            QJsonArray array;
+            for (const QString &p : paths)
+                array.append(p);
+            const QString json =
+                QString::fromUtf8(QJsonDocument(array).toJson(QJsonDocument::Compact));
+            record->type = ContentType::Files;
+            record->textData = json;
+            QString names;
+            for (const QString &p : paths) {
+                if (!names.isEmpty())
+                    names += QStringLiteral(", ");
+                names += QFileInfo(p).fileName();
+            }
+            record->preview = QObject::tr("%1 %2: %3")
+                                  .arg(paths.size())
+                                  .arg(paths.size() == 1 ? QObject::tr("file")
+                                                         : QObject::tr("files"))
+                                  .arg(singleLinePreview(names));
+            record->sizeBytes = json.toUtf8().size();
+            record->hash = hashFor(ContentType::Files, json.toUtf8());
+            return true;
+        }
+        if (!raw.trimmed().isEmpty()) {
+            const QString fallback = raw.left(kMaxTextChars);
+            record->type = ContentType::Text;
+            record->textData = fallback;
+            record->preview = singleLinePreview(fallback);
+            record->sizeBytes = fallback.toUtf8().size();
+            record->hash = hashFor(ContentType::Text, fallback.toUtf8());
+            return true;
+        }
+    }
+    for (auto it = data.cbegin(); it != data.cend(); ++it) {
+        if (it.key().startsWith(QLatin1String("image/"))) {
+            const QByteArray blob = it.value().toByteArray();
+            if (blob.isEmpty())
+                continue;
+            if (blob.size() > kMaxBlobBytes) {
+                if (skipReason)
+                    *skipReason = QObject::tr("image exceeds the size limit");
+                return false;
+            }
+            record->type = ContentType::Image;
+            record->blobData = blob;
+            record->hasBlob = true;
+            record->preview = QStringLiteral("image");
+            record->sizeBytes = blob.size();
+            record->hash = hashFor(ContentType::Image, blob);
+            return true;
+        }
+    }
+    if (skipReason)
+        *skipReason = QObject::tr("no usable text, file, or image payload");
+    return false;
+}
+
+} // namespace CopyQImport
 
 ExportImportManager::ExportImportManager(StorageManager *storage, BookmarkManager *bookmarks,
                                          SnippetManager *snippets, QObject *parent)
@@ -1486,6 +1970,132 @@ ExportImportManager::importKlipperHistory(const QString &databasePath, std::atom
         m_storage->endBulk(true);
 
     emit m_storage->storageReset();
+    result.ok = true;
+    return result;
+}
+
+bool ExportImportManager::previewCopyQFile(const QString &path, CopyQPreview *preview,
+                                           QString *error)
+{
+    if (!preview) {
+        if (error)
+            *error = tr("No CopyQ preview destination was provided.");
+        return false;
+    }
+    QVector<CopyQImport::Tab> tabs;
+    QString parseError;
+    if (!CopyQImport::readTabs(path, &tabs, &parseError)) {
+        if (error)
+            *error = parseError;
+        return false;
+    }
+    preview->tabs.clear();
+    preview->itemsPerTab.clear();
+    preview->totalItems = 0;
+    for (const CopyQImport::Tab &tab : tabs) {
+        preview->tabs.append(tab.name);
+        preview->itemsPerTab.insert(tab.name, tab.items.size());
+        preview->totalItems += tab.items.size();
+    }
+    return true;
+}
+
+ExportImportManager::ImportResult ExportImportManager::importCopyQFile(
+    const QString &path, ImportMode mode, std::atomic<bool> *cancel, IoProgress progress)
+{
+    ImportResult result;
+    const auto isCanceled = [&] { return cancel && cancel->load(std::memory_order_relaxed); };
+    if (isCanceled()) {
+        result.error = tr("Import canceled before it started — nothing was imported.");
+        return result;
+    }
+    QVector<CopyQImport::Tab> tabs;
+    QString parseError;
+    if (!CopyQImport::readTabs(path, &tabs, &parseError)) {
+        result.error = parseError;
+        return result;
+    }
+    struct Pending {
+        ClipboardRecord record;
+    };
+    QVector<Pending> pending;
+    int totalRows = 0;
+    for (const CopyQImport::Tab &tab : tabs)
+        totalRows += tab.items.size();
+    pending.reserve(totalRows);
+    const qint64 baseMs = QDateTime::currentMSecsSinceEpoch();
+    int rowIndex = 0;
+    for (const CopyQImport::Tab &tab : tabs) {
+        for (const QVariantMap &data : tab.items) {
+            ClipboardRecord record;
+            // First row keeps the newest timestamp so file order survives.
+            record.timestamp = qMax<qint64>(1, baseMs - rowIndex);
+            record.sourceApp = QStringLiteral("copyq");
+            record.sourceWindow = tab.name.left(512);
+            ++rowIndex;
+            QString skipReason;
+            if (!CopyQImport::toRecord(data, &record, &skipReason)) {
+                ++result.entriesSkipped;
+                continue;
+            }
+            // Local-trust re-flag: sensitive-looking imports are marked even
+            // though the payload itself is kept verbatim.
+            if ((record.type == ContentType::Text || record.type == ContentType::RichText
+                 || record.type == ContentType::Files)
+                && SensitiveDataDetector::isSensitive(record.textData))
+                record.sensitive = true;
+            Pending item;
+            item.record = record;
+            pending.append(item);
+        }
+    }
+    if (isCanceled()) {
+        result.error = tr("Import canceled before it started — nothing was imported.");
+        return result;
+    }
+
+    // CopyQ carries history only (tabs are flattened, groups have no mapping):
+    // Overwrite replaces the history and keeps the user's groups/tags.
+    const bool bulk = m_storage->beginBulk();
+    if (mode == ImportMode::Overwrite)
+        m_storage->clearHistory(true);
+    const int total = pending.size() + result.entriesSkipped;
+    int done = 0;
+    for (const Pending &item : pending) {
+        if (isCanceled()) {
+            if (bulk)
+                m_storage->endBulk(false); // roll back: a canceled import imports nothing
+            result.error = tr("Import canceled after %1 of %2 entries — nothing was imported.")
+                               .arg(done)
+                               .arg(total);
+            return result;
+        }
+        ++done;
+        if (done % 64 == 0 && progress)
+            progress(done, total);
+        if (mode == ImportMode::SkipDuplicates) {
+            QSqlDatabase db = m_storage->database();
+            if (findByHash(db, item.record.hash).has_value()) {
+                ++result.entriesSkipped;
+                continue;
+            }
+        }
+        bool updatedExisting = false;
+        if (m_storage->insertOrUpdate(item.record, &updatedExisting) == 0) {
+            ++result.entriesSkipped;
+            continue;
+        }
+        if (updatedExisting)
+            ++result.entriesMerged;
+        else
+            ++result.entriesImported;
+    }
+    if (progress)
+        progress(done, total);
+    if (bulk)
+        m_storage->endBulk(true);
+
+    emit m_storage->storageReset(); // one reload for the whole import
     result.ok = true;
     return result;
 }

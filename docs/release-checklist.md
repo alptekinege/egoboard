@@ -31,6 +31,9 @@ QT_QPA_PLATFORM=offscreen ./build/egoboard --bench=100000  # budgets must hold
   separate replace confirmation, and verify history/settings return. Cancel a
   large backup and confirm no partial package remains; a damaged archive must
   be rejected before current history changes.
+- CopyQ import (P2-C): Settings ▸ Storage ▸ Import CopyQ… opens a `*.cpq`
+  picker, shows the tab/item-count preview, then merges. An encrypted (v5)
+  export is refused with the re-export hint; a damaged file changes nothing.
 
 ## 3. Plasma Wayland session
 
@@ -47,6 +50,8 @@ QT_QPA_PLATFORM=offscreen ./build/egoboard --bench=100000  # budgets must hold
 - Backups (P2-B): repeat ZIP creation, cancel, validation, and restore in the
   Plasma Wayland session; confirm KWallet remains the only place holding the
   SQLCipher key.
+- CopyQ import (P2-C): repeat the `*.cpq` picker → preview → merge flow;
+  encrypted/corrupt files are refused without touching history.
 
 ## 4. Optional-feature matrix
 

@@ -1602,6 +1602,43 @@ QWidget *SettingsDialog::buildStoragePage()
         refreshDiagnostics();
     });
     ioRow->addWidget(importKlipperBtn);
+    auto *importCopyQBtn = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-paste")),
+                                          tr("Import CopyQ…"), maintenanceBox);
+    importCopyQBtn->setToolTip(tr("Imports an unencrypted CopyQ export (*.cpq). Tabs are merged "
+                                 "into the history; duplicates merge by content."));
+    connect(importCopyQBtn, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getOpenFileName(
+            this, tr("Import CopyQ export"), QString(),
+            tr("CopyQ export (*.cpq);;All files (*)"));
+        if (path.isEmpty())
+            return;
+        ExportImportManager::CopyQPreview preview;
+        QString previewError;
+        if (!ExportImportManager::previewCopyQFile(path, &preview, &previewError)) {
+            QMessageBox::warning(this, tr("CopyQ import"), previewError);
+            return;
+        }
+        ExportImportDialogs::CopyQImportDialog dialog(path, preview, this);
+        if (dialog.exec() != QDialog::Accepted)
+            return;
+        const auto mode = dialog.mode();
+        const auto result = runIoWithProgress(
+            this, tr("Importing CopyQ export…"),
+            [&](std::atomic<bool> *cancel, ExportImportManager::IoProgress progress) {
+                return m_ctx.io()->importCopyQFile(path, mode, cancel, progress);
+            });
+        if (!result.ok) {
+            QMessageBox::warning(this, tr("CopyQ import"), result.error);
+            return;
+        }
+        QMessageBox::information(this, tr("CopyQ import"),
+                                 tr("Imported %1, merged %2, skipped %3 entries.")
+                                     .arg(result.entriesImported)
+                                     .arg(result.entriesMerged)
+                                     .arg(result.entriesSkipped));
+        refreshDiagnostics();
+    });
+    ioRow->addWidget(importCopyQBtn);
     ioRow->addStretch(1);
     maintenanceLayout->addLayout(ioRow);
     connect(exportBtn, &QPushButton::clicked, this, [this]{

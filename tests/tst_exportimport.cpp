@@ -6,8 +6,10 @@
 #include "StorageManager.h"
 
 #include <QCryptographicHash>
+#include <QDataStream>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -80,6 +82,11 @@ private slots:
     void backupListingIncludesZipAndBundleDirectories();
     void exportPathEdgeCases();
     void klipperTimestampFallbackAndBlankSkip();
+    void importsCopyQUnencryptedTabs();
+    void copyQMergeDedupsByContentHash();
+    void copyQCancelRollsBack();
+    void copyQRefusesEncryptedAndCorrupt();
+    void copyQTenThousandEntriesWithinBudget();
 
 private:
     void seed(StorageManager *storage, BookmarkManager *bookmarks);
@@ -1983,6 +1990,267 @@ void TestExportImport::klipperTimestampFallbackAndBlankSkip()
     // added_time <= 0 falls back to last_used_time (seconds → ms).
     QCOMPARE(rows.first().timestamp, qint64(1500000600) * 1000);
     QCOMPARE(rows.first().preview, QStringLiteral("fallback time entry"));
+}
+
+namespace {
+
+// Minimal CopyQ v4 writer mirroring upstream `exportDataV4` +
+// `serializeData` (outer Qt_4_7, `-2` items, compressed-MIME ids). Test-only:
+// lets the importer prove itself against the real wire format without a
+// running CopyQ instance.
+QString copyQCompressMime(const QString &mime)
+{
+    const std::pair<int, QString> table[] = {
+        {1, QStringLiteral("application/x-copyq-owner-window-title")},
+        {2, QStringLiteral("application/x-copyq-item-notes")},
+        {3, QStringLiteral("application/x-copyq-")},
+        {4, QStringLiteral("text/plain")},
+        {5, QStringLiteral("text/html")},
+        {6, QStringLiteral("text/uri-list")},
+        {7, QStringLiteral("image/")},
+        {8, QStringLiteral("text/")},
+        {9, QStringLiteral("application/")},
+        {10, QStringLiteral("audio/")},
+        {11, QStringLiteral("video/")},
+    };
+    for (const auto &entry : table) {
+        if (mime.startsWith(entry.second))
+            return QString::number(entry.first, 16) + mime.mid(entry.second.size());
+    }
+    return QStringLiteral("0") + mime;
+}
+
+void copyQWriteItem(QDataStream *out, const QVariantMap &data)
+{
+    *out << qint32(-2);
+    *out << qint32(data.size());
+    for (auto it = data.cbegin(); it != data.cend(); ++it) {
+        *out << copyQCompressMime(it.key());
+        *out << false; // compressData (exports never compress inline)
+        *out << it.value().toByteArray();
+    }
+}
+
+QByteArray copyQTabBytes(const QVector<QVariantMap> &items)
+{
+    QByteArray bytes;
+    QDataStream out(&bytes, QIODevice::WriteOnly);
+    out.setVersion(QDataStream::Qt_4_7);
+    out << qint32(items.size());
+    for (const QVariantMap &data : items)
+        copyQWriteItem(&out, data);
+    return bytes;
+}
+
+bool copyQWriteV4(const QString &path, const QVector<std::pair<QString, QVector<QVariantMap>>> &tabs)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    QDataStream out(&file);
+    out.setVersion(QDataStream::Qt_4_7);
+    out << QByteArray("CopyQ v4");
+    QVariantMap settings;
+    QStringList names;
+    for (const auto &tab : tabs)
+        names.append(tab.first);
+    settings.insert(QStringLiteral("tabs"), names);
+    out << settings;
+    for (const auto &tab : tabs) {
+        QVariantMap tabMap;
+        tabMap.insert(QStringLiteral("name"), tab.first);
+        tabMap.insert(QStringLiteral("data"), copyQTabBytes(tab.second));
+        out << tabMap;
+    }
+    file.close();
+    return out.status() == QDataStream::Ok;
+}
+
+QVariantMap copyQTextItem(const QString &text)
+{
+    QVariantMap data;
+    data.insert(QStringLiteral("text/plain"), text.toUtf8());
+    return data;
+}
+
+} // namespace
+
+void TestExportImport::importsCopyQUnencryptedTabs()
+{
+    const QString path = m_dir.filePath(QStringLiteral("copyq-tabs.cpq"));
+    QVariantMap htmlOnly;
+    htmlOnly.insert(QStringLiteral("text/html"), QByteArray("<b>rich copyq</b>"));
+    QVariantMap imageOnly;
+    imageOnly.insert(QStringLiteral("image/png"), QByteArray("PNG-COPYQ"));
+    QVariantMap externalOnly;
+    externalOnly.insert(QStringLiteral("FILE:text/plain"), QByteArray("/tmp/copyq/1.dat"));
+    QVERIFY(copyQWriteV4(path, {
+        {QStringLiteral("Main"), {copyQTextItem(QStringLiteral("first copyq entry")),
+                                  copyQTextItem(QStringLiteral("Card: 4111 1111 1111 1111")),
+                                  htmlOnly, imageOnly}},
+        {QStringLiteral("Notes"), {copyQTextItem(QString()), externalOnly}},
+    }));
+
+    ExportImportManager::CopyQPreview preview;
+    QString previewError;
+    QVERIFY2(ExportImportManager::previewCopyQFile(path, &preview, &previewError),
+             qPrintable(previewError));
+    QCOMPARE(preview.tabs, QStringList({QStringLiteral("Main"), QStringLiteral("Notes")}));
+    QCOMPARE(preview.totalItems, 6);
+    QCOMPARE(preview.itemsPerTab.value(QStringLiteral("Main")), 4);
+
+    const auto result = m_io->importCopyQFile(path, ExportImportManager::ImportMode::Merge);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.entriesImported, 4); // text + sensitive text + html + image
+    QCOMPARE(result.entriesSkipped, 2); // empty text + external-only FILE: item
+
+    const auto rows = m_storage->fetchAll(FilterSpec{});
+    QCOMPARE(rows.size(), 4);
+    bool sawSensitive = false;
+    bool sawHtml = false;
+    bool sawImage = false;
+    for (const auto &row : rows) {
+        QCOMPARE(row.sourceApp, QStringLiteral("copyq"));
+        QVERIFY(!row.sourceWindow.isEmpty());
+        ClipboardRecord full;
+        QVERIFY(m_storage->fetchFull(row.id, &full));
+        if (full.textData == QStringLiteral("Card: 4111 1111 1111 1111")) {
+            QVERIFY(full.sensitive);
+            sawSensitive = true;
+        }
+        if (full.type == ContentType::RichText) {
+            QCOMPARE(full.textData, QStringLiteral("<b>rich copyq</b>"));
+            sawHtml = true;
+        }
+        if (full.type == ContentType::Image) {
+            QCOMPARE(full.blobData, QByteArray("PNG-COPYQ"));
+            sawImage = true;
+        }
+    }
+    QVERIFY(sawSensitive && sawHtml && sawImage);
+}
+
+void TestExportImport::copyQMergeDedupsByContentHash()
+{
+    const QString path = m_dir.filePath(QStringLiteral("copyq-dedup.cpq"));
+    QVERIFY(copyQWriteV4(path, {
+        {QStringLiteral("Main"), {copyQTextItem(QStringLiteral("dedup me"))}},
+    }));
+    const auto first = m_io->importCopyQFile(path, ExportImportManager::ImportMode::Merge);
+    QVERIFY2(first.ok, qPrintable(first.error));
+    QCOMPARE(first.entriesImported, 1);
+    QCOMPARE(m_storage->stats().entryCount, qint64(1));
+
+    const auto second = m_io->importCopyQFile(path, ExportImportManager::ImportMode::Merge);
+    QVERIFY2(second.ok, qPrintable(second.error));
+    QCOMPARE(second.entriesImported, 0);
+    QCOMPARE(second.entriesMerged, 1);
+    QCOMPARE(m_storage->stats().entryCount, qint64(1));
+
+    const auto skipped =
+        m_io->importCopyQFile(path, ExportImportManager::ImportMode::SkipDuplicates);
+    QVERIFY2(skipped.ok, qPrintable(skipped.error));
+    QCOMPARE(skipped.entriesImported, 0);
+    QCOMPARE(skipped.entriesSkipped, 1);
+}
+
+void TestExportImport::copyQCancelRollsBack()
+{
+    const QString path = m_dir.filePath(QStringLiteral("copyq-cancel.cpq"));
+    QVector<QVariantMap> items;
+    for (int i = 0; i < 200; ++i) {
+        QVariantMap data;
+        data.insert(QStringLiteral("text/plain"),
+                    QStringLiteral("cancel entry %1").arg(i).toUtf8());
+        items.append(data);
+    }
+    QVERIFY(copyQWriteV4(path, {{QStringLiteral("Main"), items}}));
+
+    std::atomic<bool> canceled{true};
+    const auto before =
+        m_io->importCopyQFile(path, ExportImportManager::ImportMode::Merge, &canceled, {});
+    QVERIFY(!before.ok);
+    QVERIFY(before.error.contains(QStringLiteral("canceled"), Qt::CaseInsensitive));
+    QCOMPARE(m_storage->stats().entryCount, qint64(0));
+
+    std::atomic<bool> midCancel{false};
+    const auto mid = m_io->importCopyQFile(
+        path, ExportImportManager::ImportMode::Merge, &midCancel,
+        [&](int, int) { midCancel.store(true, std::memory_order_relaxed); });
+    QVERIFY(!mid.ok);
+    QCOMPARE(m_storage->stats().entryCount, qint64(0)); // bulk rollback: nothing imported
+}
+
+void TestExportImport::copyQRefusesEncryptedAndCorrupt()
+{
+    const QString encrypted = m_dir.filePath(QStringLiteral("copyq-encrypted.cpq"));
+    {
+        QFile file(encrypted);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QDataStream out(&file);
+        out.setVersion(QDataStream::Qt_4_7);
+        out << QByteArray("CopyQ v5");
+        out << QByteArray("password-locked");
+        file.close();
+    }
+    const auto locked =
+        m_io->importCopyQFile(encrypted, ExportImportManager::ImportMode::Merge);
+    QVERIFY(!locked.ok);
+    QVERIFY(locked.error.contains(QStringLiteral("encrypted"), Qt::CaseInsensitive));
+    QVERIFY(locked.error.contains(QStringLiteral("v5")));
+    QCOMPARE(m_storage->stats().entryCount, qint64(0));
+
+    const QString junk = m_dir.filePath(QStringLiteral("copyq-junk.cpq"));
+    {
+        QFile file(junk);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(file.write("not a copyq file") > 0);
+    }
+    const auto bad = m_io->importCopyQFile(junk, ExportImportManager::ImportMode::Merge);
+    QVERIFY(!bad.ok);
+    QVERIFY(!bad.error.isEmpty());
+    QCOMPARE(m_storage->stats().entryCount, qint64(0));
+
+    const QString truncated = m_dir.filePath(QStringLiteral("copyq-truncated.cpq"));
+    {
+        QFile file(truncated);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QDataStream out(&file);
+        out.setVersion(QDataStream::Qt_4_7);
+        out << QByteArray("CopyQ v4");
+        // Settings map omitted: the tab stream ends mid-header.
+        file.close();
+    }
+    const auto cut = m_io->importCopyQFile(truncated, ExportImportManager::ImportMode::Merge);
+    QVERIFY(!cut.ok);
+    QVERIFY(!cut.error.isEmpty());
+}
+
+void TestExportImport::copyQTenThousandEntriesWithinBudget()
+{
+    const QString path = m_dir.filePath(QStringLiteral("copyq-10k.cpq"));
+    QVector<QVariantMap> items;
+    items.reserve(10000);
+    for (int i = 0; i < 10000; ++i) {
+        QVariantMap data;
+        data.insert(QStringLiteral("text/plain"),
+                    QStringLiteral("copyq scale entry %1 with searchable content").arg(i).toUtf8());
+        items.append(data);
+    }
+    QVERIFY(copyQWriteV4(path, {{QStringLiteral("Main"), items}}));
+
+    int progressCalls = 0;
+    QElapsedTimer timer;
+    timer.start();
+    const auto result = m_io->importCopyQFile(
+        path, ExportImportManager::ImportMode::Merge, nullptr,
+        [&](int, int) { ++progressCalls; });
+    const qint64 ms = timer.elapsed();
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.entriesImported, 10000);
+    QVERIFY2(ms <= 5000, qPrintable(QStringLiteral("10k CopyQ import took %1 ms").arg(ms)));
+    QVERIFY(progressCalls > 0);
+    qInfo("P2-C 10k-entry CopyQ import: %lld ms", ms);
 }
 
 QTEST_GUILESS_MAIN(TestExportImport)

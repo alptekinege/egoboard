@@ -127,6 +127,23 @@ private:
     QRadioButton *m_skipRadio = nullptr;
 };
 
+// CopyQ `.cpq` scope preview (P2-C): shows the tabs + item counts found in
+// the file so the user can confirm the scope before merging. No payload
+// text is shown.
+class CopyQImportDialog : public QDialog {
+    Q_OBJECT
+public:
+    CopyQImportDialog(const QString &filePath,
+                      const ExportImportManager::CopyQPreview &preview, QWidget *parent);
+
+    ExportImportManager::ImportMode mode() const;
+
+private:
+    QRadioButton *m_mergeRadio = nullptr;
+    QRadioButton *m_overwriteRadio = nullptr;
+    QRadioButton *m_skipRadio = nullptr;
+};
+
 // Picks one of the automatic backups (newest first) and how to apply it.
 class RestoreBackupDialog : public QDialog {
     Q_OBJECT
