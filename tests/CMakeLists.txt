@@ -79,6 +79,11 @@ target_include_directories(tst_encryption PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..
 egoboard_add_test(tst_searchengine)
 egoboard_add_test(tst_listmodel)
 
+# Speed tests: QBENCHMARK instructions on the capture/search/bulk hot paths
+# plus a µs/op report with loose regression tripwires. Numbers from the
+# benchmarks print when the binary is run directly (./tests/tst_perf).
+egoboard_add_test(tst_perf)
+
 add_executable(tst_grouptreemodel tst_grouptreemodel.cpp ../src/core/GroupTreeModel.cpp)
 target_include_directories(tst_grouptreemodel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/core ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(tst_grouptreemodel PRIVATE egoboard::core Qt6::Test Qt6::Gui)
