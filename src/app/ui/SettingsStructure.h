@@ -48,6 +48,7 @@ int firstContentRow(const QVector<bool> &visible, const QVector<SidebarRow> &row
 struct AboutInfo {
     QString title; // "Egoboard"
     QString version; // as passed in
+    QString gitCommit; // short commit id for this build
     QStringList paragraphs; // short description, license, local-only note
 };
 
@@ -64,8 +65,8 @@ QListWidget *createSidebar(QWidget *parent = nullptr);
 // pages carry the theme icon on the left.
 void populateSidebar(QListWidget *sidebar);
 
-// Pure: the version comes from the caller (EGOBOARD_VERSION at runtime,
-// anything in tests), so this stays compilable without the app defines.
-AboutInfo aboutInfo(const QString &version);
+// Pure: version and commit come from the caller, so this stays compilable
+// without the app's build defines.
+AboutInfo aboutInfo(const QString &version, const QString &gitCommit);
 
 } // namespace SettingsStructure

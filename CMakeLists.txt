@@ -14,6 +14,68 @@ set(CMAKE_AUTORCC ON)
 # package tooling; the app and generated artifacts use this full label.
 set(EGOBOARD_VERSION "0.2")
 
+# Embed the commit that produced this binary. Watch the active Git ref as a
+# configure dependency so a new commit refreshes the value on the next build.
+execute_process(
+    COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --short=12 HEAD
+    OUTPUT_VARIABLE EGOBOARD_GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE EGOBOARD_GIT_RESULT)
+if(NOT "${EGOBOARD_GIT_RESULT}" STREQUAL "0" OR EGOBOARD_GIT_COMMIT STREQUAL "")
+    set(EGOBOARD_GIT_COMMIT "unknown")
+endif()
+
+execute_process(
+    COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --git-path HEAD
+    OUTPUT_VARIABLE EGOBOARD_GIT_HEAD_PATH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE EGOBOARD_GIT_PATH_RESULT)
+if("${EGOBOARD_GIT_PATH_RESULT}" STREQUAL "0")
+    get_filename_component(EGOBOARD_GIT_HEAD_PATH "${EGOBOARD_GIT_HEAD_PATH}"
+        ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${EGOBOARD_GIT_HEAD_PATH}")
+endif()
+
+execute_process(
+    COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}" symbolic-ref -q HEAD
+    OUTPUT_VARIABLE EGOBOARD_GIT_REF
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE EGOBOARD_GIT_REF_RESULT)
+if("${EGOBOARD_GIT_REF_RESULT}" STREQUAL "0")
+    execute_process(
+        COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --git-path "${EGOBOARD_GIT_REF}"
+        OUTPUT_VARIABLE EGOBOARD_GIT_REF_PATH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE EGOBOARD_GIT_REF_PATH_RESULT)
+    if("${EGOBOARD_GIT_REF_PATH_RESULT}" STREQUAL "0")
+        get_filename_component(EGOBOARD_GIT_REF_PATH "${EGOBOARD_GIT_REF_PATH}"
+            ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        if(EXISTS "${EGOBOARD_GIT_REF_PATH}")
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                "${EGOBOARD_GIT_REF_PATH}")
+        else()
+            execute_process(
+                COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --git-path packed-refs
+                OUTPUT_VARIABLE EGOBOARD_GIT_PACKED_REFS_PATH
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET
+                RESULT_VARIABLE EGOBOARD_GIT_PACKED_REFS_RESULT)
+            if("${EGOBOARD_GIT_PACKED_REFS_RESULT}" STREQUAL "0")
+                get_filename_component(EGOBOARD_GIT_PACKED_REFS_PATH
+                    "${EGOBOARD_GIT_PACKED_REFS_PATH}" ABSOLUTE
+                    BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+                set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                    "${EGOBOARD_GIT_PACKED_REFS_PATH}")
+            endif()
+        endif()
+    endif()
+endif()
+
 # --- Dependencies -------------------------------------------------------------
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Sql DBus Concurrent Network WaylandClient Qml)
@@ -200,7 +262,8 @@ target_link_libraries(egoboard PRIVATE
     PkgConfig::WAYLAND_CLIENT)
 
 target_compile_definitions(egoboard PRIVATE
-    EGOBOARD_VERSION="${EGOBOARD_VERSION}")
+    EGOBOARD_VERSION="${EGOBOARD_VERSION}"
+    EGOBOARD_GIT_COMMIT="${EGOBOARD_GIT_COMMIT}")
 
 if(EGOBOARD_HAVE_LAYERSHELLQT)
     target_link_libraries(egoboard PRIVATE LayerShellQt::Interface)

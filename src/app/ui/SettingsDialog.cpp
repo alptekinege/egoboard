@@ -2217,7 +2217,8 @@ QWidget *SettingsDialog::buildAboutPage()
     // Sade About: version, license, local-only note. No knobs, so no
     // load()/save()/reset wiring (like Usage and Diagnostics).
     const SettingsStructure::AboutInfo info =
-        SettingsStructure::aboutInfo(QStringLiteral(EGOBOARD_VERSION));
+        SettingsStructure::aboutInfo(QStringLiteral(EGOBOARD_VERSION),
+                                     QStringLiteral(EGOBOARD_GIT_COMMIT));
     auto *page = new QWidget(this);
     auto *layout = new QVBoxLayout(page);
     layout->setAlignment(Qt::AlignTop);
@@ -2245,6 +2246,14 @@ QWidget *SettingsDialog::buildAboutPage()
     version->setTextFormat(Qt::PlainText);
     version->setAccessibleName(tr("Application version"));
     layout->addWidget(version);
+
+    auto *commit = new QLabel(tr("Commit: %1").arg(info.gitCommit), page);
+    commit->setAlignment(Qt::AlignCenter);
+    commit->setTextFormat(Qt::PlainText);
+    commit->setTextInteractionFlags(Qt::TextSelectableByMouse
+                                    | Qt::TextSelectableByKeyboard);
+    commit->setAccessibleName(tr("Build commit"));
+    layout->addWidget(commit);
 
     for (const QString &paragraph : info.paragraphs) {
         QLabel *line = makeHint(paragraph, page, /*richText=*/false);

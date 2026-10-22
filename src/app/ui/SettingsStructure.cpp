@@ -80,11 +80,12 @@ int firstContentRow(const QVector<bool> &visible, const QVector<SidebarRow> &row
     return -1;
 }
 
-AboutInfo aboutInfo(const QString &version)
+AboutInfo aboutInfo(const QString &version, const QString &gitCommit)
 {
     AboutInfo info;
     info.title = tr("Egoboard");
     info.version = version;
+    info.gitCommit = gitCommit;
     info.paragraphs = {
         tr("Local-first clipboard history for KDE Plasma."),
         tr("Free software released under the MIT License."),

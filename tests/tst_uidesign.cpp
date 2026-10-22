@@ -149,7 +149,7 @@ private slots:
     void settingsSidebarItemsAreLeftAligned();
     void settingsSidebarHeaderIsASectionTitle();
     void settingsSidebarFilterKeepsHeadersWithMatches();
-    void aboutInfoCarriesVersionLicenseAndLocalNote();
+    void aboutInfoCarriesVersionCommitLicenseAndLocalNote();
 };
 
 void TestUiDesign::delegateTextRolesKeepTheirContrastFloor()
@@ -1571,13 +1571,15 @@ void TestUiDesign::settingsSidebarFilterKeepsHeadersWithMatches()
     QCOMPARE(SettingsStructure::firstContentRow(allVisible, rows), 0);
 }
 
-void TestUiDesign::aboutInfoCarriesVersionLicenseAndLocalNote()
+void TestUiDesign::aboutInfoCarriesVersionCommitLicenseAndLocalNote()
 {
-    // Sade About: title, the caller's version, description + MIT + local-only.
+    // Sade About: title, caller's version and commit, description + MIT + local-only.
     const SettingsStructure::AboutInfo info =
-        SettingsStructure::aboutInfo(QStringLiteral("9.9-test"));
+        SettingsStructure::aboutInfo(QStringLiteral("9.9-test"),
+                                     QStringLiteral("abc123def456"));
     QVERIFY(!info.title.isEmpty());
     QCOMPARE(info.version, QStringLiteral("9.9-test"));
+    QCOMPARE(info.gitCommit, QStringLiteral("abc123def456"));
     QCOMPARE(info.paragraphs.size(), 3);
     QVERIFY(info.paragraphs.at(0).contains(QStringLiteral("clipboard"), Qt::CaseInsensitive));
     QVERIFY(info.paragraphs.at(1).contains(QStringLiteral("MIT")));
