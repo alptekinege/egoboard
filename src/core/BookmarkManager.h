@@ -1,8 +1,10 @@
 #pragma once
 
+#include <QHash>
 #include <QList>
 #include <QObject>
 #include <QSqlDatabase>
+#include <QSet>
 #include <QVector>
 
 struct BookmarkGroup {
@@ -36,14 +38,22 @@ public:
     bool assignEntry(qint64 entryId, qint64 groupId);
     bool removeFromGroup(qint64 entryId, qint64 groupId);
     QList<qint64> entryIdsForGroup(qint64 groupId) const;
+    // Unique entries assigned to any of the supplied groups, fetched in
+    // bounded IN-query batches to avoid one SQL round trip per group.
+    QList<qint64> entryIdsForGroups(const QSet<qint64> &groupIds) const;
     QList<qint64> groupIdsForEntry(qint64 entryId) const;
+    // Entry-to-group memberships for many entries, fetched in bounded batches.
+    bool groupIdsForEntries(const QList<qint64> &entryIds,
+                            QHash<qint64, QList<qint64>> *groupsByEntry) const;
     int entryCount(qint64 groupId) const;
+    QHash<qint64, int> entryCounts() const;
 
     bool isDescendantOf(qint64 childId, qint64 ancestorId) const;
 
 signals:
     void groupsChanged();
     void membershipChanged(qint64 entryId);
+    void membershipCountChanged(qint64 groupId, int delta);
 
 private:
     // Case-insensitive sibling check used to keep group names unique.

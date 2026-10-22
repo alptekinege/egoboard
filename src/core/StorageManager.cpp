@@ -182,6 +182,10 @@ bool StorageManager::endBulk(bool commit)
         return true;
     if (!commit) {
         rollbackTransaction();
+        // Other managers sharing this connection (notably BookmarkManager)
+        // may have emitted model notifications inside the transaction. Make
+        // views reload after rollback so any cached derived state is restored.
+        emit storageReset();
         return true;
     }
     return commitTransaction();

@@ -1,9 +1,12 @@
 #include "GroupTreeModel.h"
 
+#include "IClipboardStorage.h"
+
 #include <QDataStream>
 #include <QIcon>
 #include <QIODevice>
 #include <QMimeData>
+#include <QSet>
 
 #include <functional>
 #include <memory>
@@ -38,28 +41,33 @@ bool decodeIdList(const QByteArray &encoded, QList<qint64> *out)
 struct GroupTreeModel::Node {
     BookmarkGroup group;
     Node *parent = nullptr; // m_root for top-level groups
+    int row = 0; // sibling position; the tree only changes during rebuild()
     std::vector<std::unique_ptr<Node>> children; // stable pointers across growth
 };
 
-GroupTreeModel::GroupTreeModel(BookmarkManager *bookmarks, QObject *parent)
+GroupTreeModel::GroupTreeModel(BookmarkManager *bookmarks, QObject *parent,
+                               IClipboardStorage *storage)
     : QAbstractItemModel(parent)
     , m_bookmarks(bookmarks)
+    , m_storage(storage)
 {
     rebuild();
     connect(m_bookmarks, &BookmarkManager::groupsChanged, this, [this] { rebuild(); });
-    connect(m_bookmarks, &BookmarkManager::membershipChanged, this, [this](qint64) {
-        // Counts can change at any depth. Notify each node so nested rows
-        // repaint without resetting the tree or collapsing expanded groups.
-        const QVector<int> roles{EntryCountRole, Qt::DisplayRole, Qt::ToolTipRole};
-        std::function<void(const QModelIndex &)> notify = [this, &roles, &notify](const QModelIndex &parent) {
-            for (int row = 0; row < rowCount(parent); ++row) {
-                const QModelIndex child = index(row, 0, parent);
-                emit dataChanged(child, child, roles);
-                notify(child);
-            }
-        };
-        notify({});
+    connect(m_bookmarks, &BookmarkManager::membershipCountChanged, this,
+            [this](qint64 groupId, int delta) {
+                const int count = qMax(0, m_entryCounts.value(groupId) + delta);
+                m_entryCounts.insert(groupId, count);
+                const QModelIndex changed = indexForGroup(groupId);
+                if (changed.isValid())
+                    emit dataChanged(changed, changed,
+                                     {EntryCountRole, Qt::DisplayRole, Qt::ToolTipRole});
     });
+    if (m_storage) {
+        connect(m_storage, &IClipboardStorage::entriesRemoved, this,
+                [this](const QList<qint64> &) { refreshEntryCounts(); });
+        connect(m_storage, &IClipboardStorage::storageReset, this,
+                &GroupTreeModel::rebuild);
+    }
 }
 
 GroupTreeModel::~GroupTreeModel() = default;
@@ -67,45 +75,72 @@ GroupTreeModel::~GroupTreeModel() = default;
 void GroupTreeModel::rebuild()
 {
     beginResetModel();
+    m_entryCounts = m_bookmarks->entryCounts();
     m_root = std::make_unique<Node>();
     const QVector<BookmarkGroup> groups = m_bookmarks->groups();
-    QHash<qint64, Node *> byId;
-
-    for (const BookmarkGroup &group : groups) {
-        if (group.parentId == 0) {
-            auto node = std::make_unique<Node>();
-            node->group = group;
-            node->parent = m_root.get();
-            m_root->children.push_back(std::move(node));
-            byId.insert(group.id, m_root->children.back().get());
-        }
-    }
-    // Groups() is name-ordered, not hierarchy-ordered: attach non-top-level
-    // groups by iterating until fixed point (handles any ordering; orphans of
-    // missing parents are dropped rather than looped forever).
-    QList<BookmarkGroup> pending;
-    for (const BookmarkGroup &group : groups)
+    // Groups() is name-ordered, not hierarchy-ordered. Build parent-to-child
+    // adjacency first, then walk out from roots so even reverse-sorted deep
+    // trees are assembled in linear time. Unreachable or cyclic groups stay
+    // detached, matching the previous fixed-point behavior.
+    std::vector<std::unique_ptr<Node>> owned;
+    owned.reserve(size_t(groups.size()));
+    std::vector<Node *> byIndex;
+    byIndex.reserve(size_t(groups.size()));
+    QHash<qint64, QVector<int>> childrenByParent;
+    childrenByParent.reserve(groups.size());
+    for (int i = 0; i < groups.size(); ++i) {
+        const BookmarkGroup &group = groups.at(i);
+        auto node = std::make_unique<Node>();
+        node->group = group;
+        byIndex.push_back(node.get());
+        owned.push_back(std::move(node));
         if (group.parentId != 0)
-            pending.append(group);
-    bool attached = true;
-    while (!pending.isEmpty() && attached) {
-        attached = false;
-        for (int i = pending.size() - 1; i >= 0; --i) {
-            const BookmarkGroup group = pending.at(i);
-            auto it = byId.constFind(group.parentId);
-            if (it != byId.constEnd()) {
-                auto node = std::make_unique<Node>();
-                node->group = group;
-                node->parent = it.value();
-                Node *raw = node.get();
-                it.value()->children.push_back(std::move(node));
-                byId.insert(group.id, raw);
-                pending.removeAt(i);
-                attached = true;
-            }
+            childrenByParent[group.parentId].append(i);
+    }
+
+    QList<int> pending;
+    pending.reserve(groups.size());
+    for (int i = 0; i < groups.size(); ++i) {
+        if (groups.at(i).parentId != 0)
+            continue;
+        Node *node = byIndex[size_t(i)];
+        node->parent = m_root.get();
+        node->row = int(m_root->children.size());
+        m_root->children.push_back(std::move(owned[size_t(i)]));
+        pending.append(i);
+    }
+    for (qsizetype next = 0; next < pending.size(); ++next) {
+        Node *parent = byIndex[size_t(pending.at(next))];
+        const auto children = childrenByParent.constFind(parent->group.id);
+        if (children == childrenByParent.cend())
+            continue;
+        for (const int childIndex : children.value()) {
+            auto &child = owned[size_t(childIndex)];
+            if (!child)
+                continue;
+            child->parent = parent;
+            child->row = int(parent->children.size());
+            parent->children.push_back(std::move(child));
+            pending.append(childIndex);
         }
     }
     endResetModel();
+}
+
+void GroupTreeModel::refreshEntryCounts()
+{
+    // Entry removal cascades membership rows in SQLite. One grouped query
+    // refreshes those counts; routine membership edits use the delta signal.
+    m_entryCounts = m_bookmarks->entryCounts();
+    const QVector<int> roles{EntryCountRole, Qt::DisplayRole, Qt::ToolTipRole};
+    std::function<void(const QModelIndex &)> notify = [this, &roles, &notify](const QModelIndex &parent) {
+        for (int row = 0; row < rowCount(parent); ++row) {
+            const QModelIndex child = index(row, 0, parent);
+            emit dataChanged(child, child, roles);
+            notify(child);
+        }
+    };
+    notify({});
 }
 
 QModelIndex GroupTreeModel::index(int row, int column, const QModelIndex &parent) const
@@ -128,14 +163,7 @@ QModelIndex GroupTreeModel::parent(const QModelIndex &child) const
     const Node *parentNode = childNode->parent;
     if (!parentNode || parentNode == m_root.get())
         return {}; // top level
-    // The parent pointer makes this walk-free: only the parent's row within its
-    // own siblings has to be found (the old version scanned the whole tree).
-    const Node *grandParent = parentNode->parent ? parentNode->parent : m_root.get();
-    for (size_t row = 0; row < grandParent->children.size(); ++row) {
-        if (grandParent->children.at(row).get() == parentNode)
-            return createIndex(int(row), 0, const_cast<Node *>(parentNode));
-    }
-    return {};
+    return createIndex(parentNode->row, 0, const_cast<Node *>(parentNode));
 }
 
 int GroupTreeModel::rowCount(const QModelIndex &parent) const
@@ -157,13 +185,13 @@ QVariant GroupTreeModel::data(const QModelIndex &index, int role) const
     if (!node)
         return {};
     const BookmarkGroup &group = node->group;
+    const int count = m_entryCounts.value(group.id);
     switch (role) {
     case Qt::DisplayRole:
-        return QStringLiteral("%1 (%2)").arg(group.name).arg(m_bookmarks->entryCount(group.id));
+        return QStringLiteral("%1 (%2)").arg(group.name).arg(count);
     case Qt::DecorationRole:
         return QIcon::fromTheme(group.icon.isEmpty() ? QStringLiteral("folder") : group.icon);
     case Qt::ToolTipRole: {
-        const int count = m_bookmarks->entryCount(group.id);
         return tr("%1 — %2 %3")
             .arg(group.name)
             .arg(count)
@@ -176,7 +204,7 @@ QVariant GroupTreeModel::data(const QModelIndex &index, int role) const
     case IconRole:
         return group.icon;
     case EntryCountRole:
-        return m_bookmarks->entryCount(group.id);
+        return count;
     default:
         return {};
     }
@@ -219,11 +247,16 @@ int GroupTreeModel::entryCount(const QMimeData *data)
 
 QMimeData *GroupTreeModel::mimeData(const QModelIndexList &indexes) const
 {
+    QSet<qint64> seen;
+    seen.reserve(indexes.size());
     QList<qint64> ids;
+    ids.reserve(indexes.size());
     for (const QModelIndex &index : indexes) {
         const Node *node = nodeForIndex(index);
-        if (node && !ids.contains(node->group.id))
+        if (node && !seen.contains(node->group.id)) {
+            seen.insert(node->group.id);
             ids.append(node->group.id);
+        }
     }
     if (ids.isEmpty())
         return nullptr;

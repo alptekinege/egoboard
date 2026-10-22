@@ -541,7 +541,7 @@ void MainWindow::buildUi()
                          m_groupsAction, snipAction, chainAction, tourAction};
 
     // --- groups dock --------------------------------------------------------
-    m_groupsDock = new GroupsDock(m_ctx.bookmarks(), this);
+    m_groupsDock = new GroupsDock(m_ctx.bookmarks(), this, m_ctx.storage());
     addDockWidget(Qt::LeftDockWidgetArea, m_groupsDock);
     m_groupsDock->hide();
     connect(m_groupsAction, &QAction::toggled, m_groupsDock, &QDockWidget::setVisible);

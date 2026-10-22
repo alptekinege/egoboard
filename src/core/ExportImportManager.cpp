@@ -15,11 +15,15 @@
 #include <QRegularExpression>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QSet>
 #include <QStandardPaths>
 #include <QUrl>
 
 #include <algorithm>
 #include <atomic>
+#include <functional>
+#include <queue>
+#include <vector>
 
 namespace {
 
@@ -130,36 +134,103 @@ ContentType typeFromTag(const QString &tag)
 QSet<qint64> descendantGroupIds(const QVector<BookmarkGroup> &allGroups, qint64 rootId)
 {
     QSet<qint64> result;
+    result.reserve(allGroups.size());
     result.insert(rootId);
-    bool grew = true;
-    while (grew) {
-        grew = false;
+    QHash<qint64, QVector<qint64>> childrenByParent;
+    childrenByParent.reserve(allGroups.size());
+    for (const BookmarkGroup &group : allGroups) {
+        if (group.parentId != 0)
+            childrenByParent[group.parentId].append(group.id);
+    }
+    QList<qint64> pending;
+    pending.reserve(allGroups.size());
+    if (rootId == 0) {
         for (const BookmarkGroup &group : allGroups) {
-            if (result.contains(group.parentId) && !result.contains(group.id)) {
+            if (group.parentId == 0 && !result.contains(group.id)) {
                 result.insert(group.id);
-                grew = true;
+                pending.append(group.id);
             }
+        }
+    } else {
+        pending.append(rootId);
+    }
+    for (qsizetype next = 0; next < pending.size(); ++next) {
+        const auto children = childrenByParent.constFind(pending.at(next));
+        if (children == childrenByParent.cend())
+            continue;
+        for (const qint64 childId : children.value()) {
+            if (result.contains(childId))
+                continue; // also terminates safely if malformed input cycles
+            result.insert(childId);
+            pending.append(childId);
         }
     }
     return result;
 }
 
 // Stable group identity across machines: the path of names from the root.
-QString groupPath(const QVector<BookmarkGroup> &allGroups, qint64 groupId)
+// Build all paths in one indexed walk so imports do not rescan the full group
+// vector once for every parent hop and every candidate comparison.
+QHash<qint64, QString> groupPaths(const QVector<BookmarkGroup> &allGroups)
 {
-    QStringList names;
-    qint64 current = groupId;
-    QSet<qint64> visited;
-    while (current != 0 && !visited.contains(current)) {
-        visited.insert(current);
-        const auto it = std::find_if(allGroups.cbegin(), allGroups.cend(),
-                                     [current](const BookmarkGroup &g) { return g.id == current; });
-        if (it == allGroups.cend())
-            break;
-        names.prepend(it->name);
-        current = it->parentId;
+    QHash<qint64, const BookmarkGroup *> byId;
+    byId.reserve(allGroups.size());
+    for (const BookmarkGroup &group : allGroups) {
+        // groupPath() historically used find_if(), so duplicate IDs resolve
+        // to the first record in the input vector.
+        if (!byId.contains(group.id))
+            byId.insert(group.id, &group);
     }
-    return names.join(QStringLiteral("/"));
+
+    QHash<qint64, QString> paths;
+    paths.reserve(allGroups.size());
+    QSet<qint64> reusablePaths;
+    reusablePaths.reserve(allGroups.size());
+    for (const BookmarkGroup &group : allGroups) {
+        if (paths.contains(group.id))
+            continue;
+
+        QVector<qint64> chain;
+        QSet<qint64> visited;
+        qint64 current = group.id;
+        QString path;
+        bool cycle = false;
+        while (current != 0) {
+            if (reusablePaths.contains(current)) {
+                path = paths.value(current);
+                break;
+            }
+            if (visited.contains(current)) {
+                cycle = true;
+                break;
+            }
+            const auto it = byId.constFind(current);
+            if (it == byId.cend())
+                break;
+            visited.insert(current);
+            chain.append(current);
+            current = it.value()->parentId;
+        }
+
+        if (cycle) {
+            // For malformed cycles, only the starting node's path is safe to
+            // cache: another start in the same cycle stops at a different hop.
+            QStringList names;
+            names.reserve(chain.size());
+            for (auto it = chain.crbegin(); it != chain.crend(); ++it)
+                names.append(byId.value(*it)->name);
+            paths.insert(group.id, names.join(QLatin1Char('/')));
+            continue;
+        }
+
+        for (auto it = chain.crbegin(); it != chain.crend(); ++it) {
+            const QString &name = byId.value(*it)->name;
+            path = path.isEmpty() ? name : name + QLatin1Char('/') + path;
+            paths.insert(*it, path);
+            reusablePaths.insert(*it);
+        }
+    }
+    return paths;
 }
 
 // --- image export (U17) ------------------------------------------------------
@@ -773,17 +844,7 @@ bool ExportImportManager::exportToFile(const ExportRequest &request, QString *er
     } else {
         exportedGroupIds =
             descendantGroupIds(allGroups, request.groupId);
-        QList<qint64> listedIds;
-        QSet<qint64> seen;
-        for (const qint64 gid : exportedGroupIds) {
-            const QList<qint64> ids = m_bookmarks->entryIdsForGroup(gid);
-            for (const qint64 id : ids) {
-                if (id != 0 && !seen.contains(id)) {
-                    seen.insert(id);
-                    listedIds.append(id);
-                }
-            }
-        }
+        const QList<qint64> listedIds = m_bookmarks->entryIdsForGroups(exportedGroupIds);
         estimatedTotal = listedIds.size();
         for (int offset = 0; offset < listedIds.size();) {
             if (isCanceled()) {
@@ -834,17 +895,37 @@ bool ExportImportManager::exportToFile(const ExportRequest &request, QString *er
             progress(serializeBase + serialized, grandTotal);
     };
 
+    QList<qint64> tagEntryIds;
+    tagEntryIds.reserve(entries.size());
+    for (const ClipboardRecord &record : entries)
+        tagEntryIds.append(record.id);
+    QHash<qint64, QStringList> tagsByEntry;
+    if (!fetchTagsBatch(tagEntryIds, &tagsByEntry, error, cancel))
+        return false;
+
     // --- reading formats stop here (entries only, no re-import) ---------------
     if (request.format == ExportFormat::Csv)
-        return writeCsvExport(request, entries, error, cancel, progress, serializeBase, grandTotal);
+        return writeCsvExport(request, entries, tagsByEntry, error, cancel, progress,
+                              serializeBase, grandTotal);
     if (request.format == ExportFormat::Markdown)
-        return writeMarkdownExport(request, entries, error, cancel, progress, serializeBase,
-                                   grandTotal);
+        return writeMarkdownExport(request, entries, tagsByEntry, error, cancel, progress,
+                                   serializeBase, grandTotal);
     if (request.format == ExportFormat::Html)
-        return writeHtmlExport(request, entries, error, cancel, progress, serializeBase, grandTotal);
+        return writeHtmlExport(request, entries, tagsByEntry, error, cancel, progress,
+                               serializeBase, grandTotal);
 
     // --- memberships --------------------------------------------------------
     QJsonArray memberships;
+    QList<qint64> membershipEntryIds;
+    membershipEntryIds.reserve(entries.size());
+    for (const ClipboardRecord &record : entries)
+        membershipEntryIds.append(record.id);
+    QHash<qint64, QList<qint64>> groupsByEntry;
+    if (!m_bookmarks->groupIdsForEntries(membershipEntryIds, &groupsByEntry)) {
+        if (error)
+            *error = tr("Database read failed while loading group memberships.");
+        return false;
+    }
     if (request.scope != Scope::PinnedOnly) {
         for (const ClipboardRecord &record : entries) {
             if (isCanceled()) {
@@ -854,8 +935,7 @@ bool ExportImportManager::exportToFile(const ExportRequest &request, QString *er
                                  .arg(grandTotal);
                 return false;
             }
-            const QList<qint64> groupIds = m_bookmarks->groupIdsForEntry(record.id);
-            for (const qint64 gid : groupIds) {
+            for (const qint64 gid : groupsByEntry.value(record.id)) {
                 if (!exportedGroupIds.contains(gid))
                     continue;
                 QJsonObject membership;
@@ -873,7 +953,7 @@ bool ExportImportManager::exportToFile(const ExportRequest &request, QString *er
                                  .arg(grandTotal);
                 return false;
             }
-            for (const qint64 gid : m_bookmarks->groupIdsForEntry(record.id)) {
+            for (const qint64 gid : groupsByEntry.value(record.id)) {
                 QJsonObject membership;
                 membership.insert(QStringLiteral("entryHash"), QString::fromLatin1(record.hash));
                 membership.insert(QStringLiteral("groupId"), double(gid));
@@ -909,7 +989,7 @@ bool ExportImportManager::exportToFile(const ExportRequest &request, QString *er
         object.insert(QStringLiteral("sourceWindow"), record.sourceWindow);
         if (!record.ocrText.isEmpty())
             object.insert(QStringLiteral("ocrText"), record.ocrText);
-        const QStringList tags = m_storage->tagsForEntry(record.id);
+        const QStringList tags = tagsByEntry.value(record.id);
         if (!tags.isEmpty()) {
             QJsonArray tagArray;
             for (const QString &tag : tags)
@@ -1041,6 +1121,44 @@ bool ExportImportManager::fetchPayloadBatch(const QList<qint64> &ids, QVector<Cl
     return true;
 }
 
+bool ExportImportManager::fetchTagsBatch(const QList<qint64> &ids,
+                                         QHash<qint64, QStringList> *tagsByEntry,
+                                         QString *error, std::atomic<bool> *cancel) const
+{
+    if (!tagsByEntry)
+        return false;
+    tagsByEntry->clear();
+    static constexpr int kTagQueryBatchSize = 500;
+    for (int offset = 0; offset < ids.size(); offset += kTagQueryBatchSize) {
+        if (cancel && cancel->load(std::memory_order_relaxed)) {
+            if (error)
+                *error = tr("Export canceled while reading tags — no file was written.");
+            return false;
+        }
+        const int count = qMin(kTagQueryBatchSize, ids.size() - offset);
+        QStringList placeholders;
+        placeholders.reserve(count);
+        for (int i = 0; i < count; ++i)
+            placeholders.append(QStringLiteral("?"));
+        QSqlQuery query(m_storage->database());
+        query.prepare(QStringLiteral(
+            "SELECT et.entry_id, t.name FROM entry_tags et"
+            " JOIN tags t ON t.id = et.tag_id"
+            " WHERE et.entry_id IN (%1) ORDER BY et.entry_id, t.name COLLATE NOCASE")
+                          .arg(placeholders.join(QLatin1Char(','))));
+        for (int i = 0; i < count; ++i)
+            query.bindValue(i, ids.at(offset + i));
+        if (!query.exec()) {
+            if (error)
+                *error = tr("Database read failed: %1").arg(query.lastError().text());
+            return false;
+        }
+        while (query.next())
+            (*tagsByEntry)[query.value(0).toLongLong()].append(query.value(1).toString());
+    }
+    return true;
+}
+
 ExportImportManager::ImageExportResult
 ExportImportManager::exportImages(const ImageExportRequest &request,
                                   std::atomic<bool> *cancel,
@@ -1090,15 +1208,7 @@ ExportImportManager::exportImages(const ImageExportRequest &request,
         }
     } else if (request.scope == ImageExportRequest::Scope::GroupSubtree) {
         const QSet<qint64> groupIds = descendantGroupIds(m_bookmarks->groups(), request.groupId);
-        QSet<qint64> seen;
-        for (const qint64 groupId : groupIds) {
-            for (const qint64 id : m_bookmarks->entryIdsForGroup(groupId)) {
-                if (id != 0 && !seen.contains(id)) {
-                    seen.insert(id);
-                    listedIds.append(id);
-                }
-            }
-        }
+        listedIds = m_bookmarks->entryIdsForGroups(groupIds);
     }
     FilterSpec filter;
     if (request.scope == ImageExportRequest::Scope::CurrentFilter)
@@ -1114,7 +1224,7 @@ ExportImportManager::exportImages(const ImageExportRequest &request,
     bool readFailed = false;
 
     // Writes one image record; false only on cancel or an I/O failure.
-    const auto writeRecord = [&](const ClipboardRecord &record) {
+    const auto writeRecord = [&](const ClipboardRecord &record, const QStringList &tags) {
         if (isCanceled())
             return false;
         if (record.type != ContentType::Image) {
@@ -1189,7 +1299,6 @@ ExportImportManager::exportImages(const ImageExportRequest &request,
         entry.insert(QStringLiteral("sourceWindow"), record.sourceWindow);
         entry.insert(QStringLiteral("pinned"), record.pinned);
         entry.insert(QStringLiteral("sensitive"), record.sensitive);
-        const QStringList tags = m_storage->tagsForEntry(record.id);
         if (!tags.isEmpty()) {
             QJsonArray tagArray;
             for (const QString &tag : tags)
@@ -1203,6 +1312,18 @@ ExportImportManager::exportImages(const ImageExportRequest &request,
             entry.insert(QStringLiteral("text"), record.textData);
         manifestFiles.append(entry);
         return true;
+    };
+    const auto fetchImageTags = [&](const QVector<ClipboardRecord> &records,
+                                    QHash<qint64, QStringList> *tagsByEntry) {
+        QList<qint64> ids;
+        ids.reserve(records.size());
+        for (const ClipboardRecord &record : records) {
+            if (record.type == ContentType::Image
+                && (request.includeSensitive || !record.sensitive)
+                && !record.blobData.isEmpty())
+                ids.append(record.id);
+        }
+        return fetchTagsBatch(ids, tagsByEntry, &batchError, cancel);
     };
 
     if (streamed) {
@@ -1224,9 +1345,14 @@ ExportImportManager::exportImages(const ImageExportRequest &request,
                 readFailed = true;
                 break;
             }
+            QHash<qint64, QStringList> tagsByEntry;
+            if (!fetchImageTags(payloads, &tagsByEntry)) {
+                readFailed = true;
+                break;
+            }
             bool stopped = false;
             for (const ClipboardRecord &record : payloads) {
-                if (!writeRecord(record)) {
+                if (!writeRecord(record, tagsByEntry.value(record.id))) {
                     stopped = true;
                     break;
                 }
@@ -1256,9 +1382,14 @@ ExportImportManager::exportImages(const ImageExportRequest &request,
                 readFailed = true;
                 break;
             }
+            QHash<qint64, QStringList> tagsByEntry;
+            if (!fetchImageTags(payloads, &tagsByEntry)) {
+                readFailed = true;
+                break;
+            }
             bool stopped = false;
             for (const ClipboardRecord &record : payloads) {
-                if (!writeRecord(record)) {
+                if (!writeRecord(record, tagsByEntry.value(record.id))) {
                     stopped = true;
                     break;
                 }
@@ -1424,19 +1555,22 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode,
     }
 
     QHash<qint64, qint64> groupIdMap; // imported id -> local id
-    const auto localGroups = [this]() { return m_bookmarks->groups(); };
+    const QHash<qint64, QString> importedPaths = groupPaths(importedGroups);
+    QVector<BookmarkGroup> existing = m_bookmarks->groups();
+    QHash<qint64, QString> existingPaths = groupPaths(existing);
+    QHash<QString, qint64> existingByPath;
+    existingByPath.reserve(existing.size());
+    for (const BookmarkGroup &candidate : existing) {
+        const auto path = existingPaths.constFind(candidate.id);
+        // Preserve the old first-match behavior when duplicate paths exist.
+        if (path != existingPaths.cend() && !existingByPath.contains(path.value()))
+            existingByPath.insert(path.value(), candidate.id);
+    }
     const auto importGroup = [&](const BookmarkGroup &imported, qint64 parentId) {
-        const QString path = groupPath(importedGroups, imported.id);
-        const QVector<BookmarkGroup> existing = localGroups();
-        std::optional<qint64> match;
-        for (const BookmarkGroup &candidate : existing) {
-            if (groupPath(existing, candidate.id) == path) {
-                match = candidate.id;
-                break;
-            }
-        }
-        if (match.has_value()) {
-            groupIdMap.insert(imported.id, *match);
+        const QString path = importedPaths.value(imported.id);
+        const auto match = existingByPath.constFind(path);
+        if (match != existingByPath.cend()) {
+            groupIdMap.insert(imported.id, match.value());
             return;
         }
         const qint64 created =
@@ -1444,29 +1578,68 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode,
         if (created != 0) {
             groupIdMap.insert(imported.id, created);
             ++result.groupsImported;
+            const QString parentPath = existingPaths.value(parentId);
+            const QString createdPath = parentPath.isEmpty()
+                ? imported.name
+                : parentPath + QLatin1Char('/') + imported.name;
+            existingPaths.insert(created, createdPath);
+            if (!existingByPath.contains(createdPath))
+                existingByPath.insert(createdPath, created);
         }
     };
 
     // The JSON array is name-ordered, so a child may appear before its
-    // parent. Process imported groups in dependency order to preserve the
-    // hierarchy regardless of serialization order.
+    // parent. Walk a stable, index-ordered ready queue to preserve the old
+    // pass ordering without rescanning every pending group for each level.
     QSet<qint64> pendingGroupIds;
-    for (const BookmarkGroup &group : importedGroups)
+    QHash<qint64, int> firstIndexById;
+    firstIndexById.reserve(importedGroups.size());
+    for (int i = 0; i < importedGroups.size(); ++i) {
+        const BookmarkGroup &group = importedGroups.at(i);
         pendingGroupIds.insert(group.id);
+        if (!firstIndexById.contains(group.id))
+            firstIndexById.insert(group.id, i);
+    }
+    QHash<qint64, QVector<int>> childrenByParent;
+    childrenByParent.reserve(importedGroups.size());
+    std::priority_queue<int, std::vector<int>, std::greater<int>> readyGroups;
+    for (int i = 0; i < importedGroups.size(); ++i) {
+        const BookmarkGroup &group = importedGroups.at(i);
+        if (firstIndexById.value(group.id) != i)
+            continue; // duplicate IDs were skipped after the first record
+        childrenByParent[group.parentId].append(i);
+        if (group.parentId == 0 || !pendingGroupIds.contains(group.parentId))
+            readyGroups.push(i); // roots and references to missing parents
+    }
 
-    bool madeProgress = true;
-    while (!pendingGroupIds.isEmpty() && madeProgress) {
-        madeProgress = false;
-        for (const BookmarkGroup &imported : importedGroups) {
+    QVector<int> nextPass;
+    nextPass.reserve(importedGroups.size());
+    while (!readyGroups.empty()) {
+        nextPass.clear();
+        while (!readyGroups.empty()) {
+            const int index = readyGroups.top();
+            readyGroups.pop();
+            const BookmarkGroup &imported = importedGroups.at(index);
             if (!pendingGroupIds.contains(imported.id))
                 continue;
-            if (imported.parentId != 0 && pendingGroupIds.contains(imported.parentId))
-                continue;
-
             importGroup(imported, groupIdMap.value(imported.parentId, 0));
             pendingGroupIds.remove(imported.id);
-            madeProgress = true;
+
+            const auto children = childrenByParent.constFind(imported.id);
+            if (children == childrenByParent.cend())
+                continue;
+            for (const int childIndex : children.value()) {
+                const BookmarkGroup &child = importedGroups.at(childIndex);
+                if (!pendingGroupIds.contains(child.id))
+                    continue;
+                if (childIndex > index)
+                    readyGroups.push(childIndex); // later in this scan pass
+                else
+                    nextPass.append(childIndex); // already passed this index
+            }
         }
+        for (const int index : nextPass)
+            readyGroups.push(index);
     }
 
     // Malformed files may contain parent references to missing groups. Keep
@@ -1700,7 +1873,9 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode,
 }
 
 bool ExportImportManager::writeCsvExport(const ExportRequest &request,
-                                         const QVector<ClipboardRecord> &entries, QString *error,
+                                         const QVector<ClipboardRecord> &entries,
+                                         const QHash<qint64, QStringList> &tagsByEntry,
+                                         QString *error,
                                          std::atomic<bool> *cancel, IoProgress progress,
                                          int progressBase, int progressTotal) const
 {
@@ -1719,7 +1894,7 @@ bool ExportImportManager::writeCsvExport(const ExportRequest &request,
             return false;
         }
         const QString text = record.textData.isEmpty() ? record.preview : record.textData;
-        const QString tags = m_storage->tagsForEntry(record.id).join(QStringLiteral("; "));
+        const QString tags = tagsByEntry.value(record.id).join(QStringLiteral("; "));
         out += csvField(QDateTime::fromMSecsSinceEpoch(record.timestamp).toString(Qt::ISODateWithMs));
         out += QLatin1Char(',');
         out += csvField(QString::fromLatin1(contentTypeTag(record.type)));
@@ -1748,6 +1923,7 @@ bool ExportImportManager::writeCsvExport(const ExportRequest &request,
 
 bool ExportImportManager::writeMarkdownExport(const ExportRequest &request,
                                               const QVector<ClipboardRecord> &entries,
+                                              const QHash<qint64, QStringList> &tagsByEntry,
                                               QString *error, std::atomic<bool> *cancel,
                                               IoProgress progress, int progressBase,
                                               int progressTotal) const
@@ -1778,7 +1954,7 @@ bool ExportImportManager::writeMarkdownExport(const ExportRequest &request,
         if (record.sensitive)
             out += QStringLiteral(" · sensitive");
         out += QStringLiteral("\n");
-        const QStringList tags = m_storage->tagsForEntry(record.id);
+        const QStringList tags = tagsByEntry.value(record.id);
         if (!tags.isEmpty())
             out += tr("Tags: %1\n").arg(tags.join(QStringLiteral(", ")));
         if (record.sourceWindow.isEmpty() == false)
@@ -1796,7 +1972,9 @@ bool ExportImportManager::writeMarkdownExport(const ExportRequest &request,
 }
 
 bool ExportImportManager::writeHtmlExport(const ExportRequest &request,
-                                          const QVector<ClipboardRecord> &entries, QString *error,
+                                          const QVector<ClipboardRecord> &entries,
+                                          const QHash<qint64, QStringList> &tagsByEntry,
+                                          QString *error,
                                           std::atomic<bool> *cancel, IoProgress progress,
                                           int progressBase, int progressTotal) const
 {
@@ -1847,7 +2025,7 @@ bool ExportImportManager::writeHtmlExport(const ExportRequest &request,
                + QStringLiteral("</td><td>")
                + htmlEscaped(QString::fromLatin1(contentTypeTag(record.type)))
                + QStringLiteral("</td><td>") + htmlEscaped(source) + QStringLiteral("</td><td>")
-               + htmlEscaped(m_storage->tagsForEntry(record.id).join(QStringLiteral(", ")))
+               + htmlEscaped(tagsByEntry.value(record.id).join(QStringLiteral(", ")))
                + QStringLiteral("</td><td class=\"text\">") + htmlEscaped(text)
                + QStringLiteral("</td></tr>\n");
         if (++done % 64 == 0 && progress)

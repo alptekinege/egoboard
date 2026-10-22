@@ -6,6 +6,7 @@
 #include "StorageManager.h"
 
 #include <QMap>
+#include <QHash>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -240,16 +241,21 @@ private:
     // id order. Never fetchAllFull, so memory stays flat.
     bool fetchPayloadBatch(const QList<qint64> &ids, QVector<ClipboardRecord> *out,
                            QString *error);
-    // Entry-only writers for the reading formats (tags are looked up per
-    // entry). Cooperative cancel/progress like the rest of U11/G9.
+    bool fetchTagsBatch(const QList<qint64> &ids, QHash<qint64, QStringList> *tagsByEntry,
+                        QString *error, std::atomic<bool> *cancel = nullptr) const;
+    // Entry-only writers for the reading formats. Cooperative cancel/progress
+    // like the rest of U11/G9.
     bool writeCsvExport(const ExportRequest &request, const QVector<ClipboardRecord> &entries,
-                        QString *error, std::atomic<bool> *cancel = nullptr,
+                        const QHash<qint64, QStringList> &tagsByEntry, QString *error,
+                        std::atomic<bool> *cancel = nullptr,
                         IoProgress progress = {}, int progressBase = 0, int progressTotal = 0) const;
     bool writeMarkdownExport(const ExportRequest &request, const QVector<ClipboardRecord> &entries,
-                             QString *error, std::atomic<bool> *cancel = nullptr,
+                             const QHash<qint64, QStringList> &tagsByEntry, QString *error,
+                             std::atomic<bool> *cancel = nullptr,
                              IoProgress progress = {}, int progressBase = 0, int progressTotal = 0) const;
     bool writeHtmlExport(const ExportRequest &request, const QVector<ClipboardRecord> &entries,
-                         QString *error, std::atomic<bool> *cancel = nullptr,
+                         const QHash<qint64, QStringList> &tagsByEntry, QString *error,
+                         std::atomic<bool> *cancel = nullptr,
                          IoProgress progress = {}, int progressBase = 0, int progressTotal = 0) const;
 
     StorageManager *m_storage = nullptr;

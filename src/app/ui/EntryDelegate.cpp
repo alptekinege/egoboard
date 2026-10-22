@@ -40,21 +40,20 @@ QString typeIconName(int typeRole)
 // entries older than 7 days, so paint() never rebuilds it per row.
 QString relativeTime(qint64 timestampMs, const QString &dateTimeFormat, bool absolute)
 {
-    const QDateTime timestamp = QDateTime::fromMSecsSinceEpoch(timestampMs);
     if (absolute)
-        return timestamp.toString(dateTimeFormat);
-    const qint64 seconds = timestamp.secsTo(QDateTime::currentDateTime());
+        return QDateTime::fromMSecsSinceEpoch(timestampMs).toString(dateTimeFormat);
+    const qint64 seconds = (QDateTime::currentMSecsSinceEpoch() - timestampMs) / 1000;
     if (seconds < 0)
         return EntryDelegate::tr("in the future");
     if (seconds < 50)
         return EntryDelegate::tr("just now");
     if (seconds < 90 * 60)
-        return EntryDelegate::tr("%1 min ago").arg(qRound(seconds / 60.0));
+        return EntryDelegate::tr("%1 min ago").arg((seconds + 30) / 60);
     if (seconds < 24 * 3600)
-        return EntryDelegate::tr("%1 h ago").arg(qRound(seconds / 3600.0));
+        return EntryDelegate::tr("%1 h ago").arg((seconds + 1800) / 3600);
     if (seconds < 7 * 24 * 3600)
-        return EntryDelegate::tr("%1 d ago").arg(qRound(seconds / 86400.0));
-    return timestamp.toString(dateTimeFormat);
+        return EntryDelegate::tr("%1 d ago").arg((seconds + 43200) / 86400);
+    return QDateTime::fromMSecsSinceEpoch(timestampMs).toString(dateTimeFormat);
 }
 
 // One painted marker on the right-hand side of a row. The rect is shared by
@@ -67,21 +66,23 @@ struct Badge {
 };
 
 QVector<Badge> badgesFor(const QRect &row, const DesignTokens::RowMetrics &metrics, bool pinned,
-                         bool sensitive, const QVector<EntryDelegate::GroupBadge> &groups)
+                         bool sensitive, const QVector<EntryDelegate::GroupBadge> &groups,
+                         bool includeTooltips)
 {
     QVector<Badge> badges;
+    badges.reserve(int(pinned) + int(sensitive) + qMin(groups.size(), 4));
     int rightEdge = row.left() + row.width() - metrics.margin;
     const int badgeTop = row.top() + (row.height() - metrics.badgeSize) / 2;
     if (pinned) {
         rightEdge -= metrics.badgeSize;
         badges.append({QRect(rightEdge, badgeTop, metrics.badgeSize, metrics.badgeSize),
-                       EntryDelegate::tr("Pinned"),
+                       includeTooltips ? EntryDelegate::tr("Pinned") : QString(),
                        QIcon::fromTheme(QStringLiteral("bookmarks")), {}});
     }
     if (sensitive) {
         rightEdge -= metrics.badgeSize;
         badges.append({QRect(rightEdge, badgeTop, metrics.badgeSize, metrics.badgeSize),
-                       EntryDelegate::tr("Flagged as sensitive"),
+                       includeTooltips ? EntryDelegate::tr("Flagged as sensitive") : QString(),
                        QIcon::fromTheme(QStringLiteral("security-low")), {}});
     }
     for (int i = 0; i < qMin(groups.size(), 4); ++i) {
@@ -89,7 +90,7 @@ QVector<Badge> badgesFor(const QRect &row, const DesignTokens::RowMetrics &metri
         rightEdge -= metrics.dotAdvance();
         const int dotTop = row.top() + (row.height() - metrics.dotDiameter) / 2;
         badges.append({QRect(rightEdge, dotTop, metrics.dotDiameter, metrics.dotDiameter),
-                       groups.at(i).name.isEmpty()
+                       !includeTooltips || groups.at(i).name.isEmpty()
                            ? QString()
                            : EntryDelegate::tr("Group: %1").arg(groups.at(i).name),
                        {},
@@ -117,6 +118,13 @@ EntryDelegate::EntryDelegate(BookmarkManager *bookmarks, SettingsManager *settin
     , m_settings(settings)
 {
     refreshTimeFormats();
+    refreshGroupMetadata();
+    if (bookmarks) {
+        connect(bookmarks, &BookmarkManager::groupsChanged, this, [this] {
+            m_groupMetadataDirty = true;
+            clearGroupCache();
+        });
+    }
     if (settings)
         connect(settings, &SettingsManager::changed, this,
                 &EntryDelegate::refreshTimeFormats);
@@ -150,8 +158,26 @@ void EntryDelegate::clearGroupCache()
     m_groupCache.clear();
 }
 
+void EntryDelegate::refreshGroupMetadata() const
+{
+    m_groupMetadata.clear();
+    if (!m_bookmarks) {
+        m_groupMetadataDirty = false;
+        return;
+    }
+    const QVector<BookmarkGroup> groups = m_bookmarks->groups();
+    m_groupMetadata.reserve(groups.size());
+    for (const BookmarkGroup &group : groups) {
+        if (!group.color.isEmpty())
+            m_groupMetadata.insert(group.id, {group.name, QColor(group.color)});
+    }
+    m_groupMetadataDirty = false;
+}
+
 QVector<EntryDelegate::GroupBadge> EntryDelegate::groupBadges(qint64 entryId) const
 {
+    if (m_groupMetadataDirty)
+        refreshGroupMetadata();
     const auto cached = m_groupCache.constFind(entryId);
     if (cached != m_groupCache.constEnd())
         return cached.value();
@@ -159,9 +185,9 @@ QVector<EntryDelegate::GroupBadge> EntryDelegate::groupBadges(qint64 entryId) co
     if (m_bookmarks) {
         const QList<qint64> groupIds = m_bookmarks->groupIdsForEntry(entryId);
         for (const qint64 groupId : groupIds) {
-            const auto group = m_bookmarks->group(groupId);
-            if (group.has_value() && !group->color.isEmpty())
-                badges.append({group->name, QColor(group->color)});
+            const auto group = m_groupMetadata.constFind(groupId);
+            if (group != m_groupMetadata.cend())
+                badges.append(group.value());
         }
     }
     m_groupCache.insert(entryId, badges);
@@ -207,7 +233,8 @@ void EntryDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
         groupBadges(index.data(ClipboardListModel::IdRole).toLongLong());
     const bool pinned = index.data(ClipboardListModel::PinnedRole).toBool();
     const bool sensitive = index.data(ClipboardListModel::SensitiveRole).toBool();
-    const QVector<Badge> badges = badgesFor(option.rect, metrics, pinned, sensitive, groups);
+    const QVector<Badge> badges = badgesFor(option.rect, metrics, pinned, sensitive, groups,
+                                            false);
     for (const Badge &badge : badges) {
         if (badge.dot.isValid()) {
             painter->setPen(Qt::NoPen);
@@ -293,7 +320,7 @@ bool EntryDelegate::helpEvent(QHelpEvent *event, QAbstractItemView *view,
     const QVector<Badge> badges =
         badgesFor(option.rect, metrics, index.data(ClipboardListModel::PinnedRole).toBool(),
                   index.data(ClipboardListModel::SensitiveRole).toBool(),
-                  groupBadges(index.data(ClipboardListModel::IdRole).toLongLong()));
+                  groupBadges(index.data(ClipboardListModel::IdRole).toLongLong()), true);
     const QPoint pos = event->pos();
     for (const Badge &badge : badges) {
         if (badge.tooltip.isEmpty() || !badge.rect.contains(pos))

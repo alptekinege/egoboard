@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QFontMetrics>
+#include <QHash>
 #include <QStyledItemDelegate>
 
 class BookmarkManager;
@@ -62,6 +63,7 @@ public slots:
 private:
     // Timestamp style / clock format, cached from SettingsManager.
     void refreshTimeFormats();
+    void refreshGroupMetadata() const;
 
     QVector<GroupBadge> groupBadges(qint64 entryId) const;
     // Draws one text line, marking every search-term match with the palette's
@@ -72,6 +74,8 @@ private:
 
     BookmarkManager *m_bookmarks = nullptr;
     SettingsManager *m_settings = nullptr;
+    mutable QHash<qint64, GroupBadge> m_groupMetadata;
+    mutable bool m_groupMetadataDirty = true;
     mutable QHash<qint64, QVector<GroupBadge>> m_groupCache; // per visible entry
     QStringList m_searchTerms;
     QStringList m_searchLowerTerms;

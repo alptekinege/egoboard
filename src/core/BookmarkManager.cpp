@@ -148,7 +148,10 @@ bool BookmarkManager::assignEntry(qint64 entryId, qint64 groupId)
     query.bindValue(QStringLiteral(":g"), groupId);
     if (!query.exec())
         return false;
+    const bool inserted = query.numRowsAffected() > 0;
     emit membershipChanged(entryId);
+    if (inserted)
+        emit membershipCountChanged(groupId, 1);
     return true;
 }
 
@@ -160,7 +163,10 @@ bool BookmarkManager::removeFromGroup(qint64 entryId, qint64 groupId)
     query.bindValue(QStringLiteral(":g"), groupId);
     if (!query.exec())
         return false;
+    const bool removed = query.numRowsAffected() > 0;
     emit membershipChanged(entryId);
+    if (removed)
+        emit membershipCountChanged(groupId, -1);
     return true;
 }
 
@@ -177,6 +183,40 @@ QList<qint64> BookmarkManager::entryIdsForGroup(qint64 groupId) const
     return ids;
 }
 
+QList<qint64> BookmarkManager::entryIdsForGroups(const QSet<qint64> &groupIds) const
+{
+    static constexpr int kGroupQueryBatchSize = 500; // below SQLite's minimum bind-variable cap
+    const QList<qint64> groupIdList = groupIds.values();
+    QList<qint64> entryIds;
+    QSet<qint64> seen;
+    seen.reserve(groupIds.size());
+    for (int offset = 0; offset < groupIdList.size(); offset += kGroupQueryBatchSize) {
+        const int count = qMin(kGroupQueryBatchSize, groupIdList.size() - offset);
+        QStringList placeholders;
+        placeholders.reserve(count);
+        for (int i = 0; i < count; ++i)
+            placeholders.append(QStringLiteral("?"));
+        QSqlQuery query(m_db);
+        query.prepare(QStringLiteral("SELECT entry_id FROM entry_groups WHERE group_id IN (%1)")
+                          .arg(placeholders.join(QLatin1Char(','))));
+        for (int i = 0; i < count; ++i)
+            query.bindValue(i, groupIdList.at(offset + i));
+        if (!query.exec()) {
+            qWarning("egoboard: cannot fetch entries for groups: %s",
+                     qPrintable(query.lastError().text()));
+            continue;
+        }
+        while (query.next()) {
+            const qint64 entryId = query.value(0).toLongLong();
+            if (entryId != 0 && !seen.contains(entryId)) {
+                seen.insert(entryId);
+                entryIds.append(entryId);
+            }
+        }
+    }
+    return entryIds;
+}
+
 QList<qint64> BookmarkManager::groupIdsForEntry(qint64 entryId) const
 {
     QList<qint64> ids;
@@ -190,6 +230,37 @@ QList<qint64> BookmarkManager::groupIdsForEntry(qint64 entryId) const
     return ids;
 }
 
+bool BookmarkManager::groupIdsForEntries(
+    const QList<qint64> &entryIds, QHash<qint64, QList<qint64>> *groupsByEntry) const
+{
+    if (!groupsByEntry)
+        return false;
+    groupsByEntry->clear();
+    static constexpr int kEntryQueryBatchSize = 500;
+    for (int offset = 0; offset < entryIds.size(); offset += kEntryQueryBatchSize) {
+        const int count = qMin(kEntryQueryBatchSize, entryIds.size() - offset);
+        QStringList placeholders;
+        placeholders.reserve(count);
+        for (int i = 0; i < count; ++i)
+            placeholders.append(QStringLiteral("?"));
+        QSqlQuery query(m_db);
+        query.prepare(QStringLiteral(
+            "SELECT entry_id, group_id FROM entry_groups WHERE entry_id IN (%1)"
+            " ORDER BY entry_id, group_id")
+                          .arg(placeholders.join(QLatin1Char(','))));
+        for (int i = 0; i < count; ++i)
+            query.bindValue(i, entryIds.at(offset + i));
+        if (!query.exec()) {
+            qWarning("egoboard: cannot fetch groups for entries: %s",
+                     qPrintable(query.lastError().text()));
+            return false;
+        }
+        while (query.next())
+            (*groupsByEntry)[query.value(0).toLongLong()].append(query.value(1).toLongLong());
+    }
+    return true;
+}
+
 int BookmarkManager::entryCount(qint64 groupId) const
 {
     QSqlQuery query(m_db);
@@ -198,6 +269,21 @@ int BookmarkManager::entryCount(qint64 groupId) const
     if (query.exec() && query.next())
         return query.value(0).toInt();
     return 0;
+}
+
+QHash<qint64, int> BookmarkManager::entryCounts() const
+{
+    QHash<qint64, int> counts;
+    QSqlQuery query(m_db);
+    if (!query.exec(QStringLiteral(
+            "SELECT group_id, COUNT(*) FROM entry_groups GROUP BY group_id"))) {
+        qWarning("egoboard: cannot fetch group entry counts: %s",
+                 qPrintable(query.lastError().text()));
+        return counts;
+    }
+    while (query.next())
+        counts.insert(query.value(0).toLongLong(), query.value(1).toInt());
+    return counts;
 }
 
 bool BookmarkManager::groupNameExists(const QString &name, qint64 parentId, qint64 excludeId) const

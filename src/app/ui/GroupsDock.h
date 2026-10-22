@@ -4,6 +4,7 @@
 
 #include <QDockWidget>
 
+class IClipboardStorage;
 class GroupTreeModel;
 class QTreeView;
 
@@ -13,7 +14,8 @@ class QTreeView;
 class GroupsDock : public QDockWidget {
     Q_OBJECT
 public:
-    explicit GroupsDock(BookmarkManager *bookmarks, QWidget *parent = nullptr);
+    explicit GroupsDock(BookmarkManager *bookmarks, QWidget *parent = nullptr,
+                        IClipboardStorage *storage = nullptr);
 
     // U15/§7 focus area: keyboard lands in the group tree.
     void focusTree();

@@ -92,7 +92,7 @@ std::optional<Snippet> SnippetManager::snippet(qint64 id) const
 
 QString SnippetManager::expand(const QString &tmpl, const QString &clipboardText)
 {
-    if (tmpl.isEmpty())
+    if (tmpl.isEmpty() || !tmpl.contains(QStringLiteral("{{")))
         return tmpl;
     const QString date = QDate::currentDate().toString(QStringLiteral("yyyy-MM-dd"));
     const QString time = QTime::currentTime().toString(QStringLiteral("HH:mm"));

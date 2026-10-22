@@ -187,7 +187,8 @@ private:
 
 } // namespace
 
-GroupsDock::GroupsDock(BookmarkManager *bookmarks, QWidget *parent)
+GroupsDock::GroupsDock(BookmarkManager *bookmarks, QWidget *parent,
+                       IClipboardStorage *storage)
     : QDockWidget(tr("Favorites & Groups"), parent)
     , m_bookmarks(bookmarks)
 {
@@ -213,7 +214,7 @@ GroupsDock::GroupsDock(BookmarkManager *bookmarks, QWidget *parent)
     connect(deleteAction, &QAction::triggered, this, &GroupsDock::deleteSelected);
     layout->addWidget(toolbar);
 
-    m_model = new GroupTreeModel(bookmarks, this);
+    m_model = new GroupTreeModel(bookmarks, this, storage);
     connect(m_model, &GroupTreeModel::entriesDropped, this, &GroupsDock::entriesDropped);
 
     m_tree = new DropTargetTreeView(container);

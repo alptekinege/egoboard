@@ -3,9 +3,11 @@
 #include "BookmarkManager.h"
 
 #include <QAbstractItemModel>
+#include <QHash>
 
 #include <memory>
 
+class IClipboardStorage;
 class QMimeData;
 
 // Tree model over the bookmark group hierarchy. Supports:
@@ -21,7 +23,8 @@ public:
         EntryCountRole,
     };
 
-    explicit GroupTreeModel(BookmarkManager *bookmarks, QObject *parent = nullptr);
+    explicit GroupTreeModel(BookmarkManager *bookmarks, QObject *parent = nullptr,
+                            IClipboardStorage *storage = nullptr);
     ~GroupTreeModel() override;
 
     QModelIndex index(int row, int column, const QModelIndex &parent = {}) const override;
@@ -52,8 +55,11 @@ signals:
 private:
     struct Node;
     void rebuild();
+    void refreshEntryCounts();
     const Node *nodeForIndex(const QModelIndex &index) const;
 
     BookmarkManager *m_bookmarks = nullptr;
+    IClipboardStorage *m_storage = nullptr;
+    QHash<qint64, int> m_entryCounts;
     std::unique_ptr<Node> m_root;
 };

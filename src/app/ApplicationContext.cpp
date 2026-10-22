@@ -10,6 +10,7 @@
 #include "EgoboardDbusAdaptor.h"
 #include "ExpireScheduler.h"
 #include "ExportImportManager.h"
+#include "GroupTreeModel.h"
 #include "HotkeyManager.h"
 #include "IconThemeManager.h"
 #include "KWinCursorTracker.h"
@@ -47,14 +48,18 @@
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
+#include <QMimeData>
 #include <QProcess>
 #include <QSqlDatabase>
 #include <QSqlError>
+#include <QSqlQuery>
 #include <QStandardPaths>
 #include <QTemporaryFile>
 #include <QTextDocument>
 #include <QThreadPool>
 #include <QTimer>
+#include <QVariant>
 #include <QWidget>
 
 #include <memory>
@@ -918,6 +923,41 @@ int ApplicationContext::benchmark(int entryCount)
         return 1;
     }
 
+    QSqlDatabase db = m_storage->database();
+    QSqlQuery seedTag(db);
+    if (!seedTag.exec(QStringLiteral("INSERT OR IGNORE INTO tags (name) VALUES ('bench-export-tag')"))) {
+        qCritical("benchmark: cannot create export tag fixture: %s",
+                  qPrintable(seedTag.lastError().text()));
+        return 1;
+    }
+    QSqlQuery tagIdQuery(db);
+    if (!tagIdQuery.exec(QStringLiteral("SELECT id FROM tags WHERE name = 'bench-export-tag'"))
+        || !tagIdQuery.next()) {
+        qCritical("benchmark: cannot read export tag fixture id");
+        return 1;
+    }
+    const qint64 exportTagId = tagIdQuery.value(0).toLongLong();
+    QSqlQuery taggedEntries(db);
+    if (!taggedEntries.exec(QStringLiteral("SELECT id FROM entries ORDER BY id LIMIT 10"))) {
+        qCritical("benchmark: cannot read export tag fixture entries: %s",
+                  qPrintable(taggedEntries.lastError().text()));
+        return 1;
+    }
+    QSqlQuery linkExportTag(db);
+    linkExportTag.prepare(QStringLiteral(
+        "INSERT OR IGNORE INTO entry_tags (entry_id, tag_id) VALUES (?, ?)"));
+    int taggedEntryCount = 0;
+    while (taggedEntries.next()) {
+        linkExportTag.bindValue(0, taggedEntries.value(0).toLongLong());
+        linkExportTag.bindValue(1, exportTagId);
+        if (!linkExportTag.exec()) {
+            qCritical("benchmark: cannot link export tag fixture: %s",
+                      qPrintable(linkExportTag.lastError().text()));
+            return 1;
+        }
+        ++taggedEntryCount;
+    }
+
     // --- export ---------------------------------------------------------------
     const QString exportPath =
         QDir(QDir::tempPath()).filePath(QStringLiteral("egoboard-bench-export.json"));
@@ -928,9 +968,233 @@ int ApplicationContext::benchmark(int entryCount)
     QString error;
     const bool exported = m_io->exportToFile(request, &error);
     report(QStringLiteral("export (JSON)"), timer.elapsed(), qMax<qint64>(5000, total / 5));
+    bool exportTagsValid = false;
+    QFile exportedFile(exportPath);
+    if (exported && exportedFile.open(QIODevice::ReadOnly)) {
+        const QJsonDocument document = QJsonDocument::fromJson(exportedFile.readAll());
+        if (document.isObject()) {
+            for (const QJsonValue &entryValue :
+                 document.object().value(QStringLiteral("entries")).toArray()) {
+                const QJsonArray tags = entryValue.toObject().value(QStringLiteral("tags")).toArray();
+                if (tags.contains(QStringLiteral("bench-export-tag"))) {
+                    exportTagsValid = true;
+                    break;
+                }
+            }
+        }
+    }
     QFile::remove(exportPath);
-    if (!exported) {
-        qCritical("benchmark: export failed: %s", qPrintable(error));
+    if (!exported || !exportTagsValid || taggedEntryCount != 10) {
+        qCritical("benchmark: export or batched tag metadata failed: %s",
+                  exported ? "tag fixture missing" : qPrintable(error));
+        return 1;
+    }
+
+    // --- group-tree rebuild (10k nodes, reverse hierarchy order) ------------
+    // Names sort parent-before-child, forcing the old fixed-point builder to
+    // rescan the remaining descendants once per level.
+    static constexpr int kGroupBranches = 20;
+    static constexpr int kGroupLevels = 500;
+    static constexpr int kGroupCount = 1 + kGroupBranches * kGroupLevels;
+    if (!db.transaction()) {
+        qCritical("benchmark: cannot begin group-tree fixture transaction: %s",
+                  qPrintable(db.lastError().text()));
+        return 1;
+    }
+    QSqlQuery insertGroup(db);
+    insertGroup.prepare(QStringLiteral(
+        "INSERT INTO groups (parent_id, name, color, icon) VALUES (:parent, :name, '', '')"));
+    insertGroup.bindValue(QStringLiteral(":parent"), QVariant());
+    insertGroup.bindValue(QStringLiteral(":name"), QStringLiteral("bench-group-root"));
+    if (!insertGroup.exec()) {
+        db.rollback();
+        qCritical("benchmark: group-tree root insert failed: %s",
+                  qPrintable(insertGroup.lastError().text()));
+        return 1;
+    }
+    const qint64 rootGroupId = insertGroup.lastInsertId().toLongLong();
+    QVector<qint64> parentIds(kGroupBranches, rootGroupId);
+    bool groupsInserted = true;
+    for (int level = 0; level < kGroupLevels && groupsInserted; ++level) {
+        QVector<qint64> currentIds;
+        currentIds.reserve(kGroupBranches);
+        for (int branch = 0; branch < kGroupBranches; ++branch) {
+            insertGroup.bindValue(QStringLiteral(":parent"),
+                                  parentIds.at(branch) == 0
+                                      ? QVariant()
+                                      : QVariant(parentIds.at(branch)));
+            insertGroup.bindValue(QStringLiteral(":name"),
+                                  QStringLiteral("bench-group-%1-%2")
+                                      .arg(level + 1, 4, 10, QLatin1Char('0'))
+                                      .arg(branch, 2, 10, QLatin1Char('0')));
+            if (!insertGroup.exec()) {
+                qCritical("benchmark: group-tree fixture insert failed: %s",
+                          qPrintable(insertGroup.lastError().text()));
+                groupsInserted = false;
+                break;
+            }
+            currentIds.append(insertGroup.lastInsertId().toLongLong());
+        }
+        parentIds = currentIds;
+    }
+    if (!groupsInserted || !db.commit()) {
+        db.rollback();
+        return 1;
+    }
+    static constexpr int kGroupFixtureEntries = 1000;
+    QSqlQuery entryIds(db);
+    if (!entryIds.exec(QStringLiteral("SELECT id FROM entries ORDER BY id LIMIT %1")
+                           .arg(kGroupFixtureEntries))) {
+        qCritical("benchmark: cannot load group-entry fixture ids: %s",
+                  qPrintable(entryIds.lastError().text()));
+        return 1;
+    }
+    QSqlQuery insertMembership(db);
+    insertMembership.prepare(QStringLiteral(
+        "INSERT OR IGNORE INTO entry_groups (entry_id, group_id) VALUES (?, ?)"));
+    int groupFixtureEntries = 0;
+    while (groupFixtureEntries < kGroupFixtureEntries && entryIds.next()) {
+        const qint64 entryId = entryIds.value(0).toLongLong();
+        const qint64 leafGroupId = parentIds.at(groupFixtureEntries % kGroupBranches);
+        for (const qint64 groupId : {rootGroupId, leafGroupId}) {
+            insertMembership.bindValue(0, entryId);
+            insertMembership.bindValue(1, groupId);
+            if (!insertMembership.exec()) {
+                qCritical("benchmark: group-entry fixture insert failed: %s",
+                          qPrintable(insertMembership.lastError().text()));
+                return 1;
+            }
+        }
+        ++groupFixtureEntries;
+    }
+
+    timer.restart();
+    qint64 groupTreeMs = 0;
+    qint64 groupDragMimeMs = 0;
+    bool groupTreeValid = true;
+    bool groupDragMimeValid = false;
+    int visitedGroups = 0;
+    {
+        GroupTreeModel model(m_bookmarks);
+        groupTreeMs = timer.elapsed();
+        groupTreeValid = model.rowCount() == 1;
+        const QModelIndex root = model.index(0, 0);
+        groupTreeValid = groupTreeValid && model.rowCount(root) == kGroupBranches;
+        ++visitedGroups;
+        for (int branch = 0; branch < kGroupBranches; ++branch) {
+            QModelIndex node = model.index(branch, 0, root);
+            QModelIndex previous = root;
+            int depth = 0;
+            for (; depth < kGroupLevels && node.isValid(); ++depth) {
+                ++visitedGroups;
+                if (previous.isValid() && model.parent(node) != previous)
+                    groupTreeValid = false;
+                if (depth + 1 < kGroupLevels && model.rowCount(node) != 1)
+                    groupTreeValid = false;
+                previous = node;
+                node = model.index(0, 0, node);
+            }
+            if (depth != kGroupLevels || node.isValid())
+                groupTreeValid = false;
+        }
+        QModelIndexList dragIndexes;
+        dragIndexes.reserve(1024);
+        for (int branch = 0; branch < kGroupBranches && dragIndexes.size() < 1024; ++branch) {
+            QModelIndex node = model.index(branch, 0);
+            while (node.isValid() && dragIndexes.size() < 1024) {
+                dragIndexes.append(node);
+                node = model.index(0, 0, node);
+            }
+        }
+        timer.restart();
+        std::unique_ptr<QMimeData> dragMime(model.mimeData(dragIndexes));
+        groupDragMimeMs = timer.elapsed();
+        groupDragMimeValid = dragMime
+            && dragMime->hasFormat(QStringLiteral("application/x-egoboard-group-ids"));
+    }
+    const QString groupExportPath =
+        QDir(QDir::tempPath()).filePath(QStringLiteral("egoboard-bench-groups.json"));
+    ExportImportManager::ExportRequest groupExport;
+    groupExport.scope = ExportImportManager::Scope::GroupSubtree;
+    groupExport.groupId = rootGroupId;
+    groupExport.path = groupExportPath;
+    QString groupExportError;
+    timer.restart();
+    const bool groupExported = m_io->exportToFile(groupExport, &groupExportError);
+    const qint64 groupExportMs = timer.elapsed();
+    bool groupExportValid = false;
+    qint64 groupImportMs = 0;
+    bool groupImportValid = false;
+    QFile groupExportFile(groupExportPath);
+    if (groupExported && groupExportFile.open(QIODevice::ReadOnly)) {
+        const QJsonDocument document = QJsonDocument::fromJson(groupExportFile.readAll());
+        bool groupTagFound = false;
+        if (document.isObject()) {
+            for (const QJsonValue &entryValue :
+                 document.object().value(QStringLiteral("entries")).toArray()) {
+                if (entryValue.toObject().value(QStringLiteral("tags")).toArray().contains(
+                        QStringLiteral("bench-export-tag"))) {
+                    groupTagFound = true;
+                    break;
+                }
+            }
+        }
+        if (document.isObject()
+            && document.object().value(QStringLiteral("entries")).toArray().size()
+                   == groupFixtureEntries
+            && document.object().value(QStringLiteral("memberships")).toArray().size()
+                   == groupFixtureEntries * 2
+            && document.object().value(QStringLiteral("groups")).toArray().size()
+                   == kGroupCount
+            && groupTagFound) {
+            QJsonObject fixture = document.object();
+            const QJsonArray groups = fixture.value(QStringLiteral("groups")).toArray();
+            QJsonArray childFirstGroups;
+            for (qsizetype i = groups.size(); i > 0; --i)
+                childFirstGroups.append(groups.at(i - 1));
+            fixture.insert(QStringLiteral("groups"), childFirstGroups);
+            groupExportFile.close();
+            QFile reorderedExport(groupExportPath);
+            if (reorderedExport.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                const QByteArray payload = QJsonDocument(fixture).toJson(QJsonDocument::Compact);
+                groupExportValid = reorderedExport.write(payload) == payload.size();
+            }
+        }
+    }
+    if (groupExportValid) {
+        timer.restart();
+        const ExportImportManager::ImportResult imported =
+            m_io->importFromFile(groupExportPath, ExportImportManager::ImportMode::Merge);
+        groupImportMs = timer.elapsed();
+        groupImportValid = imported.ok && imported.groupsImported == 0;
+    }
+    QFile::remove(groupExportPath);
+    report(QStringLiteral("group tree rebuild (10k)"), groupTreeMs, 1000);
+    report(QStringLiteral("group drag MIME (1k)"), groupDragMimeMs, 100);
+    report(QStringLiteral("group subtree export (10k)"), groupExportMs, 2000);
+    report(QStringLiteral("group import path match (10k, child-first)"), groupImportMs, 10000);
+    QSqlQuery clearGroups(db);
+    if (!clearGroups.exec(QStringLiteral("DELETE FROM groups"))) {
+        qCritical("benchmark: group-tree fixture cleanup failed: %s",
+                  qPrintable(clearGroups.lastError().text()));
+        return 1;
+    }
+    if (!groupTreeValid || visitedGroups != kGroupCount) {
+        qCritical("benchmark: group tree has %d of %d expected nodes",
+                  visitedGroups, kGroupCount);
+        return 1;
+    }
+    if (!groupDragMimeValid) {
+        qCritical("benchmark: group drag MIME payload was not created");
+        return 1;
+    }
+    if (!groupExportValid) {
+        qCritical("benchmark: group subtree export failed: %s",
+                  groupExported ? "unexpected exported entry count" : qPrintable(groupExportError));
+        return 1;
+    }
+    if (!groupImportValid) {
+        qCritical("benchmark: group import path matching failed");
         return 1;
     }
 
