@@ -7,6 +7,7 @@
 #include "UiHelpers.h"
 #include <QAccessible>
 #include <QAccessibleWidget>
+#include <QHash>
 #include <QPointer>
 #include <QSqlDatabase>
 #include <QSqlError>
@@ -423,20 +424,35 @@ void TimelineStrip::recompute()
         if (m_filter.pinnedOnly) where << QStringLiteral("pinned = 1");
         if (m_filter.groupId.has_value()) where << QStringLiteral("id IN (SELECT entry_id FROM entry_groups WHERE group_id = ?)") , binds << m_filter.groupId.value();
 
-        for (int i = 0; i < m_bins.size(); ++i) {
-            qint64 from = m_bins[i].dayStartMs;
-            qint64 to = from + kDayMs - 1;
-            QString sql = QStringLiteral("SELECT COUNT(*) FROM entries");
-            QStringList w2 = where;
-            w2 << QStringLiteral("timestamp_ms >= ? AND timestamp_ms <= ?");
-            if (!w2.isEmpty()) sql += QStringLiteral(" WHERE ") + w2.join(QStringLiteral(" AND "));
-            QSqlQuery q(db);
-            q.prepare(sql);
-            int idx = 0;
-            for (auto &b: binds) q.bindValue(idx++, b);
-            q.bindValue(idx++, from);
-            q.bindValue(idx++, to);
-            if (q.exec() && q.next()) m_bins[i].count = q.value(0).toInt();
+        // One grouped scan instead of a COUNT(*) per day: the histogram is
+        // 14 bins, so the old loop prepared and executed 14 queries to walk
+        // the same rows. Timestamps are UTC millis; SQLite's localtime
+        // modifier buckets by local date, matching the bins above.
+        QStringList conditions = where;
+        conditions << QStringLiteral("timestamp_ms >= ?")
+                   << QStringLiteral("timestamp_ms <= ?");
+        QString sql = QStringLiteral(
+            "SELECT date(timestamp_ms / 1000, 'unixepoch', 'localtime') AS d, COUNT(*)"
+            " FROM entries WHERE ")
+            + conditions.join(QStringLiteral(" AND "))
+            + QStringLiteral(" GROUP BY d");
+        QSqlQuery q(db);
+        q.prepare(sql);
+        int idx = 0;
+        for (auto &b: binds) q.bindValue(idx++, b);
+        q.bindValue(idx++, m_bins.constFirst().dayStartMs);
+        q.bindValue(idx, m_bins.constLast().dayStartMs + kDayMs - 1);
+        QHash<QString, int> counts;
+        if (q.exec()) {
+            while (q.next())
+                counts.insert(q.value(0).toString(), q.value(1).toInt());
+        }
+        // ISO date keys line up with the local QDate of every bin start.
+        for (DayBin &bin : m_bins) {
+            const QString key = QDateTime::fromMSecsSinceEpoch(bin.dayStartMs)
+                                    .date()
+                                    .toString(Qt::ISODate);
+            bin.count = counts.value(key);
         }
     } else {
         // fallback: bin from fetched page

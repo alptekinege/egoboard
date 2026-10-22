@@ -108,6 +108,8 @@ StorageManager::StorageManager(const QString &databasePath, QObject *parent)
 
 StorageManager::~StorageManager()
 {
+    // Cached statements reference the connection; drop them before closing.
+    clearPrepared();
     const QString connectionName = m_connectionName;
     if (m_db.isOpen())
         m_db.close();
@@ -161,6 +163,17 @@ bool StorageManager::beginBulk()
     return true;
 }
 
+QSqlQuery &StorageManager::preparedStatement(const QString &sql) const
+{
+    const auto it = m_prepared.find(sql);
+    if (it != m_prepared.cend())
+        return *it->second;
+    auto statement = std::make_unique<QSqlQuery>(m_db);
+    statement->prepare(sql);
+    // Heap-owned: a stable address for the connection's lifetime.
+    return *m_prepared.emplace(sql, std::move(statement)).first->second;
+}
+
 bool StorageManager::endBulk(bool commit)
 {
     if (m_bulkDepth <= 0)
@@ -187,8 +200,8 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
     }
 
     {
-        QSqlQuery find(m_db);
-        find.prepare(QStringLiteral("SELECT id FROM entries WHERE content_hash = :h LIMIT 1"));
+        QSqlQuery &find = preparedStatement(
+            QStringLiteral("SELECT id FROM entries WHERE content_hash = :h LIMIT 1"));
         // The column is TEXT; hashes are hex, so bind them as text to match
         // both older normalized rows and new ones (BLOB binds would not).
         find.bindValue(QStringLiteral(":h"), QString::fromLatin1(record.hash));
@@ -203,8 +216,7 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
             // the timestamp only moves forward - copying an old entry again
             // must not sink it in Newest order. A pin is never removed and
             // existing OCR text survives a copy that carries none.
-            QSqlQuery touch(m_db);
-            touch.prepare(QStringLiteral(
+            QSqlQuery &touch = preparedStatement(QStringLiteral(
                 "UPDATE entries SET"
                 " timestamp_ms = MAX(timestamp_ms, :ts),"
                 " use_count = use_count + 1,"
@@ -240,8 +252,7 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
         }
     }
 
-    QSqlQuery insert(m_db);
-    insert.prepare(QStringLiteral(
+    QSqlQuery &insert = preparedStatement(QStringLiteral(
         "INSERT INTO entries (timestamp_ms, content_type, content_hash, text_data, blob_data,"
         " preview, size_bytes, pinned, sensitive, use_count, source_app, source_window)"
         " VALUES (:ts, :type, :h, :text, :blob, :preview, :size, :pinned, :sensitive, 0, :app, :win)"));
@@ -348,7 +359,12 @@ QVector<ClipboardRecord> StorageManager::fetchPageSql(const FilterSpec &filter,
     };
 
     const bool hasTextQuery = !filter.searchText.isEmpty() || !filter.excludeText.isEmpty();
-    const bool ftsAvailable = hasTextQuery && SearchEngine::isFtsAvailable(m_db);
+    // Cached probe: tableExists + a probe query would otherwise run for every
+    // fetch with a text query (i.e. per keystroke). The table outlives clears
+    // and imports; the cache is invalidated wherever entries/FTS are wiped.
+    if (!m_ftsAvailable.has_value())
+        m_ftsAvailable = SearchEngine::isFtsAvailable(m_db);
+    const bool ftsAvailable = hasTextQuery && *m_ftsAvailable;
 
     // LIKE fallback for one term, restricted to the active search scope.
     const auto likeMatch = [&](const QString &placeholder) -> QString {
@@ -631,8 +647,7 @@ bool StorageManager::fetchFull(qint64 id, ClipboardRecord *out) const
 {
     if (!m_db.isOpen() || !out)
         return false;
-    QSqlQuery query(m_db);
-    query.prepare(QStringLiteral(
+    QSqlQuery &query = preparedStatement(QStringLiteral(
         "SELECT id, timestamp_ms, content_type, content_hash, text_data, blob_data, preview,"
         " size_bytes, pinned, sensitive, use_count, source_app, source_window, ocr_text"
         " FROM entries WHERE id = :id"));
@@ -650,8 +665,7 @@ bool StorageManager::fetchSummary(qint64 id, ClipboardRecord *out) const
 {
     if (!m_db.isOpen() || !out || id <= 0)
         return false;
-    QSqlQuery query(m_db);
-    query.prepare(QStringLiteral(
+    QSqlQuery &query = preparedStatement(QStringLiteral(
         "SELECT id, timestamp_ms, content_type, content_hash, preview, size_bytes, pinned,"
         " sensitive, use_count, source_app, source_window,"
         " (blob_data IS NOT NULL AND LENGTH(blob_data) > 0) AS has_blob"
@@ -667,8 +681,7 @@ bool StorageManager::remove(qint64 id)
 {
     if (!m_db.isOpen())
         return false;
-    QSqlQuery query(m_db);
-    query.prepare(QStringLiteral("DELETE FROM entries WHERE id = :id"));
+    QSqlQuery &query = preparedStatement(QStringLiteral("DELETE FROM entries WHERE id = :id"));
     query.bindValue(QStringLiteral(":id"), id);
     if (!query.exec())
         return false;
@@ -688,9 +701,8 @@ int StorageManager::removeEntries(const QList<qint64> &ids)
     }
     QList<qint64> removedIds;
     removedIds.reserve(ids.size());
+    QSqlQuery &query = preparedStatement(QStringLiteral("DELETE FROM entries WHERE id = :id"));
     for (const qint64 id : ids) {
-        QSqlQuery query(m_db);
-        query.prepare(QStringLiteral("DELETE FROM entries WHERE id = :id"));
         query.bindValue(QStringLiteral(":id"), id);
         if (query.exec() && query.numRowsAffected() > 0)
             removedIds.append(id); // only rows that actually existed
@@ -736,6 +748,10 @@ int StorageManager::clearHistory(bool includePinned)
         emit entriesRemoved(removedIds);
         emit storageReset();
     }
+    // Reset the cached FTS probe; the reset is where out-of-band schema
+    // changes could surface. Prepared statements stay valid (table shape
+    // did not change), so they are kept.
+    m_ftsAvailable.reset();
     return removedIds.size();
 }
 
@@ -758,8 +774,8 @@ bool StorageManager::setOcrText(qint64 id, const QString &ocrText)
 {
     if (!m_db.isOpen())
         return false;
-    QSqlQuery query(m_db);
-    query.prepare(QStringLiteral("UPDATE entries SET ocr_text = :t WHERE id = :id"));
+    QSqlQuery &query = preparedStatement(QStringLiteral(
+        "UPDATE entries SET ocr_text = :t WHERE id = :id"));
     query.bindValue(QStringLiteral(":t"), ocrText);
     query.bindValue(QStringLiteral(":id"), id);
     return query.exec() && query.numRowsAffected() > 0;
@@ -769,8 +785,7 @@ bool StorageManager::touchEntry(qint64 id)
 {
     if (!m_db.isOpen() || id <= 0)
         return false;
-    QSqlQuery query(m_db);
-    query.prepare(QStringLiteral(
+    QSqlQuery &query = preparedStatement(QStringLiteral(
         "UPDATE entries SET timestamp_ms = :ts, use_count = use_count + 1 WHERE id = :id"));
     query.bindValue(QStringLiteral(":ts"), QDateTime::currentMSecsSinceEpoch());
     query.bindValue(QStringLiteral(":id"), id);
@@ -801,8 +816,7 @@ QStringList StorageManager::tagsForEntry(qint64 entryId) const
     QStringList tags;
     if (!m_db.isOpen() || entryId <= 0)
         return tags;
-    QSqlQuery query(m_db);
-    query.prepare(QStringLiteral(
+    QSqlQuery &query = preparedStatement(QStringLiteral(
         "SELECT t.name FROM tags t JOIN entry_tags et ON et.tag_id = t.id"
         " WHERE et.entry_id = :id ORDER BY t.name COLLATE NOCASE"));
     query.bindValue(QStringLiteral(":id"), entryId);
@@ -1052,26 +1066,26 @@ QList<qint64> StorageManager::softDeleteEntries(const QList<qint64> &ids)
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     QList<qint64> trashed;
     trashed.reserve(ids.size());
+    // Statements hoisted from the loop: one prepare, N executions.
+    QSqlQuery &tags =
+        preparedStatement(QStringLiteral("INSERT OR IGNORE INTO trash_entry_tags(entry_id, tag_id) "
+                                        "SELECT entry_id, tag_id FROM entry_tags WHERE entry_id = :id"));
+    QSqlQuery &groups = preparedStatement(
+        QStringLiteral("INSERT OR IGNORE INTO trash_entry_groups(entry_id, group_id) "
+                       "SELECT entry_id, group_id FROM entry_groups WHERE entry_id = :id"));
+    QSqlQuery &move =
+        preparedStatement(QStringLiteral("INSERT INTO trash_entries(%1, trashed_ms) "
+                                        "SELECT %1, :now FROM entries WHERE id = :id")
+                              .arg(kEntryColumns));
+    QSqlQuery &drop = preparedStatement(QStringLiteral("DELETE FROM entries WHERE id = :id"));
     for (const qint64 id : ids) {
         // Links first: the entries DELETE below would CASCADE them away.
-        QSqlQuery tags(m_db);
-        tags.prepare(QStringLiteral("INSERT OR IGNORE INTO trash_entry_tags(entry_id, tag_id) "
-                                    "SELECT entry_id, tag_id FROM entry_tags WHERE entry_id = :id"));
         tags.bindValue(QStringLiteral(":id"), id);
-        QSqlQuery groups(m_db);
-        groups.prepare(QStringLiteral("INSERT OR IGNORE INTO trash_entry_groups(entry_id, group_id) "
-                                      "SELECT entry_id, group_id FROM entry_groups WHERE entry_id = :id"));
         groups.bindValue(QStringLiteral(":id"), id);
-        QSqlQuery move(m_db);
-        move.prepare(QStringLiteral("INSERT INTO trash_entries(%1, trashed_ms) "
-                                    "SELECT %1, :now FROM entries WHERE id = :id")
-                         .arg(kEntryColumns));
         move.bindValue(QStringLiteral(":now"), now);
         move.bindValue(QStringLiteral(":id"), id);
         if (!tags.exec() || !groups.exec() || !move.exec() || move.numRowsAffected() == 0)
             continue; // unknown id (or a move failure): nothing to trash
-        QSqlQuery drop(m_db);
-        drop.prepare(QStringLiteral("DELETE FROM entries WHERE id = :id"));
         drop.bindValue(QStringLiteral(":id"), id);
         if (drop.exec() && drop.numRowsAffected() > 0)
             trashed.append(id);
@@ -1164,62 +1178,58 @@ int StorageManager::restoreTrashEntries(const QList<qint64> &ids)
         return 0;
     }
     int restored = 0;
+    // Statements hoisted from the loop: one prepare, N executions.
+    QSqlQuery &hashQuery = preparedStatement(
+        QStringLiteral("SELECT content_hash FROM trash_entries WHERE id = :id"));
+    QSqlQuery &live =
+        preparedStatement(QStringLiteral("SELECT 1 FROM entries WHERE content_hash = :h"));
+    const QString dropTagsSql = QStringLiteral("DELETE FROM trash_entry_tags WHERE entry_id = :id");
+    const QString dropGroupsSql = QStringLiteral("DELETE FROM trash_entry_groups WHERE entry_id = :id");
+    QSqlQuery &dropLinks = preparedStatement(dropTagsSql);
+    QSqlQuery &dropGroups = preparedStatement(dropGroupsSql);
+    QSqlQuery &drop = preparedStatement(QStringLiteral("DELETE FROM trash_entries WHERE id = :id"));
+    QSqlQuery &back =
+        preparedStatement(QStringLiteral("INSERT INTO entries(%1) SELECT %1 FROM trash_entries WHERE id = :id")
+                              .arg(kEntryColumns));
+    QSqlQuery &tags = preparedStatement(QStringLiteral(
+        "INSERT OR IGNORE INTO entry_tags(entry_id, tag_id) "
+        "SELECT entry_id, tag_id FROM trash_entry_tags WHERE entry_id = :id"));
+    QSqlQuery &groups = preparedStatement(QStringLiteral(
+        "INSERT OR IGNORE INTO entry_groups(entry_id, group_id) "
+        "SELECT entry_id, group_id FROM trash_entry_groups WHERE entry_id = :id"));
+    QSqlQuery &cleanLinks = preparedStatement(dropTagsSql);
+    QSqlQuery &cleanGroups = preparedStatement(dropGroupsSql);
+    QSqlQuery &clean = preparedStatement(QStringLiteral("DELETE FROM trash_entries WHERE id = :id"));
     for (const qint64 id : ids) {
-        QSqlQuery hash(m_db);
-        hash.prepare(QStringLiteral("SELECT content_hash FROM trash_entries WHERE id = :id"));
-        hash.bindValue(QStringLiteral(":id"), id);
-        if (!hash.exec() || !hash.next())
+        hashQuery.bindValue(QStringLiteral(":id"), id);
+        if (!hashQuery.exec() || !hashQuery.next())
             continue; // not in trash (already restored/purged)
-        const QString trashedHash = hash.value(0).toString();
-        QSqlQuery live(m_db);
-        live.prepare(QStringLiteral("SELECT 1 FROM entries WHERE content_hash = :h"));
+        const QString trashedHash = hashQuery.value(0).toString();
         live.bindValue(QStringLiteral(":h"), trashedHash);
         if (!live.exec())
             continue;
         if (live.next()) {
             // The content went live again while trashed (re-copied): drop the
             // stale trash row instead of duplicating history.
-            QSqlQuery dropLinks(m_db);
-            dropLinks.prepare(QStringLiteral("DELETE FROM trash_entry_tags WHERE entry_id = :id"));
             dropLinks.bindValue(QStringLiteral(":id"), id);
             dropLinks.exec();
-            QSqlQuery dropGroups(m_db);
-            dropGroups.prepare(QStringLiteral("DELETE FROM trash_entry_groups WHERE entry_id = :id"));
             dropGroups.bindValue(QStringLiteral(":id"), id);
             dropGroups.exec();
-            QSqlQuery drop(m_db);
-            drop.prepare(QStringLiteral("DELETE FROM trash_entries WHERE id = :id"));
             drop.bindValue(QStringLiteral(":id"), id);
             drop.exec();
             continue;
         }
-        QSqlQuery back(m_db);
-        back.prepare(QStringLiteral("INSERT INTO entries(%1) SELECT %1 FROM trash_entries WHERE id = :id")
-                         .arg(kEntryColumns));
         back.bindValue(QStringLiteral(":id"), id);
         if (!back.exec() || back.numRowsAffected() == 0)
             continue;
-        QSqlQuery tags(m_db);
-        tags.prepare(QStringLiteral("INSERT OR IGNORE INTO entry_tags(entry_id, tag_id) "
-                                    "SELECT entry_id, tag_id FROM trash_entry_tags WHERE entry_id = :id"));
         tags.bindValue(QStringLiteral(":id"), id);
         tags.exec();
-        QSqlQuery groups(m_db);
-        groups.prepare(QStringLiteral("INSERT OR IGNORE INTO entry_groups(entry_id, group_id) "
-                                      "SELECT entry_id, group_id FROM trash_entry_groups "
-                                      "WHERE entry_id = :id"));
         groups.bindValue(QStringLiteral(":id"), id);
         groups.exec();
-        QSqlQuery cleanLinks(m_db);
-        cleanLinks.prepare(QStringLiteral("DELETE FROM trash_entry_tags WHERE entry_id = :id"));
         cleanLinks.bindValue(QStringLiteral(":id"), id);
         cleanLinks.exec();
-        QSqlQuery cleanGroups(m_db);
-        cleanGroups.prepare(QStringLiteral("DELETE FROM trash_entry_groups WHERE entry_id = :id"));
         cleanGroups.bindValue(QStringLiteral(":id"), id);
         cleanGroups.exec();
-        QSqlQuery clean(m_db);
-        clean.prepare(QStringLiteral("DELETE FROM trash_entries WHERE id = :id"));
         clean.bindValue(QStringLiteral(":id"), id);
         if (clean.exec() && clean.numRowsAffected() > 0)
             ++restored;
@@ -1330,8 +1340,13 @@ bool StorageManager::setEncryptionKey(const QString &key)
     m_encrypted = true;
     // Schema setup was skipped while the file was locked; do it now that it reads.
     const bool ok = DatabaseSchema::ensure(m_db);
-    if (ok)
+    if (ok) {
         lockDownDatabaseFiles(m_path);
+        // The schema (re)created tables; drop the cached statements and
+        // re-probe FTS availability.
+        clearPrepared();
+        m_ftsAvailable.reset();
+    }
     return ok;
 }
 

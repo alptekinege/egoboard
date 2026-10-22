@@ -149,11 +149,13 @@ QStringList applyRedaction(ClipboardRecord *record, const QString &plainSource,
             return {};
         const bool truncated = record->preview.endsWith(QChar(0x2026));
         record->textData = result.text;
-        record->sizeBytes = result.text.toUtf8().size();
+        // One UTF-8 payload: size and hash come from the same bytes.
+        const QByteArray utf8 = result.text.toUtf8();
+        record->sizeBytes = utf8.size();
         record->preview = singleLine(result.text);
         if (truncated)
             record->preview += QStringLiteral(" …");
-        record->hash = hashPayload(ContentType::Text, result.text.toUtf8());
+        record->hash = hashPayload(ContentType::Text, utf8);
         record->sensitive = true;
         redactedKinds = result.redactedKinds;
         for (const QString &kind : custom)
@@ -173,11 +175,13 @@ QStringList applyRedaction(ClipboardRecord *record, const QString &plainSource,
     (void)redactCustomPatterns(&plain.text, settings);
     const bool truncated = record->preview.endsWith(QChar(0x2026));
     record->textData = html.text;
-    record->sizeBytes = html.text.toUtf8().size();
+    // One UTF-8 payload: size and hash come from the same bytes.
+    const QByteArray htmlUtf8 = html.text.toUtf8();
+    record->sizeBytes = htmlUtf8.size();
     record->preview = singleLine(plain.text);
     if (truncated)
         record->preview += QStringLiteral(" …");
-    record->hash = hashPayload(ContentType::RichText, html.text.toUtf8());
+    record->hash = hashPayload(ContentType::RichText, htmlUtf8);
     record->sensitive = true;
     redactedKinds = html.redactedKinds;
     for (const QString &kind : htmlCustom)
@@ -359,9 +363,11 @@ ClipboardRecord ClipboardWatcher::buildRecord(const QMimeData *mimeData) const
             QJsonArray array;
             for (const QString &path : paths)
                 array.append(path);
-            record.textData = QString::fromUtf8(
-                QJsonDocument(array).toJson(QJsonDocument::Compact));
-            record.sizeBytes = record.textData.toUtf8().size();
+            // One UTF-8 payload: text, size and hash come from the same bytes
+            // (re-encoding record.textData would redo the full conversion).
+            const QByteArray json = QJsonDocument(array).toJson(QJsonDocument::Compact);
+            record.textData = QString::fromUtf8(json);
+            record.sizeBytes = json.size();
             QString names;
             for (const QString &path : paths) {
                 if (!names.isEmpty())
@@ -373,7 +379,7 @@ ClipboardRecord ClipboardWatcher::buildRecord(const QMimeData *mimeData) const
                                  .arg(paths.size() == 1 ? QStringLiteral("file")
                                                         : QStringLiteral("files"))
                                  .arg(singleLine(names));
-            record.hash = hashPayload(ContentType::Files, record.textData.toUtf8());
+            record.hash = hashPayload(ContentType::Files, json);
             return record;
         }
         // non-local URLs fall through to text handling below
@@ -388,12 +394,14 @@ ClipboardRecord ClipboardWatcher::buildRecord(const QMimeData *mimeData) const
             truncated = true;
         }
         record.textData = html;
-        record.sizeBytes = html.toUtf8().size();
+        // One UTF-8 payload: size and hash come from the same bytes.
+        const QByteArray utf8 = html.toUtf8();
+        record.sizeBytes = utf8.size();
         const QString plain = mimeData->text();
         record.preview = singleLine(plain);
         if (truncated)
             record.preview += QStringLiteral(" …");
-        record.hash = hashPayload(ContentType::RichText, html.toUtf8());
+        record.hash = hashPayload(ContentType::RichText, utf8);
         return record;
     }
 
@@ -408,9 +416,10 @@ ClipboardRecord ClipboardWatcher::buildRecord(const QMimeData *mimeData) const
             QJsonArray array;
             for (const QString &path : paths)
                 array.append(path);
-            record.textData = QString::fromUtf8(
-                QJsonDocument(array).toJson(QJsonDocument::Compact));
-            record.sizeBytes = record.textData.toUtf8().size();
+            // One UTF-8 payload: text, size and hash come from the same bytes.
+            const QByteArray json = QJsonDocument(array).toJson(QJsonDocument::Compact);
+            record.textData = QString::fromUtf8(json);
+            record.sizeBytes = json.size();
             QString names;
             for (const QString &path : paths) {
                 if (!names.isEmpty())
@@ -422,7 +431,7 @@ ClipboardRecord ClipboardWatcher::buildRecord(const QMimeData *mimeData) const
                                  .arg(paths.size() == 1 ? QStringLiteral("file")
                                                         : QStringLiteral("files"))
                                  .arg(singleLine(names));
-            record.hash = hashPayload(ContentType::Files, record.textData.toUtf8());
+            record.hash = hashPayload(ContentType::Files, json);
             return record;
         }
 
@@ -434,8 +443,10 @@ ClipboardRecord ClipboardWatcher::buildRecord(const QMimeData *mimeData) const
             record.preview = singleLine(text);
         }
         record.textData = text;
-        record.sizeBytes = text.toUtf8().size();
-        record.hash = hashPayload(ContentType::Text, text.toUtf8());
+        // One UTF-8 payload: size and hash come from the same bytes.
+        const QByteArray utf8 = text.toUtf8();
+        record.sizeBytes = utf8.size();
+        record.hash = hashPayload(ContentType::Text, utf8);
         return record;
     }
 

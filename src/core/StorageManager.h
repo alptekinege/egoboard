@@ -2,7 +2,13 @@
 
 #include "IClipboardStorage.h"
 
+#include <QHash>
 #include <QSqlDatabase>
+#include <QSqlQuery>
+
+#include <memory>
+#include <optional>
+#include <unordered_map>
 
 // SQLite-backed clipboard history. All access happens on the thread that
 // constructed the object (GUI thread); VacuumWorker owns its own connection.
@@ -129,9 +135,22 @@ private:
     void rollbackTransaction();
     bool signalsSuppressed() const { return m_bulkDepth > 0; }
 
+    // Prepared-statement cache for the fixed-SQL statements that run per row
+    // (per capture, per pasted entry, per bulk-import row): SQLite re-uses the
+    // compiled statement instead of re-preparing the same text each time. The
+    // returned reference is stable (heap-owned) for the connection's lifetime;
+    // only fixed statements go through this (per-filter SQL in fetchPageSql
+    // must not grow the cache). Single-threaded by contract (class comment).
+    QSqlQuery &preparedStatement(const QString &sql) const;
+    void clearPrepared() { m_prepared.clear(); }
+
     QString m_path;
     QString m_connectionName; // unique per instance (tests create several)
     QSqlDatabase m_db;
+    mutable std::unordered_map<QString, std::unique_ptr<QSqlQuery>> m_prepared;
+    // FTS exists/probe check, resolved once and reused by every search: the
+    // check runs two SQL statements that would otherwise run per keystroke.
+    mutable std::optional<bool> m_ftsAvailable;
     bool m_encrypted = false;
     int m_transactionDepth = 0;
     int m_bulkDepth = 0;

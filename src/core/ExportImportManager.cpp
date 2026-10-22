@@ -162,16 +162,6 @@ QString groupPath(const QVector<BookmarkGroup> &allGroups, qint64 groupId)
     return names.join(QStringLiteral("/"));
 }
 
-std::optional<qint64> findByHash(QSqlDatabase db, const QByteArray &hash)
-{
-    QSqlQuery query(db);
-    query.prepare(QStringLiteral("SELECT id FROM entries WHERE content_hash = :h LIMIT 1"));
-    query.bindValue(QStringLiteral(":h"), QString::fromLatin1(hash));
-    if (query.exec() && query.next())
-        return query.value(0).toLongLong();
-    return std::nullopt;
-}
-
 // --- image export (U17) ------------------------------------------------------
 
 // One streamed batch: small enough to keep a progress dialog responsive
@@ -1510,6 +1500,23 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode,
         result.error = error;
         return result;
     };
+    // Statements hoisted from the loop: one prepare, N executions (the loop
+    // runs once per imported entry, up to the whole history).
+    QSqlQuery findDuplicate(db);
+    findDuplicate.prepare(QStringLiteral("SELECT id FROM entries WHERE content_hash = :h LIMIT 1"));
+    QSqlQuery mergeUpdate(db);
+    mergeUpdate.prepare(QStringLiteral(
+        "UPDATE entries SET timestamp_ms = :ts, pinned = MAX(pinned, :p),"
+        " use_count = MAX(use_count, :uc), sensitive = MAX(sensitive, :s)"
+        " WHERE id = :id"));
+    QSqlQuery fixUseCount(db);
+    fixUseCount.prepare(QStringLiteral("UPDATE entries SET use_count = :uc WHERE id = :id"));
+    const auto existingIdFor = [&findDuplicate](const QByteArray &hash) -> std::optional<qint64> {
+        findDuplicate.bindValue(QStringLiteral(":h"), QString::fromLatin1(hash));
+        if (findDuplicate.exec() && findDuplicate.next())
+            return findDuplicate.value(0).toLongLong();
+        return std::nullopt;
+    };
     for (const auto &value : entryArray) {
         if (isCanceled())
             return abortImport(tr("Import canceled after %1 of %2 entries — nothing was imported.")
@@ -1558,7 +1565,7 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode,
         if (record.hash.isEmpty())
             continue;
 
-        const auto existingId = findByHash(db, record.hash);
+        const auto existingId = existingIdFor(record.hash);
         if (existingId.has_value()) {
             entryIdByHash.insert(record.hash, *existingId);
             if (mode == ImportMode::SkipDuplicates) {
@@ -1568,19 +1575,14 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode,
             if (mode == ImportMode::Merge) {
                 ClipboardRecord existing;
                 if (m_storage->fetchFull(*existingId, &existing)) {
-                    QSqlQuery update(db);
-                    update.prepare(QStringLiteral(
-                        "UPDATE entries SET timestamp_ms = :ts, pinned = MAX(pinned, :p),"
-                        " use_count = MAX(use_count, :uc), sensitive = MAX(sensitive, :s)"
-                        " WHERE id = :id"));
-                    update.bindValue(
+                    mergeUpdate.bindValue(
                         QStringLiteral(":ts"),
                         qMax(existing.timestamp, record.timestamp));
-                    update.bindValue(QStringLiteral(":p"), record.pinned ? 1 : 0);
-                    update.bindValue(QStringLiteral(":uc"), record.useCount);
-                    update.bindValue(QStringLiteral(":s"), record.sensitive ? 1 : 0);
-                    update.bindValue(QStringLiteral(":id"), *existingId);
-                    update.exec();
+                    mergeUpdate.bindValue(QStringLiteral(":p"), record.pinned ? 1 : 0);
+                    mergeUpdate.bindValue(QStringLiteral(":uc"), record.useCount);
+                    mergeUpdate.bindValue(QStringLiteral(":s"), record.sensitive ? 1 : 0);
+                    mergeUpdate.bindValue(QStringLiteral(":id"), *existingId);
+                    mergeUpdate.exec();
                     if (!record.ocrText.isEmpty() && existing.ocrText.isEmpty())
                         m_storage->setOcrText(*existingId, record.ocrText);
                 }
@@ -1599,11 +1601,9 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode,
             entryIdByHash.insert(record.hash, insertedId);
             ++result.entriesImported;
             // insertOrUpdate resets use_count; restore imported value.
-            QSqlQuery fixCount(db);
-            fixCount.prepare(QStringLiteral("UPDATE entries SET use_count = :uc WHERE id = :id"));
-            fixCount.bindValue(QStringLiteral(":uc"), record.useCount);
-            fixCount.bindValue(QStringLiteral(":id"), insertedId);
-            fixCount.exec();
+            fixUseCount.bindValue(QStringLiteral(":uc"), record.useCount);
+            fixUseCount.bindValue(QStringLiteral(":id"), insertedId);
+            fixUseCount.exec();
             if (!record.ocrText.isEmpty())
                 m_storage->setOcrText(insertedId, record.ocrText);
             applyImportedTags(insertedId, tagNames);
@@ -2061,6 +2061,17 @@ ExportImportManager::ImportResult ExportImportManager::importCopyQFile(
         m_storage->clearHistory(true);
     const int total = pending.size() + result.entriesSkipped;
     int done = 0;
+    // Hoisted: the duplicate probe is one prepared statement run per pending
+    // row instead of a fresh prepare each time.
+    QSqlDatabase db = m_storage->database();
+    QSqlQuery duplicateProbe(db);
+    duplicateProbe.prepare(QStringLiteral("SELECT id FROM entries WHERE content_hash = :h LIMIT 1"));
+    const auto existsFor = [&duplicateProbe](const QByteArray &hash) -> std::optional<qint64> {
+        duplicateProbe.bindValue(QStringLiteral(":h"), QString::fromLatin1(hash));
+        if (duplicateProbe.exec() && duplicateProbe.next())
+            return duplicateProbe.value(0).toLongLong();
+        return std::nullopt;
+    };
     for (const Pending &item : pending) {
         if (isCanceled()) {
             if (bulk)
@@ -2074,8 +2085,7 @@ ExportImportManager::ImportResult ExportImportManager::importCopyQFile(
         if (done % 64 == 0 && progress)
             progress(done, total);
         if (mode == ImportMode::SkipDuplicates) {
-            QSqlDatabase db = m_storage->database();
-            if (findByHash(db, item.record.hash).has_value()) {
+            if (existsFor(item.record.hash).has_value()) {
                 ++result.entriesSkipped;
                 continue;
             }
