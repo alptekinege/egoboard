@@ -34,6 +34,26 @@ const Rule kRules[] = {
 
 } // namespace
 
+namespace {
+
+// Compiled once: bulk imports (e.g. CopyQ 10k) call this per row and must
+// not recompile 9 patterns per entry. Same patterns/options as before.
+const QVector<QRegularExpression> &compiledRules()
+{
+    static const QVector<QRegularExpression> kCompiled = [] {
+        QVector<QRegularExpression> list;
+        list.reserve(int(sizeof(kRules) / sizeof(kRules[0])));
+        for (const Rule &rule : kRules) {
+            list.append(QRegularExpression(QString::fromLatin1(rule.pattern),
+                                           QRegularExpression::CaseInsensitiveOption));
+        }
+        return list;
+    }();
+    return kCompiled;
+}
+
+} // namespace
+
 bool SensitiveDataDetector::luhnValid(const QString &digits)
 {
     if (digits.size() < 13)
@@ -64,17 +84,7 @@ QList<SensitiveDataDetector::Finding> SensitiveDataDetector::scan(const QString 
     if (text.isEmpty())
         return findings;
 
-    // Compiled once: bulk imports (e.g. CopyQ 10k) call this per row and must
-    // not recompile 9 patterns per entry. Same patterns/options as before.
-    static const QVector<QRegularExpression> kCompiled = [] {
-        QVector<QRegularExpression> list;
-        list.reserve(int(sizeof(kRules) / sizeof(kRules[0])));
-        for (const Rule &rule : kRules) {
-            list.append(QRegularExpression(QString::fromLatin1(rule.pattern),
-                                           QRegularExpression::CaseInsensitiveOption));
-        }
-        return list;
-    }();
+    const QVector<QRegularExpression> &kCompiled = compiledRules();
 
     for (int r = 0; r < int(sizeof(kRules) / sizeof(kRules[0])); ++r) {
         const Rule &rule = kRules[r];
@@ -94,7 +104,21 @@ QList<SensitiveDataDetector::Finding> SensitiveDataDetector::scan(const QString 
 
 bool SensitiveDataDetector::isSensitive(const QString &text)
 {
-    return !scan(text).isEmpty();
+    // Short-circuits at the first match instead of collecting every finding:
+    // clean text still pays one pass, but sensitive text stops early and no
+    // findings list is built per capture.
+    if (text.isEmpty())
+        return false;
+    const auto &rules = compiledRules();
+    for (int r = 0; r < int(sizeof(kRules) / sizeof(kRules[0])); ++r) {
+        QRegularExpressionMatch match = rules.at(r).match(text);
+        if (!match.hasMatch())
+            continue;
+        if (kRules[r].luhn && !luhnValid(match.captured(0)))
+            continue;
+        return true;
+    }
+    return false;
 }
 
 QStringList SensitiveDataDetector::kinds(const QString &text)

@@ -5,6 +5,7 @@
 #include <QDate>
 #include <QDateTime>
 #include <QRegularExpression>
+#include <QSet>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QTime>
@@ -301,11 +302,17 @@ QVector<QStringList> SearchEngine::orGroups(const QString &userText)
 
 QStringList SearchEngine::textTerms(const QString &userText)
 {
+    // Hash-based, case-insensitive dedup: a contains() per group and term
+    // rescanned every collected term before it.
     QStringList terms;
+    QSet<QString> seenLower;
     for (const QStringList &group : orGroups(userText)) {
         for (const QString &term : group) {
-            if (!terms.contains(term, Qt::CaseInsensitive))
-                terms << term;
+            const QString lower = term.toLower();
+            if (seenLower.contains(lower))
+                continue;
+            seenLower.insert(lower);
+            terms << term;
         }
     }
     return terms;

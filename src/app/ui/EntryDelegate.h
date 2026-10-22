@@ -25,7 +25,16 @@ public:
     void setRowPadding(int padding) { m_rowPadding = padding; }
 
     // Words/phrases from the active search, highlighted in the preview line.
-    void setSearchTerms(const QStringList &terms) { m_searchTerms = terms; }
+    // Match checking runs per painted row, so the lowercased needles are
+    // baked here instead of re-lowering every term on every paint.
+    void setSearchTerms(const QStringList &terms)
+    {
+        m_searchTerms = terms;
+        m_searchLowerTerms.clear();
+        m_searchLowerTerms.reserve(terms.size());
+        for (const QString &term : terms)
+            m_searchLowerTerms.append(term.toLower());
+    }
     // Row extras (R2, all default off): 1-based entry index prefix, use-count
     // badge in the meta line, sticky day-header rows handled by the view.
     void setShowEntryIndex(bool show) { m_showEntryIndex = show; }
@@ -65,6 +74,8 @@ private:
     SettingsManager *m_settings = nullptr;
     mutable QHash<qint64, QVector<GroupBadge>> m_groupCache; // per visible entry
     QStringList m_searchTerms;
+    QStringList m_searchLowerTerms;
+    QString m_dateTimeFormat = QStringLiteral("yyyy-MM-dd HH:mm");
     bool m_showEntryIndex = false;
     bool m_showUseCountBadge = false;
     int m_rowPadding = 8;

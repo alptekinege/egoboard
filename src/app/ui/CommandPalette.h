@@ -77,6 +77,9 @@ private:
     // Replaces the argument part of the input with the highlighted candidate.
     bool completeFromSelection();
     static int fuzzyScore(const QString &query, const QString &candidate);
+    // Same scoring with query and candidate already lowercased, so batched
+    // callers can lower each string only once.
+    static int scoreCandidate(const QString &loweredQuery, const QString &lowerCandidate);
 
     enum class Mode { History, Transforms, Snippets, Commands, Argument, Command };
     Mode m_mode = Mode::History;

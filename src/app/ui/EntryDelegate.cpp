@@ -36,14 +36,14 @@ QString typeIconName(int typeRole)
     }
 }
 
-QString relativeTime(qint64 timestampMs, bool absolute, bool ampm)
+// Same baked "date time" format for the absolute style and for relative
+// entries older than 7 days, so paint() never rebuilds it per row.
+QString relativeTime(qint64 timestampMs, const QString &dateTimeFormat, bool absolute)
 {
     const QDateTime timestamp = QDateTime::fromMSecsSinceEpoch(timestampMs);
-    const QDateTime now = QDateTime::currentDateTime();
-    const QString timeFormat = ampm ? QStringLiteral("h:mm AP") : QStringLiteral("HH:mm");
     if (absolute)
-        return timestamp.toString(QStringLiteral("yyyy-MM-dd ") + timeFormat);
-    const qint64 seconds = timestamp.secsTo(now);
+        return timestamp.toString(dateTimeFormat);
+    const qint64 seconds = timestamp.secsTo(QDateTime::currentDateTime());
     if (seconds < 0)
         return EntryDelegate::tr("in the future");
     if (seconds < 50)
@@ -54,7 +54,7 @@ QString relativeTime(qint64 timestampMs, bool absolute, bool ampm)
         return EntryDelegate::tr("%1 h ago").arg(qRound(seconds / 3600.0));
     if (seconds < 7 * 24 * 3600)
         return EntryDelegate::tr("%1 d ago").arg(qRound(seconds / 86400.0));
-    return timestamp.toString(QStringLiteral("yyyy-MM-dd ") + timeFormat);
+    return timestamp.toString(dateTimeFormat);
 }
 
 // One painted marker on the right-hand side of a row. The rect is shared by
@@ -127,6 +127,8 @@ void EntryDelegate::refreshTimeFormats()
     // Cached once per settings change instead of per painted row.
     m_absoluteTimestamps = m_settings && m_settings->timestampStyle() == QLatin1String("absolute");
     m_ampmClock = m_settings && !m_settings->clock24h();
+    const QString timeFormat = m_ampmClock ? QStringLiteral("h:mm AP") : QStringLiteral("HH:mm");
+    m_dateTimeFormat = QStringLiteral("yyyy-MM-dd ") + timeFormat;
     m_showEntryIndex = m_settings && m_settings->showEntryIndex();
     m_showUseCountBadge = m_settings && m_settings->showUseCountBadge();
     m_groupCache.clear();
@@ -246,7 +248,7 @@ void EntryDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
     painter->setPen(DesignTokens::metaTextColor(option.palette, selected, enabled));
     QStringList metaParts;
     metaParts << relativeTime(index.data(ClipboardListModel::TimestampRole).toLongLong(),
-                              m_absoluteTimestamps, m_ampmClock);
+                               m_dateTimeFormat, m_absoluteTimestamps);
     const QString app = index.data(ClipboardListModel::SourceAppRole).toString();
     if (!app.isEmpty())
         metaParts << app;
@@ -306,11 +308,11 @@ void EntryDelegate::drawHighlightedText(QPainter *painter, const QRect &rect, co
                                         const QPalette &palette, const QColor &textColor,
                                         bool selected) const
 {
-    // Collect case-insensitive match ranges for every search term.
+    // Collect case-insensitive match ranges for every search term; the
+    // lowercased needles are cached at setSearchTerms(), not rebuilt per row.
     const QString lower = text.toLower();
     QVector<QPair<int, int>> ranges;
-    for (const QString &term : m_searchTerms) {
-        const QString needle = term.toLower();
+    for (const QString &needle : m_searchLowerTerms) {
         if (needle.isEmpty())
             continue;
         int from = 0;

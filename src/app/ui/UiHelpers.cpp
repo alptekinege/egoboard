@@ -97,12 +97,15 @@ QString UiHelpers::humanSize(qint64 bytes)
 {
     if (bytes <= 0)
         return {};
+    // Translated format strings resolved once, not per painted row.
+    static const QString bytesFmt = QCoreApplication::translate("UiHelpers", "%1 B");
+    static const QString kbFmt = QCoreApplication::translate("UiHelpers", "%1 kB");
+    static const QString mbFmt = QCoreApplication::translate("UiHelpers", "%1 MB");
     if (bytes < 1024)
-        return QCoreApplication::translate("UiHelpers", "%1 B").arg(bytes);
+        return bytesFmt.arg(bytes);
     if (bytes < 1024 * 1024)
-        return QCoreApplication::translate("UiHelpers", "%1 kB").arg(bytes / 1024.0, 0, 'f', 1);
-    return QCoreApplication::translate("UiHelpers", "%1 MB")
-        .arg(bytes / (1024.0 * 1024.0), 0, 'f', 1);
+        return kbFmt.arg(bytes / 1024.0, 0, 'f', 1);
+    return mbFmt.arg(bytes / (1024.0 * 1024.0), 0, 'f', 1);
 }
 
 QString UiHelpers::ocrMetaSuffix(bool hasBlob, const QString &ocrText, bool tesseractAvailable)

@@ -85,7 +85,10 @@ bool isValidBase64(const QString &s)
 
 QVector<TransformEngine::Descriptor> TransformEngine::allDescriptors()
 {
-    return {
+    // Built once and returned by shallow copy: descriptor()/nameForId()/
+    // idForName() would otherwise reconstruct all 17 tr()-format strings on
+    // every call.
+    static const QVector<Descriptor> kDescriptors = {
         {TransformId::Trim, QStringLiteral("trim"), QStringLiteral("Trim"), QObject::tr("Remove leading and trailing whitespace")},
         {TransformId::Uppercase, QStringLiteral("uppercase"), QStringLiteral("Uppercase"), QObject::tr("Convert to UPPERCASE")},
         {TransformId::Lowercase, QStringLiteral("lowercase"), QStringLiteral("Lowercase"), QObject::tr("Convert to lowercase")},
@@ -104,6 +107,7 @@ QVector<TransformEngine::Descriptor> TransformEngine::allDescriptors()
         {TransformId::RemoveEmptyLines, QStringLiteral("remove-empty-lines"), QStringLiteral("Remove Empty Lines"), QObject::tr("Drop blank/whitespace-only lines")},
         {TransformId::TrimLines, QStringLiteral("trim-lines"), QStringLiteral("Trim Lines"), QObject::tr("Trim whitespace from each line")},
     };
+    return kDescriptors;
 }
 
 QVector<TransformEngine::TransformId> TransformEngine::allIds()

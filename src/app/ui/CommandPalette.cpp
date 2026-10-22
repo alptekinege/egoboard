@@ -538,9 +538,24 @@ void CommandPalette::refreshResults(const QString &query)
     // Light secondary fuzzy re-rank when query is short (typo tolerance).
     const QString freeText = m_parsed.text;
     if (freeText.size() >= 2 && freeText.size() <= 6 && !scored.isEmpty()) {
-        std::stable_sort(scored.begin(), scored.end(), [&](const ClipboardRecord &a, const ClipboardRecord &b){
-            return fuzzyScore(freeText, a.preview) > fuzzyScore(freeText, b.preview);
-        });
+        // Score exactly once per row up front; scoring inside the comparator
+        // re-lowered the query and both previews for every examined pair.
+        const QString loweredQuery = freeText.toLower();
+        QVector<int> scores;
+        scores.reserve(scored.size());
+        for (const ClipboardRecord &record : scored)
+            scores.append(scoreCandidate(loweredQuery, record.preview.toLower()));
+        QVector<int> order;
+        order.reserve(scores.size());
+        for (int i = 0; i < scores.size(); ++i)
+            order.append(i);
+        std::stable_sort(order.begin(), order.end(),
+                         [&](int a, int b) { return scores.at(a) > scores.at(b); });
+        QVector<ClipboardRecord> ranked;
+        ranked.reserve(scored.size());
+        for (int i : order)
+            ranked.append(scored.at(i));
+        scored = std::move(ranked);
     }
 
     m_results = scored;
@@ -632,16 +647,21 @@ void CommandPalette::updateHint()
 
 int CommandPalette::fuzzyScore(const QString &query, const QString &candidate)
 {
-    if (query.isEmpty() || candidate.isEmpty()) return 0;
-    const QString q = query.toLower();
-    const QString c = candidate.toLower();
-    if (c.contains(q)) return 100 + (100 - q.size()); // exact substring bonus
+    return scoreCandidate(query.toLower(), candidate);
+}
+
+// Lowering the query and candidate once per candidate (not per comparison)
+// keeps the re-rank from re-doing toLower() inside every sort step.
+int CommandPalette::scoreCandidate(const QString &loweredQuery, const QString &lowerCandidate)
+{
+    if (loweredQuery.isEmpty() || lowerCandidate.isEmpty()) return 0;
+    if (lowerCandidate.contains(loweredQuery)) return 100 + (100 - loweredQuery.size()); // exact substring bonus
     // Simple subsequence scoring
     int qi = 0, score = 0;
-    for (int i = 0; i < c.size() && qi < q.size(); ++i) {
-        if (c.at(i) == q.at(qi)) { ++qi; score += 10; if (i < 10) score += 5; }
+    for (int i = 0; i < lowerCandidate.size() && qi < loweredQuery.size(); ++i) {
+        if (lowerCandidate.at(i) == loweredQuery.at(qi)) { ++qi; score += 10; if (i < 10) score += 5; }
     }
-    return qi == q.size() ? score : 0;
+    return qi == loweredQuery.size() ? score : 0;
 }
 
 void CommandPalette::onActivated(const QModelIndex &index)

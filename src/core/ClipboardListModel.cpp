@@ -248,15 +248,23 @@ QStringList ClipboardListModel::mimeTypes() const
 
 QMimeData *ClipboardListModel::mimeData(const QModelIndexList &indexes) const
 {
+    // Dedup via a hash: a QList contains() per index would rescan every
+    // previous id (quadratic when many rows are dragged at once).
+    QSet<qint64> seen;
+    seen.reserve(indexes.size());
     QList<qint64> ids;
+    ids.reserve(indexes.size());
     QString previews;
     for (const QModelIndex &index : indexes) {
         if (!index.isValid())
             continue;
-        const qint64 id = m_rows.at(index.row()).id;
-        if (!ids.contains(id))
-            ids.append(id);
-        previews += m_rows.at(index.row()).preview + QLatin1Char('\n');
+        const ClipboardRecord &record = m_rows.at(index.row());
+        if (!seen.contains(record.id)) {
+            seen.insert(record.id);
+            ids.append(record.id);
+        }
+        previews += record.preview;
+        previews += QLatin1Char('\n');
     }
     if (ids.isEmpty())
         return nullptr;
