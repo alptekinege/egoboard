@@ -67,6 +67,7 @@ QT_QPA_PLATFORM=offscreen ./build/egoboard --bench=100000  # budgets must hold
 | QtCharts | Not required: the dashboard paints with the built-in QPainter fallback; no behavior change |
 | `libzip` | ZIP is unavailable; Settings writes an atomic multi-file `.backup` folder with the SQLite snapshot and settings |
 | SQLite development library | ZIP is disabled; fallback uses history/settings JSON files and reports that format in Settings ▸ Diagnostics |
+| CopyQ v5 (QCA) encryption | Import refuses the file with a re-export hint; the built-in parser needs no extra package and never modifies the source |
 
 ## 5. Packaging
 

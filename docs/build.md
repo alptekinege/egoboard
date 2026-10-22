@@ -85,6 +85,7 @@ feature automatically when its development package is present:
 - `libzip` — single-file ZIP backups (`libzip` on Arch, `libzip-dev` on Debian,
   `libzip-devel` on Fedora). SQLite development files (`sqlite` on Arch,
   `libsqlite3-dev` on Debian, `sqlite-devel` on Fedora) must also be available.
+  Without either one, backups use an atomic multi-file `.backup` folder.
 - `kwallet` and `sqlcipher` — database encryption. The CMake option
   `EGOBOARD_USE_SQLCIPHER` defaults to ON and enables encryption only when both
   are found (`kwallet` and `sqlcipher` on Arch; `libkf6wallet-dev` and
@@ -97,6 +98,10 @@ feature automatically when its development package is present:
 At runtime, install `tesseract` with matching language data for OCR and
 `xdotool` for the X11 paste fallback. These are not build dependencies. Portal
 paste requires a portal-providing Wayland compositor and is enabled in settings.
+
+Two shipped features deliberately need no package: the usage dashboard paints
+with Qt Widgets instead of QtCharts, and CopyQ `.cpq` import uses a built-in
+QtCore parser (unencrypted v1–v4 exports; encrypted v5 exports are refused).
 
 ## Build
 
