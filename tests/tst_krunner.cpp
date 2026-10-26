@@ -15,7 +15,7 @@ private slots:
     void pasteEmitsSignal();
     void pingReturnsSame();
     void searchNormalizesLimitsAndPreviewText();
-    void pasteAcceptsAnyIdAndEmitsIt();
+    void pasteRejectsUnknownId();
     // Richer results + per-match actions (KRunner plugin)
     void detailedRowsCarryMetadata();
     void detailedSearchNormalizesLimits();
@@ -155,7 +155,7 @@ void TestKRunner::searchNormalizesLimitsAndPreviewText()
     QVERIFY(!parts.at(1).contains(QLatin1Char('\n')));
 }
 
-void TestKRunner::pasteAcceptsAnyIdAndEmitsIt()
+void TestKRunner::pasteRejectsUnknownId()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
@@ -163,9 +163,10 @@ void TestKRunner::pasteAcceptsAnyIdAndEmitsIt()
     EgoboardDbusAdaptor adaptor(&storage);
     QSignalSpy spy(&adaptor, &EgoboardDbusAdaptor::pasteRequested);
 
-    QVERIFY(adaptor.Paste(999999));
-    QCOMPARE(spy.count(), 1);
-    QCOMPARE(spy.first().first().toLongLong(), qint64(999999));
+    // Paste validates the target just like the other mutating D-Bus methods;
+    // an ID that disappeared between KRunner search and activation is a no-op.
+    QVERIFY(!adaptor.Paste(999999));
+    QCOMPARE(spy.count(), 0);
 }
 
 void TestKRunner::detailedRowsCarryMetadata()
@@ -331,8 +332,8 @@ void TestKRunner::actionsRefuseUnknownEntries()
     QSignalSpy pinSpy(&adaptor, &EgoboardDbusAdaptor::pinRequested);
     QSignalSpy deleteSpy(&adaptor, &EgoboardDbusAdaptor::deleteRequested);
 
-    // Unlike Paste (which keeps working for scripts), the KRunner actions only
-    // act on entries that exist, and say so.
+    // All mutating D-Bus methods reject stale IDs so a result cannot mutate
+    // storage after its row has disappeared.
     QVERIFY(!adaptor.Copy(123456));
     QVERIFY(!adaptor.Pin(123456, true));
     QVERIFY(!adaptor.Delete(123456));
