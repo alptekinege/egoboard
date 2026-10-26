@@ -888,12 +888,12 @@ QWidget *SettingsDialog::buildHistoryPage()
         if (v==0) capHint->setText(tr("No cap — history grows forever (until disk full)."));
         else {
             qint64 cap = qint64(v)*1024*1024;
-            qint64 size = m_ctx.storage()->databaseFileSize();
-            if (size > cap) capHint->setText(tr("<b>Would prune ~%1</b> — DB %2 > cap %3. Oldest non-pinned entries will be removed on next check.").arg(humanSize(size-cap), humanSize(size), humanSize(cap)));
-            else capHint->setText(tr("Cap %1 — DB %2 within cap, no pruning now.").arg(humanSize(cap), humanSize(size)));
+            qint64 size = m_ctx.storage()->stats().totalBytes;
+            if (size > cap) capHint->setText(tr("<b>Would prune ~%1</b> — stored entry data %2 > cap %3. Oldest non-pinned entries are removed within 5 minutes; pinned entries are kept.").arg(humanSize(size-cap), humanSize(size), humanSize(cap)));
+            else capHint->setText(tr("Cap %1 — stored entry data %2 within cap, no pruning now.").arg(humanSize(cap), humanSize(size)));
         }
     });
-    limitsForm->addRow(QString(), makeHint(tr("When a limit is set, the oldest non-pinned entries are removed to stay below it — pinned entries are never pruned. Checks run every 25 captures and daily for VACUUM. History is unlimited by default — the virtualized list handles 50k+ entries smoothly."), limitsBox));
+    limitsForm->addRow(QString(), makeHint(tr("The size cap counts stored entry data, not the database file. Oldest non-pinned entries are removed when checked (every 25 captures and every 5 minutes); pinned entries are kept, so they can leave history above the cap. History is unlimited by default — the virtualized list handles 50k+ entries smoothly."), limitsBox));
     historyLayout->addWidget(limitsBox);
 
     auto *expireBox = new QGroupBox(tr("Auto-expire rules"), historyPage);

@@ -10,6 +10,7 @@
 #include <QSqlQuery>
 #include <QTime>
 
+#include <limits>
 #include <optional>
 
 namespace {
@@ -200,13 +201,22 @@ std::optional<qint64> parseDateBound(const QString &value, bool endOfDay)
     static const QRegularExpression relative(QStringLiteral(R"(^(\d+)\s*([mhdw])$)"));
     const auto match = relative.match(v);
     if (match.hasMatch()) {
-        const qint64 amount = match.captured(1).toLongLong();
+        bool amountOk = false;
+        const qint64 amount = match.captured(1).toLongLong(&amountOk);
+        if (!amountOk)
+            return std::nullopt;
         const QString unit = match.captured(2);
         const qint64 unitMs = unit == QLatin1String("m") ? 60 * 1000
                             : unit == QLatin1String("h") ? 60 * 60 * 1000
                             : unit == QLatin1String("d") ? 24 * 60 * 60 * 1000
                                                          : 7 * 24 * 60 * 60 * 1000;
-        return QDateTime::currentMSecsSinceEpoch() - amount * unitMs;
+        if (amount > std::numeric_limits<qint64>::max() / unitMs)
+            return std::nullopt;
+        const qint64 deltaMs = amount * unitMs;
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        if (nowMs < std::numeric_limits<qint64>::min() + deltaMs)
+            return std::nullopt;
+        return nowMs - deltaMs;
     }
     return std::nullopt;
 }
