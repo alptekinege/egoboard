@@ -31,7 +31,7 @@ private slots:
     void parsesNumericAndNamedTypes();
     void parseBoolVariants();
     void rejectsExtraFieldsAndPipeInWildcard();
-    void toStringMasksInvalidTypeAsAny();
+    void toStringPreservesInvalidType();
     void decodePreservesOrderAndDropsInvalid();
     void parsesAgeEdgeForms();
     void cutoffBoundaryIsStrictlyOlder();
@@ -118,8 +118,8 @@ void TestExpire::rejectsMalformedRules()
     QVERIFY(!ExpireRule::fromString(QStringLiteral("text|firefox*|1")).isValid()); // 3 fields
     QVERIFY(!ExpireRule::fromString(QStringLiteral("text|firefox*|abc|1")).isValid()); // bad age
     QVERIFY(!ExpireRule::fromString(QStringLiteral("text|firefox*|-5|1")).isValid()); // negative age
-    // Unknown type name degrades to "any" but stays valid.
-    QCOMPARE(ExpireRule::fromString(QStringLiteral("bogus||60|1")).contentType, -1);
+    // Unknown type names are invalid instead of widening to "any".
+    QVERIFY(!ExpireRule::fromString(QStringLiteral("bogus||60|1")).isValid());
 }
 
 void TestExpire::appliesRuleAgainstStorage()
@@ -297,12 +297,13 @@ void TestExpire::parsesNumericAndNamedTypes()
                                      QStringLiteral("text||60|1")})
                  .size(),
              1);
-    // Names are case-insensitive and whitespace-tolerant; unknown stays "any".
+    // Names are case-insensitive and whitespace-tolerant; unknown is invalid.
     QCOMPARE(ExpireRule::fromString(QStringLiteral("ANY||60|1")).contentType, -1);
     QCOMPARE(ExpireRule::fromString(QStringLiteral(" Text ||60|1")).contentType,
              int(ContentType::Text));
     QCOMPARE(ExpireRule::fromString(QStringLiteral(" IMAGE ||60|1")).contentType,
              int(ContentType::Image));
+    QVERIFY(!ExpireRule::fromString(QStringLiteral(" typo ||60|1")).isValid());
 }
 
 void TestExpire::parseBoolVariants()
@@ -337,18 +338,15 @@ void TestExpire::rejectsExtraFieldsAndPipeInWildcard()
     QVERIFY(!ExpireRule::fromString(QStringLiteral("text|konsole|work|60|1")).isValid());
 }
 
-void TestExpire::toStringMasksInvalidTypeAsAny()
+void TestExpire::toStringPreservesInvalidType()
 {
-    // Known quirk: contentTypeName(-2) prints "any", so an invalid rule
-    // re-parses as a valid any-rule. Documented, not fixed: callers must
-    // validate before serializing.
     ExpireRule rule;
     rule.contentType = -2;
     rule.ageSeconds = 60;
-    QCOMPARE(rule.toString(), QStringLiteral("any||60|1"));
+    QCOMPARE(rule.toString(), QStringLiteral("-2||60|1"));
     const ExpireRule reparsed = ExpireRule::fromString(rule.toString());
-    QCOMPARE(reparsed.contentType, -1);
-    QVERIFY(reparsed.isValid());
+    QCOMPARE(reparsed.contentType, -2);
+    QVERIFY(!reparsed.isValid());
 }
 
 void TestExpire::decodePreservesOrderAndDropsInvalid()

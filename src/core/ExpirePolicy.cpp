@@ -3,12 +3,13 @@
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
 
+#include <limits>
+
 namespace {
 
 // Content type field: "any" or a content-type tag (or a numeric enum value,
-// for hand-written configs). Unknown names map to -1 (any); a numeric value
-// outside the enum is invalid (kInvalidContentType) and the rule is dropped,
-// rather than silently matching nothing or everything.
+// for hand-written configs). Unknown names and numeric values outside the
+// enum are invalid (kInvalidContentType), so a typo cannot widen a rule to all.
 constexpr int kInvalidContentType = -2;
 
 int parseContentType(const QString &field)
@@ -26,14 +27,14 @@ int parseContentType(const QString &field)
                 .compare(trimmed, Qt::CaseInsensitive) == 0)
             return type;
     }
-    return -1;
+    return kInvalidContentType;
 }
 
 QString contentTypeName(int type)
 {
     if (type >= 0 && type <= static_cast<int>(ContentType::Files))
         return QString::fromLatin1(contentTypeTag(static_cast<ContentType>(type)));
-    return QStringLiteral("any");
+    return type == -1 ? QStringLiteral("any") : QString::number(type);
 }
 
 // "86400", "24h", "90m", "30s" → seconds. Non-positive or unparseable → 0.
@@ -45,13 +46,19 @@ qint64 parseAgeSeconds(const QString &field)
     const QRegularExpressionMatch match = re.match(field.trimmed());
     if (!match.hasMatch())
         return 0;
-    const qint64 amount = match.captured(1).toLongLong();
+    bool ok = false;
+    const qint64 amount = match.captured(1).toLongLong(&ok);
+    if (!ok || amount <= 0)
+        return 0;
     const QString unit = match.captured(2).toLower();
     const qint64 multiplier = unit == QStringLiteral("s") ? 1
                              : unit == QStringLiteral("m") ? 60
                              : unit == QStringLiteral("h") ? 3600
                              : unit == QStringLiteral("d") ? 86400
                                                            : 1;
+    const qint64 maxAgeSeconds = std::numeric_limits<qint64>::max() / 1000;
+    if (amount > maxAgeSeconds / multiplier)
+        return 0;
     return amount * multiplier;
 }
 

@@ -31,6 +31,8 @@ qint64 SnippetManager::createSnippet(const QString &name, const QString &templat
 
 bool SnippetManager::updateSnippet(qint64 id, const QString &name, const QString &templateText, const QString &shortcut)
 {
+    if (name.trimmed().isEmpty() || templateText.isEmpty())
+        return false;
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral("UPDATE snippets SET name = :n, template = :t, shortcut = :s WHERE id = :id"));
     q.bindValue(QStringLiteral(":n"), name.trimmed());
