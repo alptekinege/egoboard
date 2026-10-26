@@ -102,7 +102,7 @@ QVector<TransformEngine::Descriptor> TransformEngine::allDescriptors()
         {TransformId::JsonMinify, QStringLiteral("json-minify"), QStringLiteral("JSON Minify"), QObject::tr("Minify JSON (compact)")},
         {TransformId::HtmlEscape, QStringLiteral("html-escape"), QStringLiteral("HTML Escape"), QObject::tr("Escape &, <, >, \", '")},
         {TransformId::HtmlUnescape, QStringLiteral("html-unescape"), QStringLiteral("HTML Unescape"), QObject::tr("Unescape HTML entities")},
-        {TransformId::SortLines, QStringLiteral("sort-lines"), QStringLiteral("Sort Lines"), QObject::tr("Sort lines alphabetically")},
+        {TransformId::SortLines, QStringLiteral("sort-lines"), QStringLiteral("Sort Lines"), QObject::tr("Sort lines in case-sensitive, locale-independent QString order")},
         {TransformId::UniqueLines, QStringLiteral("unique-lines"), QStringLiteral("Unique Lines"), QObject::tr("Deduplicate lines, keep first occurrence")},
         {TransformId::RemoveEmptyLines, QStringLiteral("remove-empty-lines"), QStringLiteral("Remove Empty Lines"), QObject::tr("Drop blank/whitespace-only lines")},
         {TransformId::TrimLines, QStringLiteral("trim-lines"), QStringLiteral("Trim Lines"), QObject::tr("Trim whitespace from each line")},
@@ -208,6 +208,7 @@ TransformEngine::Result TransformEngine::apply(TransformId id, const QString &in
         return {true, htmlUnescape(input), {}};
     case TransformId::SortLines: {
         QStringList lines = input.split(QLatin1Char('\n'));
+        // QString's default ordering is case-sensitive and locale-independent.
         std::sort(lines.begin(), lines.end());
         return {true, lines.join(QLatin1Char('\n')), {}};
     }

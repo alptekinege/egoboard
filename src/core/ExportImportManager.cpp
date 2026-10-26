@@ -1763,7 +1763,8 @@ ExportImportManager::importFromFile(const QString &path, ImportMode mode,
                 ++result.entriesMerged;
                 continue;
             }
-            // Overwrite already wiped; a hash hit here means duplicate inside file.
+            // Overwrite already wiped local history; a hash hit can only be a
+            // duplicate inside this file, so keep its first occurrence.
             ++result.entriesSkipped;
             continue;
         }

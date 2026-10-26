@@ -18,8 +18,9 @@ public:
     //   pinned:yes|no      pinned only / exclude nothing
     //   sensitive:yes|no   audit view
     //   has:ocr            only entries with OCR text
-    //   before:2024-01-31  also today|yesterday|30m|12h|3d|2w
-    //   after:2024-01-01   same value forms
+    //   before:2024-01-31  includes the whole date; relative values such as 7d
+    //                       mean the current instant minus that duration
+    //   after:2024-01-01   starts at midnight; relative values use the same rule
     // Free text keeps quoted phrases ("one two"), supports -exclusions, NOT
     // before a term, uppercase OR between alternatives, and /regex/ patterns.
     struct ParsedQuery {

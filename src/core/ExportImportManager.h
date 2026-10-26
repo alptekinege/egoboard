@@ -32,7 +32,7 @@ public:
 
     enum class ImportMode {
         Merge, // insert new hashes, keep newer timestamp, union memberships
-        Overwrite, // wipe database, then insert everything from the file
+        Overwrite, // wipe local history/metadata, then import first occurrence of each file hash
         SkipDuplicates, // insert only hashes that do not exist yet
     };
     Q_ENUM(ImportMode)
