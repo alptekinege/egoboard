@@ -4,6 +4,7 @@
 #include "SearchEngine.h"
 
 #include <QDateTime>
+#include <QDebug>
 #include <QFile>
 #include <QRegularExpression>
 #include <QSqlError>
@@ -28,11 +29,13 @@ constexpr int kRegexMaxSubjectChars = 20000;
 constexpr qint64 kTrashRetentionMs = 3600 * 1000;
 
 bool matchesRegex(const ClipboardRecord &row, const QRegularExpression &regex,
-                  FilterSpec::SearchScope scope)
+                  FilterSpec::SearchScope scope, bool *subjectTruncated)
 {
-    const auto hit = [&regex](const QString &text) {
+    const auto hit = [&regex, subjectTruncated](const QString &text) {
         if (text.isEmpty())
             return false;
+        if (text.size() > kRegexMaxSubjectChars && subjectTruncated)
+            *subjectTruncated = true;
         return regex
             .match(text.size() > kRegexMaxSubjectChars ? text.left(kRegexMaxSubjectChars) : text)
             .hasMatch();
@@ -307,11 +310,15 @@ QVector<ClipboardRecord> StorageManager::fetchPageRegex(const FilterSpec &filter
                                                         const PageCursor &cursor, int limit,
                                                         bool *hasMore) const
 {
-    if (filter.regexText.size() > 200)
+    if (filter.regexText.size() > 200) {
+        qWarning("egoboard: regex search rejected because the pattern exceeds 200 characters");
         return {};
+    }
     QRegularExpression regex(filter.regexText);
-    if (!regex.isValid())
+    if (!regex.isValid()) {
+        qWarning("egoboard: regex search rejected: %s", qPrintable(regex.errorString()));
         return {};
+    }
 
     FilterSpec plain = filter;
     plain.regexText.clear();
@@ -320,6 +327,8 @@ QVector<ClipboardRecord> StorageManager::fetchPageRegex(const FilterSpec &filter
     matches.reserve(limit);
     PageCursor scan = cursor;
     int scanned = 0;
+    bool sourceHasMore = false;
+    bool warnedLongSubject = false;
     while (scanned < kRegexScanCap) {
         bool batchHasMore = false;
         const int batchSize = qMin(kRegexBatch, kRegexScanCap - scanned);
@@ -329,7 +338,14 @@ QVector<ClipboardRecord> StorageManager::fetchPageRegex(const FilterSpec &filter
             break;
         scanned += batch.size();
         for (const ClipboardRecord &row : batch) {
-            if (!matchesRegex(row, regex, filter.searchScope))
+            bool subjectTruncated = false;
+            const bool matched = matchesRegex(row, regex, filter.searchScope, &subjectTruncated);
+            if (subjectTruncated && !warnedLongSubject) {
+                qWarning("egoboard: regex search checks only the first %d characters per field",
+                         kRegexMaxSubjectChars);
+                warnedLongSubject = true;
+            }
+            if (!matched)
                 continue;
             if (matches.size() == limit) {
                 if (hasMore)
@@ -338,10 +354,15 @@ QVector<ClipboardRecord> StorageManager::fetchPageRegex(const FilterSpec &filter
             }
             matches.append(row);
         }
+        sourceHasMore = batchHasMore;
         if (!batchHasMore)
             break;
         const ClipboardRecord &last = batch.constLast();
         scan = PageCursor{true, last.timestamp, last.id, last.useCount};
+    }
+    if (scanned >= kRegexScanCap && sourceHasMore) {
+        qWarning("egoboard: regex search scan reached the %d-row limit; results may be incomplete",
+                 kRegexScanCap);
     }
     return matches;
 }

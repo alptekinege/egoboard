@@ -893,12 +893,12 @@ QWidget *SettingsDialog::buildHistoryPage()
             else capHint->setText(tr("Cap %1 — stored entry data %2 within cap, no pruning now.").arg(humanSize(cap), humanSize(size)));
         }
     });
-    limitsForm->addRow(QString(), makeHint(tr("The size cap counts stored entry data, not the database file. Oldest non-pinned entries are removed when checked (every 25 captures and every 5 minutes); pinned entries are kept, so they can leave history above the cap. History is unlimited by default — the virtualized list handles 50k+ entries smoothly."), limitsBox));
+    limitsForm->addRow(QString(), makeHint(tr("The size cap counts live entry data, not the database file, and excludes items in the one-hour undo trash. Oldest non-pinned entries are removed when checked (every 25 captures and every 5 minutes); pinned entries are kept, so they can leave history above the cap. History is unlimited by default — the virtualized list handles 50k+ entries smoothly."), limitsBox));
     historyLayout->addWidget(limitsBox);
 
     auto *expireBox = new QGroupBox(tr("Auto-expire rules"), historyPage);
     auto *expireLayout = new QVBoxLayout(expireBox);
-    expireLayout->addWidget(makeHint(tr("Delete old entries that match all criteria — e.g. \"unpinned Terminal copies after 24h\". Runs on startup and every 15 minutes while egoboard is running."), expireBox));
+    expireLayout->addWidget(makeHint(tr("Delete old entries that match all criteria — e.g. \"unpinned Terminal copies after 24h\". Sensitive entries follow the same rules. Expired entries stay restorable in the undo trash for up to one hour. Runs on startup and every 15 minutes while egoboard is running."), expireBox));
     m_expireList = new QListWidget(expireBox);
     m_expireList->setMaximumHeight(104);
     m_expireList->setSelectionMode(QAbstractItemView::SingleSelection);
