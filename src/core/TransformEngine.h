@@ -43,7 +43,7 @@ public:
     };
 
     struct Descriptor {
-        TransformId id;
+        TransformId id = TransformId::Trim;
         QString name; // stable, lowercase, e.g. "json-pretty"
         QString label; // human, e.g. "JSON Pretty"
         QString description;

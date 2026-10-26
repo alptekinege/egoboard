@@ -25,8 +25,8 @@ public:
 
     // Ctrl+V as portal keysym presses (XKB keysyms with press states).
     struct KeyPress {
-        quint32 keysym;
-        bool press;
+        quint32 keysym = 0;
+        bool press = false;
     };
     static QVector<KeyPress> ctrlVPlan();
 

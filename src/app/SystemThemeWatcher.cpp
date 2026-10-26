@@ -31,11 +31,11 @@ QString fingerprintOf(const QString &path)
 
 SystemThemeWatcher::SystemThemeWatcher(QObject *parent)
     : QObject(parent)
+    , m_configWatcher(KConfigWatcher::create(KSharedConfig::openConfig(kConfigFileName)))
     , m_lastFingerprint(fingerprintOf(configFilePath()))
 {
     // Channel 1: KDE's own notification, sent when another client writes
     // kdeglobals with the Notify flag (System Settings does).
-    m_configWatcher = KConfigWatcher::create(KSharedConfig::openConfig(kConfigFileName));
     connect(m_configWatcher.data(), &KConfigWatcher::configChanged, this,
             [this](const KConfigGroup &group, const QByteArrayList &keys) {
                 if (touchesTheme(group.name(), keys))
