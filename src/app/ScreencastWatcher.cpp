@@ -43,11 +43,12 @@ void onRegistryGlobal(void *data, uint32_t id, uint32_t permissions, const char 
     if (strcmp(type, PW_TYPE_INTERFACE_Node) != 0 || !props)
         return;
     QMap<QString, QString> map;
-    const spa_dict_item *item = nullptr;
-    spa_dict_for_each(item, props)
-    {
-        if (item->key && item->value)
-            map.insert(QString::fromUtf8(item->key), QString::fromUtf8(item->value));
+    if (!props->items)
+        return;
+    for (uint32_t index = 0; index < props->n_items; ++index) {
+        const spa_dict_item &item = props->items[index];
+        if (item.key && item.value)
+            map.insert(QString::fromUtf8(item.key), QString::fromUtf8(item.value));
     }
     dump->nodes.append(map);
 }
