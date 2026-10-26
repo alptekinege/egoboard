@@ -226,7 +226,8 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
                 " use_count = use_count + 1,"
                 " source_app = :app, source_window = :win,"
                 " preview = :preview, size_bytes = :size,"
-                " text_data = :text, blob_data = :blob,"
+                " text_data = :text,"
+                " blob_data = CASE WHEN :has_blob THEN :blob ELSE blob_data END,"
                 " sensitive = :sensitive,"
                 " pinned = MAX(pinned, :pinned),"
                 " ocr_text = CASE WHEN :ocr != '' THEN :ocr ELSE ocr_text END"
@@ -237,7 +238,8 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
             touch.bindValue(QStringLiteral(":preview"), record.preview);
             touch.bindValue(QStringLiteral(":size"), record.sizeBytes);
             touch.bindValue(QStringLiteral(":text"), record.textData);
-            touch.bindValue(QStringLiteral(":blob"), record.hasBlob ? record.blobData : QVariant());
+            touch.bindValue(QStringLiteral(":has_blob"), record.hasBlob ? 1 : 0);
+            touch.bindValue(QStringLiteral(":blob"), record.blobData);
             touch.bindValue(QStringLiteral(":sensitive"), record.sensitive ? 1 : 0);
             touch.bindValue(QStringLiteral(":pinned"), record.pinned ? 1 : 0);
             touch.bindValue(QStringLiteral(":ocr"), record.ocrText);
@@ -258,19 +260,20 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
 
     QSqlQuery &insert = preparedStatement(QStringLiteral(
         "INSERT INTO entries (timestamp_ms, content_type, content_hash, text_data, blob_data,"
-        " preview, size_bytes, pinned, sensitive, use_count, source_app, source_window)"
-        " VALUES (:ts, :type, :h, :text, :blob, :preview, :size, :pinned, :sensitive, 0, :app, :win)"));
+        " preview, size_bytes, pinned, sensitive, use_count, source_app, source_window, ocr_text)"
+        " VALUES (:ts, :type, :h, :text, :blob, :preview, :size, :pinned, :sensitive, 0, :app, :win, :ocr)"));
     insert.bindValue(QStringLiteral(":ts"), record.timestamp);
     insert.bindValue(QStringLiteral(":type"), static_cast<int>(record.type));
     insert.bindValue(QStringLiteral(":h"), QString::fromLatin1(record.hash));
     insert.bindValue(QStringLiteral(":text"), record.textData);
-    insert.bindValue(QStringLiteral(":blob"), record.hasBlob ? record.blobData : QVariant());
+    insert.bindValue(QStringLiteral(":blob"), record.hasBlob ? QVariant(record.blobData) : QVariant());
     insert.bindValue(QStringLiteral(":preview"), record.preview);
     insert.bindValue(QStringLiteral(":size"), record.sizeBytes);
     insert.bindValue(QStringLiteral(":pinned"), record.pinned ? 1 : 0);
     insert.bindValue(QStringLiteral(":sensitive"), record.sensitive ? 1 : 0);
     insert.bindValue(QStringLiteral(":app"), record.sourceApp);
     insert.bindValue(QStringLiteral(":win"), record.sourceWindow);
+    insert.bindValue(QStringLiteral(":ocr"), record.ocrText);
     if (!insert.exec()) {
         qWarning("egoboard: insert failed: %s", qPrintable(insert.lastError().text()));
         rollbackTransaction();
