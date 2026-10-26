@@ -128,9 +128,10 @@ bool EgoboardDbusAdaptor::Paste(qint64 id)
         sendErrorReply(QDBusError::AccessDenied, QStringLiteral("Not authorized"));
         return false;
     }
-    // Unknown ids emit harmlessly: ApplicationContext::pasteEntry() re-checks
-    // fetchFull() and no-ops, so there is no clipboard effect to gate here.
-    // (Copy/Pin/Delete keep entryExists() so KRunner actions report failure.)
+    if (!entryExists(id))
+        return false;
+    // ApplicationContext re-checks fetchFull() when handling the queued signal
+    // so a row removed immediately after this check still cannot be pasted.
     emit pasteRequested(id);
     return true;
 }
