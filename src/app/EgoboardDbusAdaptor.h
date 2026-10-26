@@ -35,6 +35,7 @@ signals:
     void pinRequested(qint64 id, bool pinned);
     void deleteRequested(qint64 id);
     void showQuickPasteRequested();
+    void showWindowRequested();
     void cursorPosReported(int x, int y); // rounded, from KWin scripting (Wayland)
 
 public slots:
@@ -50,6 +51,8 @@ public slots:
     // Returns false when the entry does not exist (KRunner actions report that).
     bool Pin(qint64 id, bool pinned);
     bool Delete(qint64 id);
+    // Ensures the main window is visible and active.
+    bool ShowWindow();
     // Opens the quick-paste popup at the cursor (automation / debugging).
     bool ShowQuickPaste();
     // KWin scripting reports the global cursor position here (Wayland).

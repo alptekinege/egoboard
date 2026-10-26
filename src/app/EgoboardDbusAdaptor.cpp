@@ -172,6 +172,16 @@ bool EgoboardDbusAdaptor::Delete(qint64 id)
     return true;
 }
 
+bool EgoboardDbusAdaptor::ShowWindow()
+{
+    if (!isCallerAuthorized()) {
+        sendErrorReply(QDBusError::AccessDenied, QStringLiteral("Not authorized"));
+        return false;
+    }
+    emit showWindowRequested();
+    return true;
+}
+
 bool EgoboardDbusAdaptor::ShowQuickPaste()
 {
     if (!isCallerAuthorized()) {

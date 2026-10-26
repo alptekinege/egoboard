@@ -74,6 +74,7 @@ public:
     };
 
     void toggleMainWindow();
+    void showMainWindow();
     void showQuickPaste();
     void pasteEntry(qint64 entryId, PasteVariant variant = PasteVariant::Normal);
     void deleteLastEntry(); // drop the newest capture (global hotkey)

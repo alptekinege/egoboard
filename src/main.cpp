@@ -6,6 +6,8 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QDateTime>
+#include <QDBusConnection>
+#include <QDBusMessage>
 #include <QDir>
 #include <QGuiApplication>
 #include <QIcon>
@@ -152,7 +154,13 @@ int main(int argc, char *argv[])
         QStringLiteral("egoboard-%1").arg(::getuid()));
     if (!smoke && !bench && !crashReport && !readReport && !guard.tryLock()) {
         // Already running: bring the existing instance up and exit quietly.
-        guard.sendShow();
+        if (!guard.sendShow()) {
+            const QDBusMessage show = QDBusMessage::createMethodCall(
+                QStringLiteral("org.egoboard.Egoboard"),
+                QStringLiteral("/org/egoboard/Egoboard"),
+                QStringLiteral("org.egoboard.Egoboard"), QStringLiteral("ShowWindow"));
+            QDBusConnection::sessionBus().call(show, QDBus::Block, 500);
+        }
         return 0;
     }
 
@@ -168,7 +176,7 @@ int main(int argc, char *argv[])
         return context.benchmark(parser.value(benchOption).toInt());
 
     QObject::connect(&guard, &SingleInstanceGuard::showRequested, &context,
-                     &ApplicationContext::toggleMainWindow);
+                     &ApplicationContext::showMainWindow);
 
     context.start();
     return application.exec();

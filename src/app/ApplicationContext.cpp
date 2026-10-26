@@ -223,6 +223,8 @@ ApplicationContext::ApplicationContext(const QString &databasePath, bool fullGui
     });
     connect(m_dbus, &EgoboardDbusAdaptor::showQuickPasteRequested, this,
             &ApplicationContext::showQuickPaste);
+    connect(m_dbus, &EgoboardDbusAdaptor::showWindowRequested, this,
+            &ApplicationContext::showMainWindow);
     connect(m_dbus, &EgoboardDbusAdaptor::cursorPosReported, this,
             [](int x, int y) { KWinCursorTracker::reportGlobalPos(x, y); });
 
@@ -564,7 +566,16 @@ void ApplicationContext::toggleMainWindow()
     if (m_window->isVisible())
         m_window->hide();
     else
-        m_window->show();
+        showMainWindow();
+}
+
+void ApplicationContext::showMainWindow()
+{
+    if (!m_window)
+        return;
+    m_window->showNormal();
+    m_window->raise();
+    m_window->activateWindow();
 }
 
 void ApplicationContext::syncPortalSession()
