@@ -80,8 +80,8 @@ void GroupTreeModel::rebuild()
     const QVector<BookmarkGroup> groups = m_bookmarks->groups();
     // Groups() is name-ordered, not hierarchy-ordered. Build parent-to-child
     // adjacency first, then walk out from roots so even reverse-sorted deep
-    // trees are assembled in linear time. Unreachable or cyclic groups stay
-    // detached, matching the previous fixed-point behavior.
+    // trees are assembled in linear time. Unreachable or cyclic groups are
+    // exposed as top-level repair rows instead of disappearing from the model.
     std::vector<std::unique_ptr<Node>> owned;
     owned.reserve(size_t(groups.size()));
     std::vector<Node *> byIndex;
@@ -123,6 +123,14 @@ void GroupTreeModel::rebuild()
             parent->children.push_back(std::move(child));
             pending.append(childIndex);
         }
+    }
+    for (int i = 0; i < groups.size(); ++i) {
+        auto &detached = owned[size_t(i)];
+        if (!detached)
+            continue;
+        detached->parent = m_root.get();
+        detached->row = int(m_root->children.size());
+        m_root->children.push_back(std::move(detached));
     }
     endResetModel();
 }

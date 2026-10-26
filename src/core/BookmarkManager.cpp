@@ -12,16 +12,20 @@ BookmarkManager::BookmarkManager(QSqlDatabase db, QObject *parent)
 qint64 BookmarkManager::createGroup(const QString &name, qint64 parentId, const QString &color,
                                     const QString &icon)
 {
+    const QString normalizedName = name.trimmed();
+    if (normalizedName.isEmpty() || parentId < 0 || (parentId > 0 && !group(parentId).has_value()))
+        return 0;
     // Sibling names are unique case-insensitively, mirroring the tag table.
-    if (groupNameExists(name, parentId, 0)) {
-        qWarning("egoboard: createGroup: a group named \"%s\" already exists here", qPrintable(name));
+    if (groupNameExists(normalizedName, parentId, 0)) {
+        qWarning("egoboard: createGroup: a group named \"%s\" already exists here",
+                 qPrintable(normalizedName));
         return 0;
     }
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral(
         "INSERT INTO groups (parent_id, name, color, icon) VALUES (:p, :n, :c, :i)"));
     query.bindValue(QStringLiteral(":p"), parentId > 0 ? QVariant(parentId) : QVariant());
-    query.bindValue(QStringLiteral(":n"), name);
+    query.bindValue(QStringLiteral(":n"), normalizedName);
     query.bindValue(QStringLiteral(":c"), color);
     query.bindValue(QStringLiteral(":i"), icon);
     if (!query.exec()) {
@@ -35,16 +39,20 @@ qint64 BookmarkManager::createGroup(const QString &name, qint64 parentId, const 
 bool BookmarkManager::updateGroup(qint64 id, const QString &name, const QString &color,
                                   const QString &icon)
 {
+    const QString normalizedName = name.trimmed();
+    if (normalizedName.isEmpty())
+        return false;
     const auto existing = group(id);
     if (!existing.has_value())
         return false;
-    if (groupNameExists(name, existing->parentId, id)) {
-        qWarning("egoboard: updateGroup: a group named \"%s\" already exists here", qPrintable(name));
+    if (groupNameExists(normalizedName, existing->parentId, id)) {
+        qWarning("egoboard: updateGroup: a group named \"%s\" already exists here",
+                 qPrintable(normalizedName));
         return false;
     }
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral("UPDATE groups SET name = :n, color = :c, icon = :i WHERE id = :id"));
-    query.bindValue(QStringLiteral(":n"), name);
+    query.bindValue(QStringLiteral(":n"), normalizedName);
     query.bindValue(QStringLiteral(":c"), color);
     query.bindValue(QStringLiteral(":i"), icon);
     query.bindValue(QStringLiteral(":id"), id);
@@ -56,42 +64,63 @@ bool BookmarkManager::updateGroup(qint64 id, const QString &name, const QString 
 
 bool BookmarkManager::deleteGroup(qint64 id)
 {
-    if (!m_db.transaction()) {
-        qWarning("egoboard: deleteGroup cannot start transaction: %s",
-                 qPrintable(m_db.lastError().text()));
+    static const QString savepoint = QStringLiteral("egoboard_delete_group");
+    QSqlQuery transaction(m_db);
+    if (!transaction.exec(QStringLiteral("SAVEPOINT ") + savepoint)) {
+        qWarning("egoboard: deleteGroup cannot create savepoint: %s",
+                 qPrintable(transaction.lastError().text()));
         return false;
     }
+    const auto rollback = [this] {
+        QSqlQuery query(m_db);
+        if (!query.exec(QStringLiteral("ROLLBACK TO SAVEPOINT egoboard_delete_group")))
+            qWarning("egoboard: deleteGroup rollback failed: %s", qPrintable(query.lastError().text()));
+        if (!query.exec(QStringLiteral("RELEASE SAVEPOINT egoboard_delete_group")))
+            qWarning("egoboard: deleteGroup savepoint release failed: %s",
+                     qPrintable(query.lastError().text()));
+    };
+
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral("SELECT parent_id FROM groups WHERE id = :id"));
     query.bindValue(QStringLiteral(":id"), id);
     if (!query.exec() || !query.next()) {
-        m_db.rollback();
+        rollback();
         return false;
     }
     const qint64 parentId = query.value(0).toLongLong();
+    query.finish();
 
     query.prepare(QStringLiteral("UPDATE groups SET parent_id = :p WHERE parent_id = :id"));
     query.bindValue(QStringLiteral(":p"), parentId > 0 ? QVariant(parentId) : QVariant());
     query.bindValue(QStringLiteral(":id"), id);
     if (!query.exec()) {
-        m_db.rollback();
+        rollback();
         return false;
     }
+    query.finish();
     query.prepare(QStringLiteral("DELETE FROM groups WHERE id = :id"));
     query.bindValue(QStringLiteral(":id"), id);
     const bool ok = query.exec() && query.numRowsAffected() > 0;
-    m_db.commit();
-    if (ok)
-        emit groupsChanged();
-    return ok;
+    query.finish();
+    if (!ok || !transaction.exec(QStringLiteral("RELEASE SAVEPOINT ") + savepoint)) {
+        rollback();
+        return false;
+    }
+    emit groupsChanged();
+    return true;
 }
 
 bool BookmarkManager::moveGroup(qint64 id, qint64 newParentId)
 {
-    if (id == newParentId)
+    const auto existing = group(id);
+    if (!existing.has_value() || newParentId < 0 || id == newParentId)
         return false;
-    if (newParentId != 0 && isDescendantOf(newParentId, id))
-        return false; // would create a cycle
+    if (newParentId > 0) {
+        if (!group(newParentId).has_value() || isDescendantOf(newParentId, id))
+            return false; // missing parent or would create a cycle
+    }
+    if (groupNameExists(existing->name, newParentId, id))
+        return false;
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral("UPDATE groups SET parent_id = :p WHERE id = :id"));
     query.bindValue(QStringLiteral(":p"), newParentId > 0 ? QVariant(newParentId) : QVariant());

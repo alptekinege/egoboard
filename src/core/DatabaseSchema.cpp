@@ -338,6 +338,18 @@ bool ensure(QSqlDatabase &db)
         }
     }
 
+    // Older builds stored the top-level sentinel as 0. Keep one representation
+    // (NULL) so sibling checks and hierarchy reconstruction agree.
+    {
+        QSqlQuery normalizeParents(db);
+        if (!normalizeParents.exec(QStringLiteral(
+                "UPDATE groups SET parent_id = NULL WHERE parent_id = 0"))) {
+            qWarning("egoboard: top-level group normalization failed: %s",
+                     qPrintable(normalizeParents.lastError().text()));
+            return false;
+        }
+    }
+
     // content_hash is declared TEXT but older builds bound it as BLOB. SQLite
     // compares values by storage class, so mixed rows would silently miss
     // dedup hits; normalize legacy rows in place.
