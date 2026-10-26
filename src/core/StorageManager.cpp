@@ -1185,11 +1185,12 @@ int StorageManager::restoreTrashEntries(const QList<qint64> &ids)
         return 0;
     }
     int restored = 0;
+    bool changedExisting = false;
     // Statements hoisted from the loop: one prepare, N executions.
     QSqlQuery &hashQuery = preparedStatement(
         QStringLiteral("SELECT content_hash FROM trash_entries WHERE id = :id"));
     QSqlQuery &live =
-        preparedStatement(QStringLiteral("SELECT 1 FROM entries WHERE content_hash = :h"));
+        preparedStatement(QStringLiteral("SELECT id FROM entries WHERE content_hash = :h LIMIT 1"));
     const QString dropTagsSql = QStringLiteral("DELETE FROM trash_entry_tags WHERE entry_id = :id");
     const QString dropGroupsSql = QStringLiteral("DELETE FROM trash_entry_groups WHERE entry_id = :id");
     QSqlQuery &dropLinks = preparedStatement(dropTagsSql);
@@ -1200,46 +1201,119 @@ int StorageManager::restoreTrashEntries(const QList<qint64> &ids)
                               .arg(kEntryColumns));
     QSqlQuery &tags = preparedStatement(QStringLiteral(
         "INSERT OR IGNORE INTO entry_tags(entry_id, tag_id) "
-        "SELECT entry_id, tag_id FROM trash_entry_tags WHERE entry_id = :id"));
+        "SELECT :live, t.tag_id FROM trash_entry_tags t JOIN tags ON tags.id = t.tag_id "
+        "WHERE t.entry_id = :id"));
     QSqlQuery &groups = preparedStatement(QStringLiteral(
         "INSERT OR IGNORE INTO entry_groups(entry_id, group_id) "
-        "SELECT entry_id, group_id FROM trash_entry_groups WHERE entry_id = :id"));
+        "SELECT :live, g.group_id FROM trash_entry_groups g JOIN groups ON groups.id = g.group_id "
+        "WHERE g.entry_id = :id"));
+    QSqlQuery &mergeLive = preparedStatement(QStringLiteral(
+        "UPDATE entries SET"
+        " blob_data = CASE WHEN blob_data IS NULL OR length(blob_data) = 0"
+        " THEN (SELECT blob_data FROM trash_entries WHERE id = :trash) ELSE blob_data END,"
+        " size_bytes = MAX(size_bytes, (SELECT size_bytes FROM trash_entries WHERE id = :trash)),"
+        " pinned = MAX(pinned, (SELECT pinned FROM trash_entries WHERE id = :trash)),"
+        " sensitive = MAX(sensitive, (SELECT sensitive FROM trash_entries WHERE id = :trash)),"
+        " use_count = CASE WHEN use_count > 9223372036854775807 -"
+        " MAX(0, (SELECT use_count FROM trash_entries WHERE id = :trash))"
+        " THEN 9223372036854775807 ELSE use_count +"
+        " MAX(0, (SELECT use_count FROM trash_entries WHERE id = :trash)) END,"
+        " ocr_text = CASE WHEN COALESCE(ocr_text, '') = ''"
+        " THEN (SELECT ocr_text FROM trash_entries WHERE id = :trash) ELSE ocr_text END"
+        " WHERE id = :live"));
     QSqlQuery &cleanLinks = preparedStatement(dropTagsSql);
     QSqlQuery &cleanGroups = preparedStatement(dropGroupsSql);
     QSqlQuery &clean = preparedStatement(QStringLiteral("DELETE FROM trash_entries WHERE id = :id"));
+    bool failed = false;
     for (const qint64 id : ids) {
         hashQuery.bindValue(QStringLiteral(":id"), id);
-        if (!hashQuery.exec() || !hashQuery.next())
+        if (!hashQuery.exec()) {
+            failed = true;
+            break;
+        }
+        if (!hashQuery.next()) {
+            hashQuery.finish();
             continue; // not in trash (already restored/purged)
+        }
         const QString trashedHash = hashQuery.value(0).toString();
+        hashQuery.finish();
         live.bindValue(QStringLiteral(":h"), trashedHash);
-        if (!live.exec())
-            continue;
-        if (live.next()) {
-            // The content went live again while trashed (re-copied): drop the
-            // stale trash row instead of duplicating history.
+        if (!live.exec()) {
+            failed = true;
+            break;
+        }
+        const bool hasLiveRow = live.next();
+        const qint64 liveId = hasLiveRow ? live.value(0).toLongLong() : 0;
+        live.finish();
+        if (hasLiveRow) {
+            // A re-copy created a live row while this one was trashed. Keep
+            // that row, but merge recoverable metadata and surviving links.
+            mergeLive.bindValue(QStringLiteral(":trash"), id);
+            mergeLive.bindValue(QStringLiteral(":live"), liveId);
+            tags.bindValue(QStringLiteral(":id"), id);
+            tags.bindValue(QStringLiteral(":live"), liveId);
+            groups.bindValue(QStringLiteral(":id"), id);
+            groups.bindValue(QStringLiteral(":live"), liveId);
+            if (!mergeLive.exec() || !tags.exec() || !groups.exec()) {
+                failed = true;
+                break;
+            }
             dropLinks.bindValue(QStringLiteral(":id"), id);
-            dropLinks.exec();
+            if (!dropLinks.exec()) {
+                failed = true;
+                break;
+            }
             dropGroups.bindValue(QStringLiteral(":id"), id);
-            dropGroups.exec();
+            if (!dropGroups.exec()) {
+                failed = true;
+                break;
+            }
             drop.bindValue(QStringLiteral(":id"), id);
-            drop.exec();
+            if (!drop.exec()) {
+                failed = true;
+                break;
+            }
+            changedExisting = true;
             continue;
         }
         back.bindValue(QStringLiteral(":id"), id);
-        if (!back.exec() || back.numRowsAffected() == 0)
-            continue;
+        if (!back.exec() || back.numRowsAffected() == 0) {
+            failed = true;
+            break;
+        }
         tags.bindValue(QStringLiteral(":id"), id);
-        tags.exec();
+        tags.bindValue(QStringLiteral(":live"), id);
+        if (!tags.exec()) {
+            failed = true;
+            break;
+        }
         groups.bindValue(QStringLiteral(":id"), id);
-        groups.exec();
+        groups.bindValue(QStringLiteral(":live"), id);
+        if (!groups.exec()) {
+            failed = true;
+            break;
+        }
         cleanLinks.bindValue(QStringLiteral(":id"), id);
-        cleanLinks.exec();
+        if (!cleanLinks.exec()) {
+            failed = true;
+            break;
+        }
         cleanGroups.bindValue(QStringLiteral(":id"), id);
-        cleanGroups.exec();
+        if (!cleanGroups.exec()) {
+            failed = true;
+            break;
+        }
         clean.bindValue(QStringLiteral(":id"), id);
-        if (clean.exec() && clean.numRowsAffected() > 0)
-            ++restored;
+        if (!clean.exec() || clean.numRowsAffected() == 0) {
+            failed = true;
+            break;
+        }
+        ++restored;
+    }
+    if (failed) {
+        qWarning("egoboard: restoreTrashEntries failed: %s", qPrintable(m_db.lastError().text()));
+        rollbackTransaction();
+        return 0;
     }
     if (!commitTransaction()) {
         qWarning("egoboard: restoreTrashEntries commit failed: %s",
@@ -1247,7 +1321,7 @@ int StorageManager::restoreTrashEntries(const QList<qint64> &ids)
         rollbackTransaction();
         return 0;
     }
-    if (restored > 0 && !signalsSuppressed())
+    if ((restored > 0 || changedExisting) && !signalsSuppressed())
         emit storageReset();
     return restored;
 }

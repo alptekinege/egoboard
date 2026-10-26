@@ -47,7 +47,7 @@ private slots:
     void clearsOcrTextAndReturnsFullPayloads();
     void softDeleteMovesRowsToTrashWithExactRestore();
     void softDeletePreservesTagsGroupsAndPayloads();
-    void restoreDropsRowsWhoseHashWentLive();
+    void restoreMergesRowsWhoseHashWentLive();
     void purgeTrashRespectsAgeBound();
     void softClearHistoryKeepsPinned();
     void expireEntriesToTrashSweepsRestorably();
@@ -972,13 +972,22 @@ void TestStorage::softDeletePreservesTagsGroupsAndPayloads()
     QCOMPARE(bookmarks.groupIdsForEntry(id), QList<qint64>({gid}));
 }
 
-void TestStorage::restoreDropsRowsWhoseHashWentLive()
+void TestStorage::restoreMergesRowsWhoseHashWentLive()
 {
-    // Delete A, re-capture the same content (dedup cannot see the trashed
-    // row, so this is a new id), then Undo: the stale trash row is dropped
-    // instead of duplicating history — the content is already present.
-    const qint64 oldId =
-        m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("t-dup"), QStringLiteral("same"), 1000));
+    // Re-capture the trashed hash as a new row, then Undo. The current row
+    // remains unique while recoverable metadata and links move across.
+    ClipboardRecord old =
+        makeRecord(QByteArrayLiteral("t-dup"), QStringLiteral("same"), 1000);
+    old.sensitive = true;
+    const qint64 oldId = m_storage->insertOrUpdate(old);
+    QVERIFY(m_storage->setPinned(oldId, true));
+    QVERIFY(m_storage->setOcrText(oldId, QStringLiteral("recognized before delete")));
+    QVERIFY(m_storage->touchEntry(oldId));
+    QVERIFY(m_storage->addTag(oldId, QStringLiteral("restored-tag")));
+    BookmarkManager bookmarks(m_storage->database());
+    const qint64 groupId = bookmarks.createGroup(QStringLiteral("Restored group"));
+    QVERIFY(groupId > 0);
+    QVERIFY(bookmarks.assignEntry(oldId, groupId));
     QCOMPARE(m_storage->softDeleteEntries({oldId}), QList<qint64>({oldId}));
     const qint64 newId =
         m_storage->insertOrUpdate(makeRecord(QByteArrayLiteral("t-dup"), QStringLiteral("same"), 2000));
@@ -989,6 +998,12 @@ void TestStorage::restoreDropsRowsWhoseHashWentLive()
     ClipboardRecord live;
     QVERIFY(m_storage->fetchFull(newId, &live));
     QCOMPARE(live.textData, QStringLiteral("same"));
+    QVERIFY(live.pinned);
+    QVERIFY(live.sensitive);
+    QCOMPARE(live.useCount, 1);
+    QCOMPARE(live.ocrText, QStringLiteral("recognized before delete"));
+    QCOMPARE(m_storage->tagsForEntry(newId), QStringList{QStringLiteral("restored-tag")});
+    QCOMPARE(bookmarks.groupIdsForEntry(newId), QList<qint64>{groupId});
 }
 
 void TestStorage::purgeTrashRespectsAgeBound()

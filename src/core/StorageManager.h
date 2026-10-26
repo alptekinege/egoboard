@@ -73,8 +73,8 @@ public:
     // tests and callers that want immediate deletion).
     QList<qint64> expireEntriesToTrash(qint64 olderThanMs, int contentType,
                                        const QString &sourceAppWildcard, bool keepPinned = true);
-    // Restores exactly the given trash ids. Rows whose hash went live again
-    // are dropped instead of duplicated (their content is already present).
+    // Restores the given trash ids. If the hash went live again, metadata and
+    // still-valid tags/groups merge into that row instead of duplicating it.
     // Emits storageReset() when anything was restored. Returns restored count.
     int restoreTrashEntries(const QList<qint64> &ids);
     // Hard-deletes trash rows with trashed_ms <= olderThanMs. Returns count.
