@@ -1,9 +1,153 @@
 #include "DatabaseSchema.h"
 
+#include <QByteArray>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QStringList>
+#include <QVariant>
+
+#include <limits>
 
 namespace DatabaseSchema {
+
+namespace {
+
+struct EntrySnapshot {
+    qint64 id = 0;
+    qint64 timestampMs = 0;
+    int contentType = 0;
+    QString textData;
+    QByteArray blobData;
+    QString preview;
+    qint64 sizeBytes = 0;
+    bool pinned = false;
+    bool sensitive = false;
+    qint64 useCount = 0;
+    QString sourceApp;
+    QString sourceWindow;
+    QString ocrText;
+};
+
+bool readEntry(QSqlDatabase &db, qint64 id, EntrySnapshot *entry)
+{
+    if (!entry)
+        return false;
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral(
+        "SELECT id, timestamp_ms, content_type, text_data, blob_data, preview, size_bytes,"
+        " pinned, sensitive, use_count, source_app, source_window, ocr_text"
+        " FROM entries WHERE id = :id"));
+    query.bindValue(QStringLiteral(":id"), id);
+    if (!query.exec() || !query.next())
+        return false;
+    entry->id = query.value(0).toLongLong();
+    entry->timestampMs = query.value(1).toLongLong();
+    entry->contentType = query.value(2).toInt();
+    entry->textData = query.value(3).toString();
+    entry->blobData = query.value(4).toByteArray();
+    entry->preview = query.value(5).toString();
+    entry->sizeBytes = query.value(6).toLongLong();
+    entry->pinned = query.value(7).toBool();
+    entry->sensitive = query.value(8).toBool();
+    entry->useCount = query.value(9).toLongLong();
+    entry->sourceApp = query.value(10).toString();
+    entry->sourceWindow = query.value(11).toString();
+    entry->ocrText = query.value(12).toString();
+    query.finish();
+    return true;
+}
+
+bool mergeEntries(QSqlDatabase &db, qint64 keepId, qint64 duplicateId,
+                  const QString &normalizedHash)
+{
+    EntrySnapshot keep;
+    EntrySnapshot duplicate;
+    if (!readEntry(db, keepId, &keep) || !readEntry(db, duplicateId, &duplicate))
+        return false;
+
+    const EntrySnapshot &newer = duplicate.timestampMs > keep.timestampMs ? duplicate : keep;
+    const EntrySnapshot &older = duplicate.timestampMs > keep.timestampMs ? keep : duplicate;
+    EntrySnapshot merged = newer;
+    merged.id = keepId;
+    merged.timestampMs = qMax(keep.timestampMs, duplicate.timestampMs);
+    merged.textData = newer.textData.isNull() ? older.textData : newer.textData;
+    merged.preview = newer.preview.isNull() ? older.preview : newer.preview;
+    if (newer.blobData.isEmpty() && !older.blobData.isEmpty())
+        merged.blobData = older.blobData;
+    merged.sizeBytes = qMax(keep.sizeBytes, duplicate.sizeBytes);
+    merged.pinned = keep.pinned || duplicate.pinned;
+    merged.sensitive = keep.sensitive || duplicate.sensitive;
+    const qint64 keepUseCount = qMax<qint64>(0, keep.useCount);
+    const qint64 duplicateUseCount = qMax<qint64>(0, duplicate.useCount);
+    const qint64 maxUseCount = std::numeric_limits<qint64>::max();
+    merged.useCount = keepUseCount > maxUseCount - duplicateUseCount
+                          ? maxUseCount
+                          : keepUseCount + duplicateUseCount;
+    if (newer.sourceApp.isNull())
+        merged.sourceApp = older.sourceApp;
+    if (newer.sourceWindow.isNull())
+        merged.sourceWindow = older.sourceWindow;
+    if (newer.ocrText.isEmpty())
+        merged.ocrText = older.ocrText;
+
+    static const QStringList linkTables{QStringLiteral("entry_tags"),
+                                        QStringLiteral("entry_groups")};
+    for (const QString &table : linkTables) {
+        QSqlQuery transfer(db);
+        transfer.prepare(QStringLiteral("INSERT OR IGNORE INTO %1 (entry_id, %2) "
+                                        "SELECT :keep, %2 FROM %1 WHERE entry_id = :duplicate")
+                             .arg(table, table == QLatin1String("entry_tags")
+                                             ? QStringLiteral("tag_id")
+                                             : QStringLiteral("group_id")));
+        transfer.bindValue(QStringLiteral(":keep"), keepId);
+        transfer.bindValue(QStringLiteral(":duplicate"), duplicateId);
+        if (!transfer.exec()) {
+            qWarning("egoboard: cannot merge legacy entry links from %lld: %s",
+                     duplicateId, qPrintable(transfer.lastError().text()));
+            return false;
+        }
+    }
+
+    QSqlQuery removeDuplicate(db);
+    removeDuplicate.prepare(QStringLiteral("DELETE FROM entries WHERE id = :id"));
+    removeDuplicate.bindValue(QStringLiteral(":id"), duplicateId);
+    if (!removeDuplicate.exec() || removeDuplicate.numRowsAffected() != 1) {
+        qWarning("egoboard: cannot remove merged legacy entry %lld: %s",
+                 duplicateId, qPrintable(removeDuplicate.lastError().text()));
+        return false;
+    }
+
+    QSqlQuery update(db);
+    update.prepare(QStringLiteral(
+        "UPDATE entries SET timestamp_ms = :ts, content_type = :type, content_hash = :hash,"
+        " text_data = :text, blob_data = :blob, preview = :preview, size_bytes = :size,"
+        " pinned = :pinned, sensitive = :sensitive, use_count = :uses,"
+        " source_app = :app, source_window = :window, ocr_text = :ocr WHERE id = :id"));
+    update.bindValue(QStringLiteral(":ts"), merged.timestampMs);
+    update.bindValue(QStringLiteral(":type"), merged.contentType);
+    update.bindValue(QStringLiteral(":hash"), normalizedHash);
+    update.bindValue(QStringLiteral(":text"), merged.textData);
+    update.bindValue(QStringLiteral(":blob"), merged.blobData.isNull()
+                                                   ? QVariant()
+                                                   : QVariant(merged.blobData));
+    update.bindValue(QStringLiteral(":preview"), merged.preview);
+    update.bindValue(QStringLiteral(":size"), merged.sizeBytes);
+    update.bindValue(QStringLiteral(":pinned"), merged.pinned ? 1 : 0);
+    update.bindValue(QStringLiteral(":sensitive"), merged.sensitive ? 1 : 0);
+    update.bindValue(QStringLiteral(":uses"), merged.useCount);
+    update.bindValue(QStringLiteral(":app"), merged.sourceApp);
+    update.bindValue(QStringLiteral(":window"), merged.sourceWindow);
+    update.bindValue(QStringLiteral(":ocr"), merged.ocrText);
+    update.bindValue(QStringLiteral(":id"), keepId);
+    if (!update.exec()) {
+        qWarning("egoboard: cannot normalize merged legacy entry %lld: %s",
+                 keepId, qPrintable(update.lastError().text()));
+        return false;
+    }
+    return true;
+}
+
+} // namespace
 
 static bool columnExists(QSqlDatabase &db, const QString &table, const QString &column)
 {
@@ -350,28 +494,90 @@ bool ensure(QSqlDatabase &db)
         }
     }
 
+    // The legacy-hash merge reads and preserves OCR data. Add the column before
+    // that migration; ensureFts() below also calls this for normal startup.
+    if (!columnExists(db, QStringLiteral("entries"), QStringLiteral("ocr_text"))) {
+        QSqlQuery alter(db);
+        if (!alter.exec(QStringLiteral("ALTER TABLE entries ADD COLUMN ocr_text TEXT"))) {
+            qWarning("egoboard: cannot add OCR column before hash migration: %s",
+                     qPrintable(alter.lastError().text()));
+            return false;
+        }
+    }
+
     // content_hash is declared TEXT but older builds bound it as BLOB. SQLite
-    // compares values by storage class, so mixed rows would silently miss
-    // dedup hits; normalize legacy rows in place.
+    // compares values by storage class, so mixed rows miss dedup hits. Merge
+    // collisions before normalization so legacy and current rows do not remain
+    // as duplicate history entries.
     {
+        struct LegacyHash {
+            qint64 id = 0;
+            QString normalized;
+        };
+        QList<LegacyHash> legacyRows;
         QSqlQuery select(db);
-        if (select.exec(QStringLiteral("SELECT id FROM entries WHERE typeof(content_hash) = 'blob'"))) {
-            QList<qint64> legacyIds;
-            while (select.next())
-                legacyIds.append(select.value(0).toLongLong());
-            if (!legacyIds.isEmpty()) {
-                db.transaction();
-                for (const qint64 id : legacyIds) {
-                    QSqlQuery update(db);
-                    update.prepare(QStringLiteral(
-                        "UPDATE OR IGNORE entries SET content_hash = CAST(content_hash AS TEXT)"
-                        " WHERE id = :id"));
-                    update.bindValue(QStringLiteral(":id"), id);
-                    if (!update.exec())
-                        qWarning("egoboard: content_hash normalization failed for %lld: %s",
-                                 id, qPrintable(update.lastError().text()));
+        if (!select.exec(QStringLiteral(
+                "SELECT id, CAST(content_hash AS TEXT) FROM entries"
+                " WHERE typeof(content_hash) = 'blob'"))) {
+            qWarning("egoboard: cannot read legacy content hashes: %s",
+                     qPrintable(select.lastError().text()));
+            return false;
+        }
+        while (select.next())
+            legacyRows.append({select.value(0).toLongLong(), select.value(1).toString()});
+        select.finish();
+
+        if (!legacyRows.isEmpty()) {
+            if (!db.transaction()) {
+                qWarning("egoboard: cannot begin legacy hash migration: %s",
+                         qPrintable(db.lastError().text()));
+                return false;
+            }
+            bool ok = true;
+            for (const LegacyHash &legacy : legacyRows) {
+                QSqlQuery duplicate(db);
+                duplicate.prepare(QStringLiteral(
+                    "SELECT id FROM entries WHERE content_hash = :hash"
+                    " AND typeof(content_hash) = 'text' AND id != :id LIMIT 1"));
+                duplicate.bindValue(QStringLiteral(":hash"), legacy.normalized);
+                duplicate.bindValue(QStringLiteral(":id"), legacy.id);
+                if (!duplicate.exec()) {
+                    qWarning("egoboard: cannot find legacy hash collision %lld: %s",
+                             legacy.id, qPrintable(duplicate.lastError().text()));
+                    ok = false;
+                    break;
                 }
-                db.commit();
+                const bool hasDuplicate = duplicate.next();
+                const qint64 duplicateId = hasDuplicate ? duplicate.value(0).toLongLong() : 0;
+                duplicate.finish();
+                if (hasDuplicate) {
+                    const qint64 keepId = qMin(legacy.id, duplicateId);
+                    const qint64 dropId = qMax(legacy.id, duplicateId);
+                    if (!mergeEntries(db, keepId, dropId, legacy.normalized)) {
+                        ok = false;
+                        break;
+                    }
+                    continue;
+                }
+
+                QSqlQuery normalize(db);
+                normalize.prepare(QStringLiteral(
+                    "UPDATE entries SET content_hash = :hash WHERE id = :id"));
+                normalize.bindValue(QStringLiteral(":hash"), legacy.normalized);
+                normalize.bindValue(QStringLiteral(":id"), legacy.id);
+                if (!normalize.exec()) {
+                    qWarning("egoboard: content_hash normalization failed for %lld: %s",
+                             legacy.id, qPrintable(normalize.lastError().text()));
+                    ok = false;
+                    break;
+                }
+            }
+            if (!ok || !db.commit()) {
+                if (ok)
+                    qWarning("egoboard: cannot commit legacy hash migration: %s",
+                             qPrintable(db.lastError().text()));
+                db.rollback();
+                return false;
             }
         }
     }
