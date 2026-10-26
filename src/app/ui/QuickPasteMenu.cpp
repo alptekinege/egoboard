@@ -65,11 +65,12 @@ QuickPasteMenu::QuickPasteMenu(StorageManager *storage, int itemCount, QWidget *
     m_list->setUniformItemSizes(true);
     m_list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_list->setAccessibleName(tr("Quick paste entries"));
-    m_list->setAccessibleDescription(tr("Recent entries; press 1-9 or Enter to paste"));
+    m_list->setAccessibleDescription(tr("Recent entries; click, press 1-9, or Enter to paste"));
     UiHelpers::styleItemList(m_list);
     layout->addWidget(m_list, 1);
 
-    layout->addWidget(UiHelpers::makeHint(tr("Type to filter · 1–9 paste · ↑↓ move · Esc close"), card));
+    layout->addWidget(UiHelpers::makeHint(
+        tr("Click to paste · type to filter · 1–9 paste · ↑↓ move · Esc close"), card));
 
     m_autoHide = new QTimer(this);
     m_autoHide->setSingleShot(true);
@@ -77,6 +78,8 @@ QuickPasteMenu::QuickPasteMenu(StorageManager *storage, int itemCount, QWidget *
     connect(m_autoHide, &QTimer::timeout, this, &QuickPasteMenu::hide);
 
     connect(m_list, &QListWidget::itemActivated, this,
+            [this](QListWidgetItem *item) { activateRow(m_list->row(item)); });
+    connect(m_list, &QListWidget::itemClicked, this,
             [this](QListWidgetItem *item) { activateRow(m_list->row(item)); });
     connect(m_search, &QLineEdit::textChanged, this, [this] { refreshList(); });
     // ↑↓ in the search field move the selection; Enter pastes it.
