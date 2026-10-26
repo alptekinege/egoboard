@@ -79,6 +79,10 @@ endif()
 # --- Dependencies -------------------------------------------------------------
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Sql DBus Concurrent Network WaylandClient Qml)
+# Keep generated Wayland protocol sources private to their consuming target.
+# Qt 6.8+ exposes this policy and otherwise emits an author warning for every
+# qt_generate_wayland_protocol_client_sources() call.
+qt_policy(SET QTP0006 NEW)
 find_package(KF6Config 6.0 REQUIRED)
 find_package(KF6ConfigWidgets 6.0 REQUIRED) # KColorScheme: reads *.colors schemes
 find_package(KF6WidgetsAddons 6.0 REQUIRED) # KColorButton: text color pickers
