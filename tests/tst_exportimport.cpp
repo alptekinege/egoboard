@@ -1379,7 +1379,9 @@ void TestExportImport::importCancelMidRunRollsBack()
     QVERIFY(!result.ok);
     QVERIFY(result.error.contains(QStringLiteral("canceled")));
     QCOMPARE(m_storage->stats().entryCount, qint64(2)); // wipe rolled back
-    QCOMPARE(resetSpy.count(), 0);
+    // Rollback restores the database, then emits one reset so views discard
+    // any cache notifications produced by shared managers in the transaction.
+    QCOMPARE(resetSpy.count(), 1);
 }
 
 void TestExportImport::importReportsProgressToTotal()
