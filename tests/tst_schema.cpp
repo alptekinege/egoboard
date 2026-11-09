@@ -20,6 +20,7 @@ private slots:
     void migratesLegacyOcrAndFtsSchema();
     void createsPerformanceIndexes();
     void normalizesLegacyBlobHashesAndDedupes();
+    void mergesCollidingLegacyHashRows();
     void dedupesCaseInsensitiveSavedSearches();
     void quickCheckReportsHealthyDatabase();
     void rebuildSearchIndexRepairsMissingIndex();
@@ -383,6 +384,135 @@ void TestSchema::rebuildSearchIndexRepairsMissingIndex()
     const auto hits = storage.fetchPage(filter, {}, 10);
     QCOMPARE(hits.size(), 1);
     QCOMPARE(hits.first().hash, QByteArrayLiteral("repair-me"));
+}
+
+void TestSchema::mergesCollidingLegacyHashRows()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("legacy-collision.db"));
+    const QString connectionName = QStringLiteral("legacy-collision-test");
+    const QByteArray blob = QByteArray::fromHex(QByteArrayLiteral("89504e47"));
+
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+        db.setDatabaseName(path);
+        QVERIFY(db.open());
+        QSqlQuery query(db);
+        QVERIFY(query.exec(QStringLiteral(
+            "CREATE TABLE entries ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "timestamp_ms INTEGER NOT NULL,"
+            "content_type INTEGER NOT NULL,"
+            "content_hash TEXT NOT NULL UNIQUE,"
+            "text_data TEXT, blob_data BLOB, preview TEXT,"
+            "size_bytes INTEGER NOT NULL DEFAULT 0,"
+            "pinned INTEGER NOT NULL DEFAULT 0,"
+            "sensitive INTEGER NOT NULL DEFAULT 0,"
+            "use_count INTEGER NOT NULL DEFAULT 0,"
+            "source_app TEXT, source_window TEXT)")));
+        QVERIFY(query.exec(QStringLiteral(
+            "CREATE TABLE groups ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "parent_id INTEGER REFERENCES groups(id) ON DELETE CASCADE,"
+            "name TEXT NOT NULL, color TEXT, icon TEXT)")));
+        QVERIFY(query.exec(QStringLiteral(
+            "CREATE TABLE entry_groups ("
+            "entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,"
+            "group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,"
+            "PRIMARY KEY(entry_id, group_id))")));
+        QVERIFY(query.exec(QStringLiteral(
+            "CREATE TABLE tags (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "name TEXT NOT NULL UNIQUE COLLATE NOCASE)")));
+        QVERIFY(query.exec(QStringLiteral(
+            "CREATE TABLE entry_tags ("
+            "entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,"
+            "tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,"
+            "PRIMARY KEY(entry_id, tag_id))")));
+
+        // Same hash bytes stored once as a legacy BLOB and once as TEXT:
+        // SQLite treats them as distinct values, so both rows survive.
+        QSqlQuery legacy(db);
+        legacy.prepare(QStringLiteral(
+            "INSERT INTO entries(timestamp_ms, content_type, content_hash, text_data,"
+            " blob_data, preview, size_bytes, pinned, sensitive, use_count,"
+            " source_app, source_window) VALUES"
+            " (1000, 0, :hash, 'legacy text', :blob, 'legacy preview', 10, 1, 0, 2,"
+            " 'legacy-app', 'legacy-win')"));
+        legacy.bindValue(QStringLiteral(":hash"), QByteArrayLiteral("collision-hash"));
+        legacy.bindValue(QStringLiteral(":blob"), blob);
+        QVERIFY(legacy.exec());
+
+        QSqlQuery current(db);
+        current.prepare(QStringLiteral(
+            "INSERT INTO entries(timestamp_ms, content_type, content_hash, text_data,"
+            " preview, size_bytes, pinned, sensitive, use_count, source_app, source_window)"
+            " VALUES (3000, 0, :hash, 'current text', 'current preview', 20, 0, 1, 3,"
+            " 'current-app', 'current-win')"));
+        current.bindValue(QStringLiteral(":hash"), QStringLiteral("collision-hash"));
+        QVERIFY(current.exec());
+
+        QVERIFY(query.exec(QStringLiteral(
+            "INSERT INTO groups(id, parent_id, name) VALUES (1, 0, 'Legacy group')")));
+        QVERIFY(query.exec(QStringLiteral(
+            "INSERT INTO tags(id, name) VALUES (1, 'Legacy tag')")));
+        QVERIFY(query.exec(QStringLiteral(
+            "INSERT INTO entry_groups(entry_id, group_id) VALUES (1, 1)")));
+        QVERIFY(query.exec(QStringLiteral(
+            "INSERT INTO entry_tags(entry_id, tag_id) VALUES (2, 1)")));
+
+        db.close();
+        db = QSqlDatabase();
+        QSqlDatabase::removeDatabase(connectionName);
+    }
+
+    StorageManager storage(path);
+    QCOMPARE(storage.stats().entryCount, qint64(1));
+
+    QSqlQuery hash(storage.database());
+    QVERIFY(hash.exec(QStringLiteral(
+        "SELECT typeof(content_hash), content_hash FROM entries")));
+    QVERIFY(hash.next());
+    QCOMPARE(hash.value(0).toString(), QStringLiteral("text"));
+    QCOMPARE(hash.value(1).toString(), QStringLiteral("collision-hash"));
+    QVERIFY(!hash.next());
+
+    ClipboardRecord full;
+    QVERIFY(storage.fetchFull(1, &full));
+    QCOMPARE(full.timestamp, qint64(3000));
+    QCOMPARE(full.textData, QStringLiteral("current text"));
+    QCOMPARE(full.preview, QStringLiteral("current preview"));
+    QCOMPARE(full.blobData, blob); // payload from the removed legacy row is kept
+    QCOMPARE(full.sizeBytes, qint64(20));
+    QVERIFY(full.pinned);
+    QVERIFY(full.sensitive);
+    QCOMPARE(full.useCount, 5);
+    QCOMPARE(full.sourceApp, QStringLiteral("current-app"));
+
+    // Tag/group memberships from both rows survive on the merged entry.
+    QSqlQuery links(storage.database());
+    QVERIFY(links.exec(QStringLiteral(
+        "SELECT COUNT(*) FROM entry_groups WHERE entry_id = 1 AND group_id = 1")));
+    QVERIFY(links.next());
+    QCOMPARE(links.value(0).toInt(), 1);
+    QVERIFY(links.exec(QStringLiteral(
+        "SELECT COUNT(*) FROM entry_tags WHERE entry_id = 1 AND tag_id = 1")));
+    QVERIFY(links.next());
+    QCOMPARE(links.value(0).toInt(), 1);
+    QVERIFY(links.exec(QStringLiteral(
+        "SELECT COUNT(*) FROM entry_groups WHERE entry_id = 2")));
+    QVERIFY(links.next());
+    QCOMPARE(links.value(0).toInt(), 0);
+
+    ClipboardRecord again;
+    again.hash = QByteArrayLiteral("collision-hash");
+    again.textData = QStringLiteral("copied again");
+    again.preview = again.textData;
+    again.timestamp = 4000;
+    bool updated = false;
+    QCOMPARE(storage.insertOrUpdate(again, &updated), qint64(1));
+    QVERIFY(updated);
+    QCOMPARE(storage.stats().entryCount, qint64(1));
 }
 
 QTEST_GUILESS_MAIN(TestSchema)

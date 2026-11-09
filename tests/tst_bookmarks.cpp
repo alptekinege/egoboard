@@ -5,6 +5,8 @@
 
 #include <QRandomGenerator>
 #include <QSignalSpy>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 
 class TestBookmarks : public QObject
@@ -22,6 +24,9 @@ private slots:
     void rejectsInvalidGroupOperations();
     void rejectsDuplicateSiblingNames();
     void membershipCascadesWithEntryAndGroupDeletion();
+    void danglingAssignmentRejectedWithoutForeignKeys();
+    void duplicateAssignmentEmitsNoSignals();
+    void nestedDeleteInsideOuterTransaction();
 
 private:
     QTemporaryDir m_dir;
@@ -237,6 +242,98 @@ void TestBookmarks::membershipCascadesWithEntryAndGroupDeletion()
     QVERIFY(m_bookmarks->deleteGroup(child));
     QVERIFY(!m_bookmarks->group(child).has_value());
     QCOMPARE(m_bookmarks->groupIdsForEntry(secondEntry), QList<qint64>{});
+}
+
+void TestBookmarks::danglingAssignmentRejectedWithoutForeignKeys()
+{
+    QSqlDatabase db = m_storage->database();
+    QSqlQuery pragma(db);
+    QVERIFY(pragma.exec(QStringLiteral("PRAGMA foreign_keys=OFF")));
+
+    ClipboardRecord record;
+    record.hash = QByteArrayLiteral("fk-off-entry");
+    record.textData = QStringLiteral("payload");
+    record.preview = record.textData;
+    record.timestamp = 1;
+    const qint64 entryId = m_storage->insertOrUpdate(record);
+    QVERIFY(entryId > 0);
+    const qint64 group = m_bookmarks->createGroup(QStringLiteral("FK off"));
+    QVERIFY(group > 0);
+
+    QSignalSpy membershipSpy(m_bookmarks, &BookmarkManager::membershipChanged);
+    QSignalSpy countSpy(m_bookmarks, &BookmarkManager::membershipCountChanged);
+
+    // INSERT OR IGNORE cannot be trusted to reject dangling targets when the
+    // connection has foreign_keys=OFF; the manager checks the endpoints.
+    QVERIFY(!m_bookmarks->assignEntry(99999, group));
+    QVERIFY(!m_bookmarks->assignEntry(entryId, 99999));
+    QVERIFY(!m_bookmarks->assignEntry(-1, group));
+    QCOMPARE(membershipSpy.count(), 0);
+    QCOMPARE(countSpy.count(), 0);
+
+    QSqlQuery links(db);
+    QVERIFY(links.exec(QStringLiteral("SELECT COUNT(*) FROM entry_groups")));
+    QVERIFY(links.next());
+    QCOMPARE(links.value(0).toInt(), 0);
+    links.finish();
+
+    QVERIFY(m_bookmarks->assignEntry(entryId, group));
+    QCOMPARE(membershipSpy.count(), 1);
+    QCOMPARE(countSpy.count(), 1);
+    QCOMPARE(m_bookmarks->entryCount(group), 1);
+
+    QVERIFY(pragma.exec(QStringLiteral("PRAGMA foreign_keys=ON")));
+}
+
+void TestBookmarks::duplicateAssignmentEmitsNoSignals()
+{
+    ClipboardRecord record;
+    record.hash = QByteArrayLiteral("duplicate-assign");
+    record.textData = QStringLiteral("payload");
+    record.preview = record.textData;
+    record.timestamp = 1;
+    const qint64 entryId = m_storage->insertOrUpdate(record);
+    QVERIFY(entryId > 0);
+    const qint64 group = m_bookmarks->createGroup(QStringLiteral("Duplicate"));
+    QVERIFY(group > 0);
+
+    QSignalSpy membershipSpy(m_bookmarks, &BookmarkManager::membershipChanged);
+    QSignalSpy countSpy(m_bookmarks, &BookmarkManager::membershipCountChanged);
+
+    QVERIFY(m_bookmarks->assignEntry(entryId, group));
+    QCOMPARE(membershipSpy.count(), 1);
+    QCOMPARE(countSpy.count(), 1);
+
+    // Re-assigning an existing membership is idempotent; it must not emit a
+    // change signal or inflate the cached group count.
+    QVERIFY(m_bookmarks->assignEntry(entryId, group));
+    QCOMPARE(membershipSpy.count(), 1);
+    QCOMPARE(countSpy.count(), 1);
+    QCOMPARE(m_bookmarks->entryCount(group), 1);
+    QCOMPARE(m_bookmarks->entryIdsForGroup(group), QList<qint64>{entryId});
+}
+
+void TestBookmarks::nestedDeleteInsideOuterTransaction()
+{
+    const qint64 root = m_bookmarks->createGroup(QStringLiteral("Root"));
+    const qint64 child = m_bookmarks->createGroup(QStringLiteral("Child"), root);
+    QVERIFY(root > 0);
+    QVERIFY(child > 0);
+
+    QSqlDatabase db = m_storage->database();
+    QSqlQuery outer(db);
+    QVERIFY(outer.exec(QStringLiteral("SAVEPOINT p3_outer")));
+
+    // deleteGroup uses its own savepoint so bulk/import can nest it. It must
+    // neither fail nor commit the surrounding transaction.
+    QVERIFY(m_bookmarks->deleteGroup(root));
+    QVERIFY(!m_bookmarks->group(root).has_value());
+    QCOMPARE(m_bookmarks->group(child)->parentId, qint64(0));
+
+    QVERIFY(outer.exec(QStringLiteral("ROLLBACK TO SAVEPOINT p3_outer")));
+    QVERIFY(outer.exec(QStringLiteral("RELEASE SAVEPOINT p3_outer")));
+    QVERIFY(m_bookmarks->group(root).has_value());
+    QCOMPARE(m_bookmarks->group(child)->parentId, root);
 }
 
 QTEST_GUILESS_MAIN(TestBookmarks)

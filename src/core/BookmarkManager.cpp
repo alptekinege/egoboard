@@ -170,17 +170,41 @@ std::optional<BookmarkGroup> BookmarkManager::group(qint64 id) const
 
 bool BookmarkManager::assignEntry(qint64 entryId, qint64 groupId)
 {
+    if (entryId <= 0 || groupId <= 0)
+        return false;
+
+    // INSERT OR IGNORE makes repeat assignments idempotent, but it also hides
+    // an invalid target when the connection runs with foreign_keys=OFF (e.g. a
+    // migration or an external tool). Verify both endpoints explicitly so a
+    // dangling membership is never stored nor announced as a change.
+    QSqlQuery targets(m_db);
+    targets.prepare(QStringLiteral(
+        "SELECT EXISTS(SELECT 1 FROM entries WHERE id = :e),"
+        " EXISTS(SELECT 1 FROM groups WHERE id = :g)"));
+    targets.bindValue(QStringLiteral(":e"), entryId);
+    targets.bindValue(QStringLiteral(":g"), groupId);
+    if (!targets.exec() || !targets.next() || !targets.value(0).toBool()
+        || !targets.value(1).toBool()) {
+        qWarning("egoboard: assignEntry rejected missing entry %lld or group %lld",
+                 entryId, groupId);
+        return false;
+    }
+    targets.finish();
+
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral(
         "INSERT OR IGNORE INTO entry_groups (entry_id, group_id) VALUES (:e, :g)"));
     query.bindValue(QStringLiteral(":e"), entryId);
     query.bindValue(QStringLiteral(":g"), groupId);
-    if (!query.exec())
+    if (!query.exec()) {
+        qWarning("egoboard: assignEntry failed: %s", qPrintable(query.lastError().text()));
         return false;
-    const bool inserted = query.numRowsAffected() > 0;
+    }
+    if (query.numRowsAffected() == 0)
+        return true; // already a member: no state change, no signals
+
     emit membershipChanged(entryId);
-    if (inserted)
-        emit membershipCountChanged(groupId, 1);
+    emit membershipCountChanged(groupId, 1);
     return true;
 }
 

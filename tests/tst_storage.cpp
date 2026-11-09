@@ -53,6 +53,8 @@ private slots:
     void expireEntriesToTrashSweepsRestorably();
     void trashEmitsViewSignals();
     void legacyDatabaseGainsTrashTables();
+    void dedupKeepsBlobWhenPayloadMissing();
+    void freshInsertCarriesOcrText();
 
 private:
     ClipboardRecord makeRecord(const QByteArray &hash, const QString &text, qint64 timestamp);
@@ -1103,6 +1105,76 @@ void TestStorage::legacyDatabaseGainsTrashTables()
     QCOMPARE(m_storage->trashCount(), 1);
     QCOMPARE(m_storage->restoreTrashEntries({page.first().id}), 1);
     QCOMPARE(m_storage->stats().entryCount, qint64(1));
+}
+
+void TestStorage::dedupKeepsBlobWhenPayloadMissing()
+{
+    ClipboardRecord image;
+    image.hash = QByteArrayLiteral("retouch-image");
+    image.type = ContentType::Image;
+    image.blobData = QByteArray::fromHex(QByteArrayLiteral("89504e470d0a1a0a"));
+    image.hasBlob = true;
+    image.textData = QStringLiteral("/tmp/shot.png");
+    image.preview = QStringLiteral("Screenshot");
+    image.sizeBytes = image.blobData.size();
+    image.timestamp = 1000;
+    image.ocrText = QStringLiteral("INVOICE 42");
+
+    const qint64 id = m_storage->insertOrUpdate(image);
+    QVERIFY(id > 0);
+
+    // A repeat copy of the same image can arrive without the binary payload
+    // (e.g. a text-only re-capture). It must refresh the text but never erase
+    // the stored PNG or its OCR text.
+    ClipboardRecord again = image;
+    again.hasBlob = false;
+    again.blobData.clear();
+    again.textData = QStringLiteral("new text only");
+    again.ocrText.clear();
+    again.timestamp = 2000;
+    bool updated = false;
+    QCOMPARE(m_storage->insertOrUpdate(again, &updated), id);
+    QVERIFY(updated);
+
+    ClipboardRecord full;
+    QVERIFY(m_storage->fetchFull(id, &full));
+    QCOMPARE(full.blobData, image.blobData);
+    QVERIFY(full.hasBlob);
+    QCOMPARE(full.textData, QStringLiteral("new text only"));
+    QCOMPARE(full.ocrText, QStringLiteral("INVOICE 42"));
+    QCOMPARE(m_storage->stats().entryCount, qint64(1));
+
+    // A copy that claims a payload but carries no bytes is payload-less too.
+    ClipboardRecord emptyPayload = image;
+    emptyPayload.hasBlob = true;
+    emptyPayload.blobData.clear();
+    emptyPayload.textData = QStringLiteral("empty payload");
+    emptyPayload.timestamp = 3000;
+    QCOMPARE(m_storage->insertOrUpdate(emptyPayload), id);
+    QVERIFY(m_storage->fetchFull(id, &full));
+    QCOMPARE(full.blobData, image.blobData);
+    QCOMPARE(full.textData, QStringLiteral("empty payload"));
+}
+
+void TestStorage::freshInsertCarriesOcrText()
+{
+    // OCR is attached at capture time for some paths; a fresh INSERT must
+    // store it in the same statement instead of relying on a later setOcrText.
+    ClipboardRecord record = makeRecord(QByteArrayLiteral("ocr-on-insert"),
+                                        QStringLiteral("scanned"), 1000);
+    record.ocrText = QStringLiteral("recognized on capture");
+
+    const qint64 id = m_storage->insertOrUpdate(record);
+    QVERIFY(id > 0);
+
+    ClipboardRecord full;
+    QVERIFY(m_storage->fetchFull(id, &full));
+    QCOMPARE(full.ocrText, QStringLiteral("recognized on capture"));
+    QCOMPARE(m_storage->stats().ocrCount, qint64(1));
+
+    FilterSpec filter;
+    filter.hasOcrOnly = true;
+    QCOMPARE(m_storage->fetchPage(filter, {}, 10).size(), 1);
 }
 
 QTEST_GUILESS_MAIN(TestStorage)

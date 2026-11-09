@@ -13,6 +13,7 @@
 #include <QMimeData>
 #include <QRandomGenerator>
 #include <QSignalSpy>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 
 class TestGroupTreeModel : public QObject
@@ -34,6 +35,7 @@ private slots:
     void deduplicatesDraggedGroups();
     void dropEntryCountDecodesIds();
     void decorationRoleStaysHeadlessSafe();
+    void orphanedGroupsStayVisibleAsRepairRows();
 
 private:
     QTemporaryDir m_dir;
@@ -428,6 +430,35 @@ void TestGroupTreeModel::decorationRoleStaysHeadlessSafe()
     QVERIFY(decoration.canConvert<QIcon>());
     const QIcon icon = qvariant_cast<QIcon>(decoration);
     Q_UNUSED(icon);
+}
+
+void TestGroupTreeModel::orphanedGroupsStayVisibleAsRepairRows()
+{
+    const qint64 a = m_bookmarks->createGroup(QStringLiteral("CycleA"));
+    const qint64 b = m_bookmarks->createGroup(QStringLiteral("CycleB"), a);
+    QVERIFY(a > 0);
+    QVERIFY(b > 0);
+
+    // A corrupted hierarchy (here a two-node cycle, created directly in SQL)
+    // leaves no root to walk from. Every unreachable group must still be
+    // exposed as a top-level repair row instead of vanishing from the model.
+    QSqlQuery update(m_storage->database());
+    update.prepare(QStringLiteral("UPDATE groups SET parent_id = :p WHERE id = :id"));
+    update.bindValue(QStringLiteral(":p"), b);
+    update.bindValue(QStringLiteral(":id"), a);
+    QVERIFY(update.exec());
+
+    GroupTreeModel model(m_bookmarks);
+    QCOMPARE(model.rowCount(), 2);
+
+    const QModelIndex aIndex = model.indexForGroup(a);
+    const QModelIndex bIndex = model.indexForGroup(b);
+    QVERIFY(aIndex.isValid());
+    QVERIFY(bIndex.isValid());
+    QCOMPARE(model.data(aIndex, GroupTreeModel::GroupIdRole).toLongLong(), a);
+    QCOMPARE(model.data(bIndex, GroupTreeModel::GroupIdRole).toLongLong(), b);
+    QCOMPARE(aIndex.parent(), QModelIndex());
+    QCOMPARE(bIndex.parent(), QModelIndex());
 }
 
 QTEST_GUILESS_MAIN(TestGroupTreeModel)

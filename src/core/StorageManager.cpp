@@ -201,6 +201,11 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
     if (!m_db.isOpen())
         return 0;
 
+    // A capture may claim a binary payload while carrying no bytes (e.g. a
+    // failed image read). Treat it as payload-less so a re-copy can never
+    // overwrite the stored PNG with an empty BLOB.
+    const bool hasPayload = record.hasBlob && !record.blobData.isEmpty();
+
     if (!beginTransaction()) {
         qWarning("egoboard: cannot begin transaction: %s", qPrintable(m_db.lastError().text()));
         return 0;
@@ -241,7 +246,7 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
             touch.bindValue(QStringLiteral(":preview"), record.preview);
             touch.bindValue(QStringLiteral(":size"), record.sizeBytes);
             touch.bindValue(QStringLiteral(":text"), record.textData);
-            touch.bindValue(QStringLiteral(":has_blob"), record.hasBlob ? 1 : 0);
+            touch.bindValue(QStringLiteral(":has_blob"), hasPayload ? 1 : 0);
             touch.bindValue(QStringLiteral(":blob"), record.blobData);
             touch.bindValue(QStringLiteral(":sensitive"), record.sensitive ? 1 : 0);
             touch.bindValue(QStringLiteral(":pinned"), record.pinned ? 1 : 0);
@@ -269,7 +274,8 @@ qint64 StorageManager::insertOrUpdate(const ClipboardRecord &record, bool *updat
     insert.bindValue(QStringLiteral(":type"), static_cast<int>(record.type));
     insert.bindValue(QStringLiteral(":h"), QString::fromLatin1(record.hash));
     insert.bindValue(QStringLiteral(":text"), record.textData);
-    insert.bindValue(QStringLiteral(":blob"), record.hasBlob ? QVariant(record.blobData) : QVariant());
+    insert.bindValue(QStringLiteral(":blob"),
+                     hasPayload ? QVariant(record.blobData) : QVariant());
     insert.bindValue(QStringLiteral(":preview"), record.preview);
     insert.bindValue(QStringLiteral(":size"), record.sizeBytes);
     insert.bindValue(QStringLiteral(":pinned"), record.pinned ? 1 : 0);
